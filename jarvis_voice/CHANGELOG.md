@@ -1,3 +1,7 @@
+## 0.4.25 (experimental)
+
+- Reorganize the settings panel and add searchable Home Assistant pickers, editable family cards and a call recipient selector.
+
 ## 0.4.24 (experimental)
 
 - Make the gate PIN optional and accept variable-length PINs over SIM7600 DTMF.

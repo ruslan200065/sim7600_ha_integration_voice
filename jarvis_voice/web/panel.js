@@ -17,6 +17,274 @@ const secrets = [
 let current;
 let snapshotUrl;
 
+const tabs = [...document.querySelectorAll("[data-tab]")];
+const views = [...document.querySelectorAll("[data-view]")];
+const familyList = document.querySelector("#family-list");
+const familyValue = form.elements.namedItem("family_members");
+const domainChoices = document.querySelector("#domain-choices");
+const save = document.querySelector("#save");
+const saveState = document.querySelector("#save-state");
+const volumeValue = document.querySelector("#volume-value");
+const phoneRecipient = document.querySelector("#phone-recipient");
+const pickers = new Map();
+let catalog = [];
+let catalogError = false;
+let dirty = false;
+const domainLabels = {light:"Свет", switch:"Выключатели", cover:"Приводы", fan:"Вентиляторы",
+  scene:"Сцены", media_player:"Медиаплееры"};
+let controlDomains = Object.keys(domainLabels);
+
+function setTab(key) {
+  if (!tabs.some(tab => tab.dataset.tab === key)) key = "calls";
+  for (const tab of tabs) {
+    if (tab.dataset.tab === key) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  }
+  for (const view of views) view.hidden = view.dataset.view !== key;
+  form.hidden = key === "history";
+  if (key === "calls" || key === "hardware") refreshPhone();
+}
+for (const tab of tabs) tab.addEventListener("click", () => {
+  location.hash = tab.dataset.tab;
+  setTab(tab.dataset.tab);
+});
+window.addEventListener("hashchange", () => setTab(location.hash.slice(1)));
+
+function syncSaveState() {
+  saveState.textContent = dirty ? "Есть несохранённые изменения"
+    : current?.pending ? "Сохранено · ждёт применения" : "Настройки применены";
+  save.disabled = !dirty;
+  restart.disabled = !dirty && !current?.pending;
+}
+function changed() {
+  dirty = true;
+  syncSaveState();
+}
+
+function updateVolume() {
+  volumeValue.textContent = form.elements.namedItem("call_playback_volume").value + "%";
+}
+form.addEventListener("input", event => {
+  if (familyList.contains(event.target)) syncFamily();
+  updateVolume();
+  changed();
+});
+
+const normalized = text => String(text || "").toLocaleLowerCase("ru").replaceAll("ё", "е");
+
+function makePicker(host, accessibleName) {
+  const value = host.querySelector("input, textarea");
+  const multiple = host.hasAttribute("data-multiple");
+  const filter = host.dataset.entity;
+  value.hidden = true;
+  const current = document.createElement("div");
+  current.className = "selection";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "Найти по имени или комнате…";
+  search.setAttribute("aria-label", accessibleName);
+  const results = document.createElement("div");
+  results.className = "picker-results";
+  results.hidden = true;
+  host.classList.add("picker");
+  host.append(current, search, results);
+
+  const values = () => value.value.trim().split(/\s+/).filter(Boolean);
+  function matches(row) {
+    const domain = row.id.split(".")[0];
+    if (filter === "control") return controlDomains.includes(domain);
+    if (filter === "gate") return ["cover", "lock", "button", "script"].includes(domain);
+    return !filter || filter === domain;
+  }
+  function write(next) {
+    value.value = next.join("\n");
+    search.value = "";
+    results.hidden = true;
+    value.dispatchEvent(new Event("input", {bubbles: true}));
+    renderSelection();
+  }
+  function renderSelection() {
+    current.replaceChildren();
+    for (const id of values()) {
+      const item = catalog.find(row => row.id === id);
+      const chip = document.createElement("span");
+      chip.className = "selection-chip";
+      chip.textContent = item?.name || id;
+      chip.title = id;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", "Убрать " + (item?.name || id));
+      remove.addEventListener("click", () => write(values().filter(previous => previous !== id)));
+      chip.append(remove);
+      current.append(chip);
+    }
+  }
+  function showResults() {
+    const words = normalized(search.value).trim().split(/\s+/).filter(Boolean);
+    const selected = values();
+    const candidates = catalog.filter(row => matches(row) && !selected.includes(row.id)
+      && words.every(word => normalized([row.name, row.area, row.id].join(" ")).includes(word)));
+    results.replaceChildren();
+    for (const item of candidates.slice(0, 12)) {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.textContent = item.name;
+      const detail = document.createElement("small");
+      detail.textContent = [item.area, item.id].filter(Boolean).join(" · ");
+      option.append(detail);
+      option.addEventListener("click", () => {
+        write(multiple ? [...selected, item.id] : [item.id]);
+        search.focus();
+        results.hidden = true;
+      });
+      results.append(option);
+    }
+    if (!candidates.length) {
+      const hint = document.createElement("p");
+      hint.textContent = catalogError ? "Каталог недоступен. Обновите страницу." : catalog.length
+        ? "Совпадений нет" : "Загружаем каталог…";
+      results.append(hint);
+    }
+    results.hidden = false;
+  }
+  search.addEventListener("focus", showResults);
+  search.addEventListener("input", event => { event.stopPropagation(); showResults(); });
+  host.addEventListener("focusout", event => {
+    if (!host.contains(event.relatedTarget)) results.hidden = true;
+  });
+  host.addEventListener("keydown", event => {
+    if (event.key === "Escape") { results.hidden = true; search.focus(); results.hidden = true; }
+    if (event.target === search && event.key === "Enter") {
+      event.preventDefault();
+      results.querySelector("button")?.click();
+    }
+    if (event.target === search && event.key === "ArrowDown") {
+      event.preventDefault();
+      results.querySelector("button")?.focus();
+    }
+  });
+  pickers.set(host, renderSelection);
+  renderSelection();
+}
+
+function syncFamily() {
+  familyValue.value = [...familyList.querySelectorAll("[data-profile]")].map(card => {
+    const fields = [...card.querySelectorAll("[data-profile-value]")];
+    return fields.map(input => input.value.trim().replace(/\s*\n\s*/g, " ")).join(" | ");
+  }).join("\n");
+}
+
+function addFamily(line = "", expand = false) {
+  const data = line.split("|").map(value => value.trim());
+  const card = document.createElement("details");
+  card.className = "card profile";
+  card.dataset.profile = "";
+  card.open = expand;
+  const summary = document.createElement("summary");
+  const heading = document.createElement("strong");
+  heading.textContent = data[0] || "Новый участник";
+  const phone = document.createElement("span");
+  phone.textContent = data[1] || "Укажите номер";
+  summary.append(heading, phone);
+  card.append(summary);
+  const fields = document.createElement("div");
+  fields.className = "fields";
+  const definitions = [
+    ["Имя"], ["Номер телефона"], ["Доступ к устройствам", "", true],
+    ["Калитка", "gate"], ["Личный календарь", "calendar"], ["Местоположение", "person"],
+  ];
+  for (const [index, [label, filter, multiple]] of definitions.entries()) {
+    const field = document.createElement(filter === undefined ? "label" : "div");
+    field.className = "entity-field";
+    const title = document.createElement("span");
+    title.textContent = label;
+    field.append(title);
+    const input = document.createElement("input");
+    input.dataset.profileValue = "";
+    input.value = data[index] || "";
+    if (index === 0) input.addEventListener("input", () => { heading.textContent = input.value || "Новый участник"; });
+    if (index === 1) {
+      input.type = "tel";
+      input.placeholder = "+7…";
+      input.addEventListener("input", () => { phone.textContent = input.value || "Укажите номер"; });
+    }
+    if (filter !== undefined) {
+      const host = document.createElement("div");
+      host.dataset.entity = filter;
+      if (multiple) host.dataset.multiple = "";
+      host.append(input);
+      field.append(host);
+      makePicker(host, label + " участника");
+    } else field.append(input);
+    fields.append(field);
+  }
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "remove-profile";
+  remove.textContent = "Убрать участника";
+  remove.addEventListener("click", () => {
+    for (const host of card.querySelectorAll(".picker")) pickers.delete(host);
+    card.remove();
+    syncFamily();
+    changed();
+    showFamilyEmpty();
+  });
+  card.append(fields, remove);
+  familyList.append(card);
+  showFamilyEmpty();
+  if (expand) fields.querySelector("input").focus();
+}
+function showFamilyEmpty() {
+  familyList.querySelector(".empty-family")?.remove();
+  if (familyList.querySelector("[data-profile]")) return;
+  const message = document.createElement("p");
+  message.className = "card muted empty-family";
+  message.textContent = "Список пока пуст. Добавь человека, которому нужен доступ по телефону.";
+  familyList.append(message);
+}
+function renderFamily() {
+  for (const host of familyList.querySelectorAll(".picker")) pickers.delete(host);
+  familyList.replaceChildren();
+  for (const line of familyValue.value.split(/\r?\n/).filter(Boolean)) addFamily(line);
+  showFamilyEmpty();
+}
+document.querySelector("#family-add").addEventListener("click", () => {
+  addFamily("", true);
+  syncFamily();
+  changed();
+});
+
+function renderDomains() {
+  const value = form.elements.namedItem("allow_domains");
+  const selected = value.value.split(/\s+/).filter(Boolean);
+  domainChoices.replaceChildren();
+  for (const domain of controlDomains) {
+    const label = document.createElement("label");
+    label.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = domain;
+    box.checked = selected.includes(domain);
+    box.addEventListener("input", () => {
+      value.value = [...domainChoices.querySelectorAll("input:checked")].map(item => item.value).join("\n");
+    });
+    label.append(box, domainLabels[domain] || domain);
+    domainChoices.append(label);
+  }
+}
+
+for (const host of document.querySelectorAll("[data-entity]")) {
+  makePicker(host, host.parentElement.firstChild.textContent.trim() || "Найти устройство");
+}
+request("entities").then(response => response.json()).then(data => {
+  catalog = data.entities.sort((a,b) => a.name.localeCompare(b.name, "ru"));
+  controlDomains = data.control_domains;
+  for (const update of pickers.values()) update();
+  renderDomains();
+}).catch(() => { catalogError = true; });
+
+
 async function request(path, method = "GET", data) {
   const response = await fetch(path, {
     method,
@@ -73,7 +341,7 @@ function fieldValue(key, element) {
     return element.value.split(/\s+/).filter(Boolean);
   }
   if (element.type === "checkbox") return element.checked;
-  if (element.type === "number") return element.value === "" ? undefined : Number(element.value);
+  if (element.type === "number" || element.type === "range") return element.value === "" ? undefined : Number(element.value);
   return element.value.trim();
 }
 
@@ -95,6 +363,12 @@ function render(state) {
   addChoices("#serial-ports", state.devices.serial);
   addChoices("#video-nodes", state.devices.video);
   routes.forEach(route => setRoute(route, state));
+  renderFamily();
+  renderDomains();
+  for (const update of pickers.values()) update();
+  updateVolume();
+  dirty = false;
+  syncSaveState();
   document.querySelector("#version").textContent = "Версия " + state.version;
   showNotice(state.pending
     ? "Настройки сохранены. Перезапустите аддон, чтобы применить изменения."
@@ -112,6 +386,7 @@ for (const route of routes) {
     } else {
       input.value = choice === "__off__" ? "" : "pulse";
     }
+    changed();
   });
   form.elements.namedItem(route.field).addEventListener("input", event => {
     const select = document.querySelector(route.select);
@@ -124,9 +399,8 @@ for (const route of routes) {
   });
 }
 
-form.addEventListener("submit", async event => {
-  event.preventDefault();
-  if (!current) return;
+async function persistSettings() {
+  if (!current) return false;
   const options = {};
   for (const [key, previous] of Object.entries(current.options)) {
     const input = form.elements.namedItem(key);
@@ -150,14 +424,21 @@ form.addEventListener("submit", async event => {
   try {
     await request("settings", "PUT", {revision: current.revision, options, audio});
     render(await (await request("state")).json());
+    return true;
   } catch (error) {
     showNotice(error.message, true);
     controls.disabled = false;
+    return false;
   }
+}
+form.addEventListener("submit", event => {
+  event.preventDefault();
+  if (dirty) persistSettings();
 });
 
 restart.addEventListener("click", async () => {
-  if (!current) return;
+  if (!current || (dirty && !await persistSettings())) return;
+  if (!current.pending) return;
   const boot = current.boot;
   controls.disabled = true;
   showNotice("Аддон перезапускается…");
@@ -236,11 +517,23 @@ const phoneStates = {
 let phoneBusy = false;
 
 async function refreshPhone() {
-  if (!phone.open || phoneBusy || document.hidden) return;
+  if ((phone.hidden && document.querySelector('[data-view="hardware"]').hidden) || phoneBusy || document.hidden) return;
   try {
     const state = await (await request("phone")).json();
     phoneStatus.textContent = (phoneStates[state.state] || state.state)
       + " · автоответ " + (state.auto_answer ? "включён" : "выключен");
+    const previous = phoneRecipient.value;
+    const choices = [
+      ...(state.owner_available ? [new Option("Владелец", "")] : []),
+      ...state.recipients.map(name => new Option(name, name)),
+    ];
+    if (!choices.length) choices.push(new Option("Добавьте номер в настройках", ""));
+    const signature = choices.map(option => option.textContent).join("\n");
+    if (phoneRecipient.dataset.signature !== signature) {
+      phoneRecipient.replaceChildren(...choices);
+      phoneRecipient.dataset.signature = signature;
+      if (choices.some(option => option.value === previous)) phoneRecipient.value = previous;
+    }
     for (const button of phoneButtons) button.disabled = !state["can_" + button.dataset.phone];
     volteButton.disabled = state.state !== "idle";
   } catch {
@@ -253,12 +546,13 @@ async function refreshPhone() {
 volteButton.addEventListener("click", async () => {
   phoneBusy = true;
   volteButton.disabled = true;
-  phoneResult.dataset.error = "false";
+  const result = document.querySelector("#volte-result");
+  result.dataset.error = "false";
   try {
-    phoneResult.textContent = (await (await request("phone/volte", "POST")).json()).message;
+    result.textContent = (await (await request("phone/volte", "POST")).json()).message;
   } catch (error) {
-    phoneResult.textContent = error.message;
-    phoneResult.dataset.error = "true";
+    result.textContent = error.message;
+    result.dataset.error = "true";
   } finally {
     phoneBusy = false;
     await refreshPhone();
@@ -355,7 +649,7 @@ document.querySelector("#history-refresh").addEventListener("click", async () =>
 });
 loadHistory();
 
-phone.addEventListener("toggle", refreshPhone);
+setTab(location.hash.slice(1));
 setInterval(refreshPhone, 3000);
 for (const button of phoneButtons) {
   button.addEventListener("click", async () => {
@@ -364,7 +658,9 @@ for (const button of phoneButtons) {
     phoneResult.textContent = "Команда отправляется…";
     phoneResult.dataset.error = "false";
     try {
-      await request("phone/" + button.dataset.phone, "POST");
+      const member = phoneRecipient.value;
+      await request("phone/" + button.dataset.phone, "POST",
+        button.dataset.phone === "dial" && member ? {member} : undefined);
       phoneResult.textContent = button.dataset.phone === "dial"
         ? "Модем принял команду вызова. Состояние обновится ниже."
         : "Команда принята.";

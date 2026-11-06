@@ -316,14 +316,35 @@ class SetupPanel:
         except web.HTTPException as exc:
             LOG.warning("Could not restart add-on from ingress: %s", exc.status)
 
+    async def entities(self, _request):
+        brain = self.service.brain
+        try:
+            rows = await brain._ha("GET", "/api/states")
+            ids = {row["entity_id"] for row in rows if ENTITY_ID.fullmatch(row["entity_id"])}
+            metadata = await brain._registry_metadata(ids)
+        except (RuntimeError, ValueError, TimeoutError, ClientError) as exc:
+            raise web.HTTPBadGateway(text="Каталог Home Assistant недоступен.") from exc
+        return web.json_response({
+            "entities": [
+                {"id": entity, "name": row.get("attributes", {}).get("friendly_name") or entity,
+                 "area": metadata.get(entity, {}).get("area")}
+                for row in rows if (entity := row["entity_id"]) in ids
+            ],
+            "control_domains": sorted(SAFE_SERVICES),
+        })
+
     async def phone_state(self, _request):
         service = self.service
         state = service.modem.call_state
+        recipients = [member["name"] for member in getattr(service, "family", {}).values()]
+        owner = bool(service.o.get("allowed_number"))
         return web.json_response(
             {
                 "state": state,
                 "auto_answer": bool(service.o.get("auto_answer")),
-                "can_dial": state == "idle" and bool(service.o.get("allowed_number")),
+                "can_dial": state == "idle" and bool(owner or recipients),
+                "owner_available": owner,
+                "recipients": recipients,
                 "can_answer": state == "ringing" and service.caller_allowed(),
                 "can_hangup": state in {"ringing", "answering", "dialing", "connected"},
             }
@@ -332,7 +353,13 @@ class SetupPanel:
     async def phone_action(self, request):
         action = request.match_info["action"]
         if action == "dial":
-            return await self.service.dial_number()
+            try:
+                data = await request.json() if request.can_read_body else {}
+            except ValueError as exc:
+                raise web.HTTPBadRequest(text="Неверный получатель.") from exc
+            if not isinstance(data, dict) or not isinstance(data.get("member", ""), str):
+                raise web.HTTPBadRequest(text="Выберите получателя.")
+            return await self.service.dial_number(member=data.get("member")) if data.get("member") else await self.service.dial_number()
         if action == "answer":
             return await self.service.answer(request)
         if action == "hangup":
@@ -521,6 +548,7 @@ class SetupPanel:
         app.router.add_get("/", self.home)
         app.router.add_static("/assets", ASSETS)
         app.router.add_get("/state", self.state)
+        app.router.add_get("/entities", self.entities)
         app.router.add_put("/settings", self.save)
         app.router.add_post("/restart", self.restart)
         app.router.add_get("/phone", self.phone_state)

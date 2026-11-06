@@ -8,140 +8,156 @@
   <script src="assets/panel.js" defer></script>
 </head>
 <body>
-  <main>
+  <main class="shell">
     <header class="page-header">
-      <div>
-        <p class="eyebrow">Home Assistant · Signal Q1</p>
-        <h1>Настройки JARVIS Q1</h1>
-        <p class="muted">Устройства, голосовые сервисы и проверка оборудования.</p>
-      </div>
+      <div class="brand"><span class="brand-icon" aria-hidden="true">J</span><div>
+        <p class="eyebrow">Signal Q1 · Home Assistant</p>
+        <h1>JARVIS Q1</h1>
+      </div></div>
       <span id="version" class="badge">Подключение…</span>
     </header>
-    <p id="notice" class="notice" role="status">Загрузка настроек…</p>
-    <div class="layout">
-      <form id="settings" autocomplete="off">
-        <fieldset id="controls" disabled>
-          <section class="card">
-            <h2>Оборудование</h2>
-            <div class="fields">
-              <label>AT-порт модема<input name="at_port" list="serial-ports" required></label>
-              <label>Камера Q1<input name="q1_video_device" list="video-nodes" placeholder="Отключена"></label>
-              <label>Микрофон<select id="input-route"></select></label>
-              <label>Динамик<select id="output-route"></select></label>
+    <div class="workspace">
+      <nav class="navigation" aria-label="Разделы JARVIS">
+        <button type="button" data-tab="calls" aria-current="page">Звонки</button>
+        <button type="button" data-tab="family">Семья</button>
+        <button type="button" data-tab="devices">Устройства</button>
+        <button type="button" data-tab="voice">Голос и интеграции</button>
+        <button type="button" data-tab="history">Журнал</button>
+        <button type="button" data-tab="hardware">Оборудование</button>
+      </nav>
+      <div class="workspace-content">
+        <p id="notice" class="notice" role="status">Загрузка настроек…</p>
+        <form id="settings" autocomplete="off">
+          <fieldset id="controls" disabled>
+            <section class="view" id="phone" data-view="calls">
+              <div class="section-heading"><div><p class="eyebrow">Телефония</p><h2>Звонки</h2></div><output id="phone-status" class="badge" aria-live="polite"></output></div>
+              <section class="card">
+                <h3>Позвонить</h3>
+                <div class="fields">
+                  <label>Кому<select id="phone-recipient"><option value="">Владелец</option></select></label>
+                </div>
+                <div class="phone-actions actions">
+                  <button type="button" class="primary" data-phone="dial" disabled>Позвонить</button>
+                  <button type="button" data-phone="answer" disabled>Ответить</button>
+                  <button type="button" data-phone="hangup" disabled>Завершить</button>
+                </div>
+                <output id="phone-result" aria-live="polite"></output>
+              </section>
+              <section class="card">
+                <h3>Настройки вызова</h3>
+                <div class="fields">
+                  <label>Номер владельца<input name="allowed_number" type="tel" placeholder="+7…"></label>
+                  <label>Громкость JARVIS <output id="volume-value"></output><input name="call_playback_volume" type="range" min="10" max="100"></label>
+                  <label class="check"><input name="auto_answer" type="checkbox"> Автоответ владельцу и семье</label>
+                </div>
+                <p class="hint">Чтобы позвонить JARVIS, наберите номер SIM-карты в Q1. Для автоматизаций используйте действие <code>jarvis_q1.call</code>.</p>
+              </section>
+            </section>
+
+            <section class="view" data-view="family" hidden>
+              <div class="section-heading"><div><p class="eyebrow">Профили и напоминания</p><h2>Семья</h2></div><button type="button" id="family-add" class="primary">Добавить участника</button></div>
+              <p class="intro">У каждого участника свой номер, доступ к устройствам и личные напоминания.</p>
+              <textarea name="family_members" hidden aria-hidden="true"></textarea>
+              <div id="family-list"></div>
+              <section class="card">
+                <h3>Владелец и доступ к калитке</h3>
+                <div class="fields">
+                  <div class="entity-field"><span>Календарь владельца</span><div data-entity="calendar"><input name="reminder_calendar"></div></div>
+                  <div class="entity-field"><span>Местоположение владельца</span><div data-entity="person"><input name="reminder_person"></div></div>
+                  <label>Код калитки<input name="gate_pin" type="password" inputmode="numeric" autocomplete="new-password"><span class="hint">Необязательно. Набирается на клавиатуре телефона с <code>#</code> в конце.</span></label>
+                  <label class="check"><input type="checkbox" id="clear-gate-pin"> Удалить сохранённый код</label>
+                </div>
+              </section>
+            </section>
+
+            <section class="view" data-view="devices" hidden>
+              <div class="section-heading"><div><p class="eyebrow">Home Assistant</p><h2>Устройства</h2></div></div>
+              <section class="card">
+                <h3>Доступ владельца</h3>
+                <div class="toggle-stack">
+                  <label class="check"><input type="checkbox" name="observe_all_entities"> Читать состояния всех устройств и видеть камеры</label>
+                  <label class="check"><input type="checkbox" name="control_all_entities"> Управлять всеми поддерживаемыми устройствами</label>
+                </div>
+                <p class="hint">Семейные профили получают доступ отдельно, в своих карточках.</p>
+              </section>
+              <section class="card">
+                <h3>Доступ к отдельным устройствам</h3>
+                <div class="fields">
+                  <div><p class="field-title">Для чтения</p><div data-entity="" data-multiple><textarea name="observed_entities" hidden></textarea></div></div>
+                  <div><p class="field-title">Для управления</p><div data-entity="control" data-multiple><textarea name="allowed_entities" hidden></textarea></div></div>
+                  <div class="entity-field"><span>Камера по умолчанию</span><div data-entity="camera"><input name="camera_entity"></div></div>
+                </div>
+                <details><summary>Типы устройств для ручного доступа</summary><textarea name="allow_domains" hidden></textarea><div id="domain-choices" class="toggle-stack"></div></details>
+              </section>
+            </section>
+
+            <section class="view" data-view="voice" hidden>
+              <div class="section-heading"><div><p class="eyebrow">Речь и сервисы</p><h2>Голос и интеграции</h2></div></div>
+              <section class="card">
+                <h3>Подключения</h3>
+                <div class="fields">
+                  <label>Ключ Yandex SpeechKit<input type="password" name="yandex_api_key" autocomplete="new-password"></label>
+                  <label>Ключ DeepSeek<input type="password" name="deepseek_api_key" autocomplete="new-password"></label>
+                  <label class="check"><input type="checkbox" id="clear-speech"> Удалить ключ SpeechKit</label>
+                  <label class="check"><input type="checkbox" id="clear-deepseek"> Удалить ключ DeepSeek</label>
+                  <div class="entity-field"><span>Получатель снимков в Telegram</span><div data-entity="notify"><input name="telegram_photo_target"></div></div>
+                  <div class="entity-field"><span>Синтез речи для домашних динамиков</span><div data-entity="tts"><input name="home_tts_entity"></div></div>
+                  <label class="check"><input type="checkbox" name="speech_cache_enabled"> Кэшировать озвучку</label>
+                </div>
+                <details><summary>Модель и голос</summary><div class="fields">
+                  <label>Модель DeepSeek<input name="deepseek_model" placeholder="deepseek-flash"></label>
+                  <label>Голос SpeechKit<input name="yandex_voice" placeholder="denis"></label>
+                  <label>Амплуа SpeechKit<input name="yandex_role" placeholder="neutral"></label>
+                </div></details>
+              </section>
+            </section>
+
+            <section class="view" data-view="hardware" hidden>
+              <div class="section-heading"><div><p class="eyebrow">Signal Q1</p><h2>Оборудование</h2></div></div>
+              <section class="card">
+                <h3>Подключённые устройства</h3>
+                <div class="fields">
+                  <label>AT-порт модема<input name="at_port" list="serial-ports"></label>
+                  <label>Камера Q1<input name="q1_video_device" list="video-nodes" placeholder="Отключена"></label>
+                  <label>Микрофон<select id="input-route"></select></label>
+                  <label>Динамик<select id="output-route"></select></label>
+                </div>
+                <datalist id="serial-ports"></datalist><datalist id="video-nodes"></datalist>
+                <details><summary>Дополнительные параметры</summary><div class="fields">
+                  <label>Скорость AT-порта<input name="serial_baud" type="number" min="1200" max="921600"></label>
+                  <label>Порт звука звонка<input name="pcm_port" list="serial-ports" placeholder="Отключён"></label>
+                  <label>Лимит звонков в час<input name="max_calls_per_hour" type="number" min="1" max="20"></label>
+                  <label>Микрофон ALSA вручную<input name="q1_mic_device"></label>
+                  <label>Динамик ALSA вручную<input name="q1_speaker_device"></label>
+                </div></details>
+              </section>
+              <section class="card">
+                <h3>Диагностика</h3>
+                <ul class="checks">
+                  <li><button type="button" data-check="network">SIM и сеть</button><output></output></li>
+                  <li><button type="button" data-check="modem">Модем и сигнал</button><output></output></li>
+                  <li><button type="button" data-check="gps">Статус GPS</button><output></output></li>
+                  <li><button type="button" data-check="camera">Снимок с камеры</button><output></output></li>
+                  <li><button type="button" data-check="microphone">Проверить микрофон</button><output></output></li>
+                  <li><button type="button" data-check="microphone_sample">Записать звук</button><output></output><audio id="microphone-sample" controls hidden></audio></li>
+                  <li><button type="button" data-check="speaker">Сигнал на динамик</button><output></output></li>
+                  <li><button type="button" data-check="speech">Проверить SpeechKit</button><output></output></li>
+                  <li><button type="button" data-check="deepseek">Проверить DeepSeek</button><output></output></li>
+                </ul>
+                <img id="snapshot" alt="Снимок с камеры Q1" hidden>
+                <details><summary>Мобильная сеть</summary><div class="phone-actions"><button type="button" id="volte" disabled>Попробовать включить VoLTE</button><output id="volte-result"></output></div></details>
+              </section>
+            </section>
+            <div class="save-bar">
+              <span id="save-state" class="muted">Настройки применены</span>
+              <div class="actions">
+                <button type="submit" id="save">Сохранить</button>
+                <button type="button" id="restart" class="primary">Применить</button>
+              </div>
             </div>
-            <p class="hint">Для USB-портов выбирайте стабильные пути <code>by-id</code>, если они доступны.</p>
-            <datalist id="serial-ports"></datalist>
-            <datalist id="video-nodes"></datalist>
-          </section>
-          <section class="card">
-            <h2>Голос и ассистент</h2>
-            <div class="fields">
-              <label>Ключ Yandex SpeechKit
-                <input type="password" name="yandex_api_key" autocomplete="new-password">
-                <span id="speech-key-hint" class="hint">Распознавание и синтез речи.</span>
-              </label>
-              <label>Ключ DeepSeek
-                <input type="password" name="deepseek_api_key" autocomplete="new-password">
-                <span id="deepseek-key-hint" class="hint">Ответы ассистента и команды Home Assistant.</span>
-              </label>
-            </div>
-            <div class="fields key-clear">
-              <label class="check"><input type="checkbox" id="clear-speech"> Удалить ключ SpeechKit</label>
-              <label class="check"><input type="checkbox" id="clear-deepseek"> Удалить ключ DeepSeek</label>
-            </div>
-          </section>
-          <details class="card" id="phone">
-            <summary>Телефонные звонки</summary>
-            <p class="hint">Разрешённый номер — телефон, на который звонит JARVIS и с которого он может принять вызов. Для входящего звонка набирайте номер SIM-карты в Q1.</p>
-            <div class="fields">
-              <label>Разрешённый номер<input name="allowed_number" type="tel" placeholder="+79991234567"></label>
-              <label>Лимит звонков в час<input name="max_calls_per_hour" type="number" min="1" max="20"></label>
-              <label>Громкость JARVIS в звонке, %<input name="call_playback_volume" type="number" min="10" max="100" placeholder="50"></label>
-              <label>Порт звука звонка<input name="pcm_port" list="serial-ports" placeholder="Отключён"></label>
-              <label class="check"><input name="auto_answer" type="checkbox"> Автоответ разрешённому номеру</label>
-            </div>
-            <div class="phone-actions actions">
-              <button type="button" data-phone="dial" disabled>Позвонить на сохранённый номер</button>
-              <button type="button" data-phone="answer" disabled>Ответить</button>
-              <button type="button" data-phone="hangup" disabled>Завершить</button>
-            </div>
-            <output id="phone-status" aria-live="polite"></output>
-            <output id="phone-result" aria-live="polite"></output>
-            <div class="phone-actions">
-              <button type="button" data-check="network">Проверить SIM и сеть</button>
-              <output aria-live="polite"></output>
-            </div>
-            <button type="button" id="volte" class="phone-actions" disabled>Попробовать включить VoLTE</button>
-            <p class="hint">Для автозвонка добавьте действие <code>jarvis_q1.call</code> в автоматизацию Home Assistant. Передача звука через SIM7600 зависит от прошивки.</p>
-          </details>
-          <details class="card">
-            <summary>Доступ к устройствам Home Assistant</summary>
-            <div class="fields advanced">
-              <label class="check"><input type="checkbox" name="observe_all_entities"> Читать состояния всех устройств и видеть все камеры</label>
-              <label class="check"><input type="checkbox" name="control_all_entities"> Управлять всеми устройствами поддерживаемых типов</label>
-              <p class="hint">При общем доступе JARVIS может передавать в DeepSeek сведения об устройствах. Общий режим управления включает свет, выключатели, приводы, вентиляторы, сцены и медиаплееры.</p>
-              <label>Устройства для чтения состояния и камеры<textarea name="observed_entities" rows="2" placeholder="binary_sensor.motion&#10;camera.front_door"></textarea></label>
-              <label>Домены управления<textarea name="allow_domains" rows="2" placeholder="light&#10;media_player"></textarea></label>
-              <label>Камера Home Assistant для ассистента<input name="camera_entity" placeholder="camera.front_door"></label>
-              <label>Разрешённые сущности для ассистента
-                <textarea name="allowed_entities" rows="2" placeholder="light.hall&#10;switch.garage"></textarea>
-                <span class="hint">По одной сущности на строку.</span>
-              </label>
-            </div>
-          </details>
-          <details class="card">
-            <summary>Семья, память и напоминания</summary>
-            <div class="fields advanced">
-              <label>Члены семьи<textarea name="family_members" rows="5"></textarea>
-                <span class="hint">По одному на строку: имя | номер в международном формате | ID устройств через пробел | ID калитки | личный календарь | person участника. Достаточно имени и номера.</span>
-              </label>
-              <label>Код калитки<input name="gate_pin" type="password" inputmode="numeric" autocomplete="new-password">
-                <span class="hint">Необязательно. Если задан, наберите цифры и решётку на клавиатуре телефона во время звонка.</span>
-              </label>
-              <label class="check"><input type="checkbox" id="clear-gate-pin"> Удалить код калитки</label>
-              <label>Календарь напоминаний владельца<input name="reminder_calendar" placeholder="calendar.reminders"></label>
-              <label>Профиль местоположения владельца<input name="reminder_person" placeholder="person.owner"></label>
-              <label class="check"><input type="checkbox" name="speech_cache_enabled"> Кэшировать озвучку на диске (до 64 МБ)</label>
-            </div>
-          </details>
-          <details class="card">
-            <summary>Дополнительные настройки</summary>
-            <div class="fields advanced">
-              <label>Скорость AT-порта<input name="serial_baud" type="number" min="1200" max="921600"></label>
-              <label>Модель DeepSeek<input name="deepseek_model" placeholder="deepseek-flash"></label>
-              <label>Голос SpeechKit<input name="yandex_voice" placeholder="denis"></label>
-              <label>Амплуа SpeechKit<input name="yandex_role" placeholder="neutral"></label>
-              <label>Микрофон ALSA вручную<input name="q1_mic_device" placeholder="pulse или имя ALSA"></label>
-              <label>Динамик ALSA вручную<input name="q1_speaker_device" placeholder="pulse или имя ALSA"></label>
-              <label>Синтез речи в доме<input name="home_tts_entity" placeholder="tts.yandex_speechkit"></label>
-              <label>Получатель фото в Telegram<input name="telegram_photo_target" placeholder="notify.telegram_bot_..."></label>
-            </div>
-          </details>
-          <div class="actions">
-            <button type="submit" class="primary">Сохранить настройки</button>
-            <button type="button" id="restart">Перезапустить аддон</button>
-          </div>
-          <p class="hint">Новые настройки применяются при перезапуске аддона.</p>
-        </fieldset>
-      </form>
-      <aside class="card" aria-labelledby="checks-title">
-        <h2 id="checks-title">Диагностика</h2>
-        <p class="muted">Камеру можно проверить до сохранения. Остальные проверки используют применённые настройки.</p>
-        <ul class="checks">
-          <li><button data-check="modem">Модем и сигнал</button><output></output></li>
-          <li><button data-check="gps">Статус GPS</button><output></output></li>
-          <li><button data-check="camera">Снимок с камеры</button><output></output></li>
-          <li><button data-check="microphone">Проверить микрофон</button><output></output></li>
-          <li><button data-check="microphone_sample">Записать 5 секунд с микрофона</button><output></output><audio id="microphone-sample" controls hidden></audio></li>
-          <li><button data-check="speaker">Подать сигнал на динамик</button><output></output></li>
-          <li><button data-check="speech">Проверить синтез SpeechKit</button><output></output></li>
-          <li><button data-check="deepseek">Проверить ключ DeepSeek</button><output></output></li>
-        </ul>
-        <img id="snapshot" alt="Снимок с камеры Q1" hidden>
-        <p class="hint">Проверка микрофона длится одну секунду. Звук используется для измерения уровня. Проверка SpeechKit отправляет короткую тестовую фразу на синтез.</p>
-      </aside>
-    </div>
-    <section class="card" aria-labelledby="history-title">
+          </fieldset>
+        </form>
+    <section class="card view" data-view="history" hidden aria-labelledby="history-title">
       <h2 id="history-title">Звонки и SMS</h2>
       <div class="actions history-controls">
         <label>Показывать
@@ -161,6 +177,8 @@
         <button type="button" id="history-older" disabled>Далее</button>
       </nav>
     </section>
+      </div>
+    </div>
   </main>
 </body>
 </html>

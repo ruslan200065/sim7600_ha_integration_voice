@@ -153,9 +153,9 @@ An unverified microphone is **not** advertised as a working Assist Satellite. Na
 
 ## Family profiles and reminders
 
-Open **Семья, память и напоминания** in the JARVIS panel. Enter one profile per line as
-`name | number | entity IDs separated by spaces | gate entity | personal calendar | person entity`. Only the name and number
-are required. Keep the legacy owner number in its own field. Save and restart the add-on.
+Open **Семья** and choose **Добавить участника**. Enter the person's name and number.
+Choose devices, a gate, a personal calendar or a person entity through the searchable pickers.
+The owner number is in **Звонки**. Choose **Применить** to save and restart the add-on.
 Family callers can read and use supported controls for the entities assigned to their profile.
 A gate can be a dedicated `cover`, `lock`, `button` or `script`. The gate code is optional. When configured, enter the digits followed by `#` on the phone
 keypad or say the digits. Press `*` to clear keypad input. Gate access remains limited to
