@@ -8,6 +8,7 @@ import serial
 
 LOG = logging.getLogger(__name__)
 NUMBER = re.compile(r"^\+?[0-9]{7,16}$")
+CALL_END = {"NO CARRIER", "BUSY", "NO ANSWER", "NO DIALTONE"}
 
 
 class Modem:
@@ -19,10 +20,11 @@ class Modem:
         self.serial = None
         self.lock = asyncio.Lock()
         self.pending = None
-        self.response = []
+        self.pending_command = ""
         self.reader_task = None
         self.call_state = "offline"
         self.active_number = ""
+        self.call_id = 0
         self.calls = []
         self.signal = None
         self.model = ""
@@ -51,9 +53,10 @@ class Modem:
 
     async def _supervise(self):
         while True:
+            rx = None
+            disconnected = False
             try:
                 self.serial = serial.Serial(self.port, self.baudrate, timeout=0.15, write_timeout=2)
-                self.call_state = "idle"
                 rx = asyncio.create_task(self._reader())
                 await asyncio.sleep(0.3)
                 await self.command("ATE0")
@@ -61,10 +64,13 @@ class Modem:
                 await self.command("AT+CLIP=1")
                 self.model = " ".join((await self.command("AT+CGMM"))[:-1]).strip()
                 self.firmware = " ".join((await self.command("AT+CGMR"))[:-1]).strip()
+                self.call_state = "idle"
                 LOG.info("SIM7600 connected: %s %s", self.model, self.firmware)
                 await self._emit("modem_connected", model=self.model, firmware=self.firmware)
                 while True:
-                    await asyncio.sleep(15)
+                    done, _ = await asyncio.wait({rx}, timeout=15)
+                    if done:
+                        rx.result()
                     res = await self.command("AT+CSQ", timeout=3)
                     for line in res:
                         if line.startswith("+CSQ:"):
@@ -73,79 +79,108 @@ class Modem:
                 break
             except Exception:
                 LOG.exception("SIM7600 disconnected; retrying")
-                self.call_state = "offline"
-                await self._emit("modem_offline")
+                disconnected = True
             finally:
-                if "rx" in locals():
-                    rx.cancel()
-                    try:
-                        await rx
-                    except asyncio.CancelledError:
-                        pass
-                    del rx
-                if self.serial:
-                    self.serial.close()
-                    self.serial = None
+                self.call_state = "offline"
+                self.active_number = ""
+                self.signal = None
+                port, self.serial = self.serial, None
                 if self.pending and not self.pending.done():
                     self.pending.set_exception(ConnectionError("Modem disconnected"))
-                    self.pending = None
+                if rx:
+                    rx.cancel()
+                    await asyncio.gather(rx, return_exceptions=True)
+                if port:
+                    port.close()
+            if disconnected:
+                await self._emit("modem_offline")
             await asyncio.sleep(5)
 
     async def _reader(self):
+        port = self.serial
+        partial = b""
+        response = []
+        previous = None
         while True:
-            line = await asyncio.to_thread(self.serial.readline)
+            line = await asyncio.to_thread(port.readline)
             if not line:
-                await asyncio.sleep(0)
                 continue
-            value = line.decode("utf-8", "replace").strip()
+            partial += line
+            if not partial.endswith(b"\n"):
+                continue
+            value = partial.decode("utf-8", "replace").strip()
+            partial = b""
             if not value:
                 continue
-            if value in ("RING", "NO CARRIER", "BUSY") or value.startswith(
-                ("VOICE CALL:", "+CLIP:", "+CME ERROR:", "+CLCC:")
-            ):
-                asyncio.create_task(self._urc(value))
-            if self.pending:
-                self.response.append(value)
-                if value in ("OK", "ERROR", "NO CARRIER") or value.startswith("+CME ERROR:"):
-                    future = self.pending
-                    self.pending = None
-                    if not future.done():
-                        future.set_result(self.response[:])
-            else:
+            if value == "RING" or value.startswith(("VOICE CALL:", "+CLIP:")):
+                await self._urc(value)
+                continue
+            future = self.pending
+            if value in CALL_END:
+                if future and not future.done() and self.pending_command.startswith(
+                    ("ATD", "ATA", "AT+CHUP")
+                ):
+                    future.set_result([value])
+                await self._urc(value)
+                continue
+            if future is None or future.done():
                 LOG.debug("Modem unsolicited: %s", value)
+                continue
+            if future is not previous:
+                response = []
+                previous = future
+            if value != self.pending_command:
+                response.append(value)
+            if value in ("OK", "ERROR") or value.startswith(
+                ("+CME ERROR:", "+CMS ERROR:")
+            ):
+                future.set_result(response)
 
     async def _urc(self, value):
-        if value.startswith("+CLIP:"):
+        if value.startswith("+CLIP:") and self.call_state == "ringing":
             match = re.search(r'"([^"]+)"', value)
             if match:
                 self.active_number = match.group(1)
-        elif value == "RING":
+                await self._emit("caller_id", number=self.active_number)
+        elif value == "RING" and self.call_state == "idle":
+            self.call_id += 1
+            self.active_number = ""
             self.call_state = "ringing"
             await self._emit("incoming_call", number=self.active_number)
-        elif "VOICE CALL: BEGIN" in value:
+        elif value.startswith("VOICE CALL: BEGIN") and self.call_state in ("dialing", "answering"):
             self.call_state = "connected"
             await self._emit("call_connected", number=self.active_number)
-        elif value in ("NO CARRIER", "BUSY") or "VOICE CALL: END" in value:
-            previous = self.call_state
+        elif (value in CALL_END or value.startswith("VOICE CALL: END")) and self.call_state not in (
+            "offline", "idle"
+        ):
             self.call_state = "idle"
             self.active_number = ""
-            if previous in ("connected", "dialing", "ringing"):
-                await self._emit("call_ended", reason=value)
+            await self._emit("call_ended", reason=value)
 
-    async def command(self, cmd, timeout=6):
+    async def command(self, cmd, timeout=6, *, expected_call=None):
         if not re.fullmatch(r"[\x20-\x7e]+", cmd) or "\r" in cmd or "\n" in cmd:
             raise ValueError("Unsafe AT command")
         async with self.lock:
-            if not self.serial or not self.serial.is_open:
+            port = self.serial
+            if not port or not port.is_open:
                 raise ConnectionError("Modem is offline")
+            if expected_call is not None and expected_call != (self.call_id, self.call_state):
+                raise RuntimeError("Call state changed before the command could be sent")
             loop = asyncio.get_running_loop()
-            self.response = []
-            self.pending = loop.create_future()
+            future = self.pending = loop.create_future()
+            self.pending_command = cmd
             try:
-                await asyncio.to_thread(self.serial.write, (cmd + "\r").encode("ascii"))
-                return await asyncio.wait_for(self.pending, timeout)
+                await asyncio.to_thread(port.write, (cmd + "\r").encode("ascii"))
+                return await asyncio.wait_for(asyncio.shield(future), timeout)
+            except (TimeoutError, serial.SerialException, asyncio.CancelledError):
+                if not future.done():
+                    # A late terminal response must not complete the next command.
+                    port.close()
+                raise
             finally:
+                future.cancel()
                 self.pending = None
+                self.pending_command = ""
 
     async def dial(self, number):
         if not NUMBER.fullmatch(number):
@@ -156,35 +191,54 @@ class Modem:
         self.calls = [x for x in self.calls if now - x < 3600]
         if len(self.calls) >= self.max_calls_per_hour:
             raise RuntimeError("Hourly call limit reached")
+        self.call_id += 1
+        call = (self.call_id, "dialing")
         self.active_number = number
         self.call_state = "dialing"
         try:
-            lines = await self.command("ATD" + number + ";", timeout=12)
-            if any(x in ("ERROR", "NO CARRIER") or x.startswith("+CME ERROR:") for x in lines):
-                self.call_state = "idle"
+            lines = await self.command("ATD" + number + ";", timeout=12, expected_call=call)
+            if lines[-1] != "OK":
                 raise RuntimeError("Dial failed: " + " ".join(lines))
             self.calls.append(now)
-            await self._emit("call_dialing", number=number)
-        except Exception:
-            self.call_state = "idle"
+            if (self.call_id, self.call_state) == call:
+                await self._emit("call_dialing", number=number)
+        except (Exception, asyncio.CancelledError):
+            if (self.call_id, self.call_state) == call:
+                self.call_state = "idle"
+                self.active_number = ""
             raise
 
     async def answer(self):
         if self.call_state != "ringing":
             raise RuntimeError("No incoming call")
-        return await self.command("ATA")
+        self.call_state = "answering"
+        call = (self.call_id, "answering")
+        try:
+            lines = await self.command("ATA", expected_call=call)
+            if lines[-1] != "OK":
+                raise RuntimeError("Answer failed: " + " ".join(lines))
+            return lines
+        except (Exception, asyncio.CancelledError):
+            if (self.call_id, self.call_state) == call:
+                self.call_state = "ringing"
+            raise
 
     async def hangup(self):
-        if self.call_state == "offline":
+        if self.call_state in ("offline", "idle"):
             return
-        await self.command("AT+CHUP", timeout=5)
-        await self._urc("NO CARRIER")
+        call = (self.call_id, self.call_state)
+        lines = await self.command("AT+CHUP", timeout=5, expected_call=call)
+        if lines[-1] not in ("OK", "NO CARRIER"):
+            raise RuntimeError("Hangup failed: " + " ".join(lines))
+        if self.call_id == call[0]:
+            await self._urc("NO CARRIER")
 
     async def enable_pcm(self):
         # These commands generally fail when no voice call is active.
         if self.call_state != "connected":
             raise RuntimeError("No connected call")
+        call = (self.call_id, "connected")
         for cmd in ("AT+CPCMFRM=1", "AT+CPCMREG=1"):
-            result = await self.command(cmd)
+            result = await self.command(cmd, expected_call=call)
             if not result or result[-1] != "OK":
                 raise RuntimeError(cmd + " unsupported by firmware: " + str(result))

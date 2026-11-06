@@ -1,6 +1,6 @@
 """Tests für den SIM7600 Konfigurations-Flow."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant import config_entries, data_entry_flow
@@ -34,6 +34,20 @@ def mock_serial():
     """Mock für serial.Serial."""
     with patch("serial.Serial") as mock:
         yield mock
+
+
+@pytest.fixture(autouse=True)
+def mock_async_serial():
+    """Keep entry setup from registering a mock file descriptor with asyncio."""
+    reader = AsyncMock()
+    reader.readline.return_value = b"OK\r\n"
+    writer = MagicMock()
+    writer.drain = AsyncMock()
+    writer.wait_closed = AsyncMock()
+    with patch(
+        "serial_asyncio_fast.open_serial_connection", return_value=(reader, writer)
+    ):
+        yield
 
 
 # --- Bestehende Tests ---

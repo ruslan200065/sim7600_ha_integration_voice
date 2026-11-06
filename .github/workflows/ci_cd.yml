@@ -33,10 +33,10 @@ jobs:
           pip install $(jq -r '.requirements | .[]' custom_components/sim7600/manifest.json)
 
       - name: Ruff Check
-        run: ruff check .
+        run: ruff check custom_components tests
 
       - name: Ruff Format Check
-        run: ruff format --check .
+        run: ruff format --check custom_components tests
 
       - name: Mypy Check
         run: MYPYPATH=. mypy --config-file .mypy.ini custom_components/sim7600

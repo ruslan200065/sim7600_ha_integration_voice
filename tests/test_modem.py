@@ -309,12 +309,10 @@ async def test_send_sms_error_response(modem: SIM7600Modem) -> None:
 
 async def test_send_sms_timeout_on_prompt(modem: SIM7600Modem) -> None:
     """Kein >-Prompt innerhalb des Timeouts → False."""
-    import asyncio
-
     mock_reader = AsyncMock()
     mock_writer = MagicMock()
     mock_writer.drain = AsyncMock()
-    mock_reader.readuntil.side_effect = [b"OK\r\n", asyncio.TimeoutError()]
+    mock_reader.readuntil.side_effect = [b"OK\r\n", TimeoutError()]
     modem._reader = mock_reader
     modem._writer = mock_writer
 

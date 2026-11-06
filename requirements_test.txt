@@ -8,5 +8,6 @@ serialx
 aioesphomeapi
 pyserial
 pyserial-asyncio-fast
+pyudev; sys_platform == "linux"
 safety
 pip-licenses

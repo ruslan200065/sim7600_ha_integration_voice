@@ -63,7 +63,7 @@ class Sim7600ConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> Sim7600OptionsFlow:
         """Return the options flow handler."""
-        return Sim7600OptionsFlow(config_entry)
+        return Sim7600OptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -159,10 +159,6 @@ class Sim7600OptionsFlow(OptionsFlow):
     Erlaubt die nachträgliche Änderung von polling_interval, gnss_interval
     und debug_mode ohne Neu-Konfiguration der seriellen Verbindung.
     """
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize the options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None

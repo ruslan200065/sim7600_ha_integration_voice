@@ -15,7 +15,7 @@ This project adds an **independent Home Assistant App** to the HACS integration,
 - This release is **not confirmed end-to-end** on the user's SIM7600E firmware, SIM network, or Yandex Q1. A verified SIM7600G-H can expose raw 16k PCM on ttyUSB4; SIM7600E firmware may differ.
 - The audio driver assumes /dev/ttyUSB4 delivers unframed, little-endian 16-bit 16kHz mono PCM. A positive AT command response does **not** prove usable audio. Confirm with hardware first.
 - Voice interaction currently uses VAD turns (half-duplex), not interruption/barge-in. STT on phone and optionally Q1 microphone streams PCM chunks to SpeechKit while the user is speaking, after local voice detection. The phone call is still half-duplex (no barge-in).
-- Phone-call audio and Q1 microphone/speaker are **not the same device**. USB UVC video does not imply UAC audio. Q1 audio output/input not wired up yet. Camera via HA camera entity works separately.
+- Phone-call PCM and local Q1 audio use separate devices. Check the playback and capture devices listed by `/q1/probe` before setting the optional ALSA devices.
 - Home Assistant service calling is restricted to explicitly allowlisted entity IDs and light/switch/cover safe operations; no locks, alarms or arbitrary shell execution. Other operations need intentional code changes.
 - SpeechKit/DeepSeek API calls are billable. No credentials are committed to GitHub.
 - Incoming caller ID may differ by operator and firmware. Auto-answer defaults to false. Don't enable until tested.
@@ -71,7 +71,7 @@ Uses SpeechKit API v3 via gRPC and generates official protobuf bindings during t
 
 ## Camera integration
 Connect the Q1 UVC camera to HA through a compatible camera provider (e.g. go2rtc/FFmpeg, if your installation exposes UVC to it). Set \`camera_entity: camera.yandex_q1\` (actual entity ID may differ).
-Alternatively set `q1_video_device: /dev/video0` for direct UVC capture if accessible. For audio, configure `q1_mic_device` and `q1_speaker_device` with valid ALSA devices; these require Q1 hardware to expose actual audio interfaces. The LLM only fetches a single snapshot when it calls \`see_camera\`, not constant video. Avoid putting private camera sources on a public URL.
+Alternatively set `q1_video_device` to the camera's `/dev/v4l/by-id/…-video-index0` path or the corresponding `/dev/videoN` node for direct UVC capture. Use `/q1/probe` to check that the selected node exposes video formats. Configure `q1_mic_device` and `q1_speaker_device` using the capture and playback lists, respectively. DeepSeek can request a single snapshot using `see_camera`.
 
 ## Diagnostics
 - /health says offline: check SIM7600 USB mode and App device permissions.

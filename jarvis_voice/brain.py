@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import asyncio
+import os
 import aiohttp
 from q1_hardware import snapshot as q1_snapshot
 
@@ -20,8 +21,14 @@ class Brain:
         self.options = options
         self.http = session
         self.hass_url = "http://supervisor/core"
-        self.hass_token = __import__("os").environ.get("SUPERVISOR_TOKEN", "")
-        self.history = [{"role":"system","content":options["system_prompt"] + " Ответы для телефона: максимум два коротких предложения, кроме случаев уточнения."}]
+        self.hass_token = os.environ.get("SUPERVISOR_TOKEN", "")
+        prompt = options.get("system_prompt") or "Ты Джарвис, русскоязычный голосовой ассистент."
+        self.system_message = {
+            "role": "system",
+            "content": prompt + " Ответы для телефона: максимум два коротких предложения, кроме случаев уточнения.",
+        }
+        self.history = []
+        self.lock = asyncio.Lock()
 
     def _allowed(self, entity):
         return entity in self.options.get("allowed_entities", [])
@@ -73,15 +80,20 @@ class Brain:
         return "Unknown tool"
 
     async def reply(self, phrase):
-        self.history.append({"role":"user","content":phrase})
-        self.history = self.history[:1]+self.history[-18:]
+        async with self.lock:
+            return await self._reply(phrase)
+
+    async def _reply(self, phrase):
         key = self.options.get("deepseek_api_key", "")
         if not key:
             return "Ключ DeepSeek не настроен."
+        user_message = {"role": "user", "content": phrase}
+        messages = [self.system_message, *self.history, user_message]
         try:
             for _ in range(4):
                 payload={"model":self.options.get("deepseek_model","deepseek-flash"),
-                         "messages":self.history,"tools":TOOLS,"tool_choice":"auto",
+                         "messages":messages,"tools":TOOLS,"tool_choice":"auto",
+                         "thinking":{"type":"disabled"},
                          "max_tokens":350,"temperature":0.4}
                 async with self.http.post("https://api.deepseek.com/chat/completions",json=payload,
                     headers={"Authorization":"Bearer "+key},
@@ -89,22 +101,27 @@ class Brain:
                     response.raise_for_status()
                     data=await response.json()
                 msg=data["choices"][0]["message"]
-                self.history.append(msg)
+                messages.append(msg)
                 calls=msg.get("tool_calls") or []
                 if not calls:
                     answer=msg.get("content") or "Не удалось сформировать ответ."
+                    self.history = [
+                        *self.history[-16:], user_message, {"role": "assistant", "content": answer}
+                    ]
                     return answer[:1500]
+                images = []
                 for call in calls:
                     name=call["function"]["name"]
                     args=json.loads(call["function"].get("arguments") or "{}")
                     result=await self._tool(name,args)
                     if isinstance(result,dict) and "image" in result:
                         # Image content MUST be a new user message, not a tool result.
-                        self.history.append({"role":"tool","tool_call_id":call["id"],"content":"Кадр получен; смотри следующее сообщение пользователя."})
-                        self.history.append({"role":"user","content":[{"type":"text","text":result["question"]},
+                        messages.append({"role":"tool","tool_call_id":call["id"],"content":"Кадр получен; смотри следующее сообщение пользователя."})
+                        images.append({"role":"user","content":[{"type":"text","text":result["question"]},
                             {"type":"image_url","image_url":{"url":result["image"],"detail":"low"}}]})
                     else:
-                        self.history.append({"role":"tool","tool_call_id":call["id"],"content":json.dumps(result,ensure_ascii=False,default=str)[:3000]})
+                        messages.append({"role":"tool","tool_call_id":call["id"],"content":json.dumps(result,ensure_ascii=False,default=str)[:3000]})
+                messages.extend(images)
             return "Не удалось завершить команду, повторите запрос."
         except Exception:
             LOG.exception("DeepSeek request failed")

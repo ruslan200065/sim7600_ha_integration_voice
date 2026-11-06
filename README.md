@@ -27,7 +27,7 @@ This custom integration allows you to connect a SIM7600 4G & GPS module to Home 
 ### Via HACS (Recommended)
 1. Open HACS in your Home Assistant.
 2. Click the three dots (⋮) in the top right -> **Custom repositories**.
-3. Add `https://github.com/tschoor/sim7600_ha_integration` as category **Integration**.
+3. Add `https://github.com/ruslan200065/sim7600_ha_integration_voice` as category **Integration**.
 4. Search for "SIM7600 4G & GPS Gateway" and click **Download**.
 5. Restart Home Assistant.
 
@@ -65,7 +65,7 @@ See [docs/Q1_HARDWARE.md](docs/Q1_HARDWARE.md) and [jarvis_voice/README.md](jarv
 
 **Experimental hardware:** The stock Q1 archive does not demonstrate microphone input or phone-call PCM transfer on this SIM7600E firmware. Do not run both this App and the original HACS integration against the same AT port.
 
-## JARVIS Q1 companion Home Assistant integration (v0.3.0)
+## JARVIS Q1 companion Home Assistant integration
 
 The `jarvis_voice` Home Assistant App now bundles and **auto-installs** its matching custom integration `jarvis_q1` (option `auto_install_integration: true`). Start the App, restart Home Assistant Core once, then confirm **JARVIS Q1 Voice Gateway** under discovered integrations in Devices & Services. No separate HACS installation or manual copying is needed.
 

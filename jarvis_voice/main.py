@@ -39,6 +39,8 @@ class Server:
         self.speech = None
         self.brain = None
         self.session = None
+        self.session_lock = asyncio.Lock()
+        self.auto_answer_task = None
         self.mode = "booting"
         self.last_error = ""
         self.events = []
@@ -56,17 +58,24 @@ class Server:
         self.mic_lock=asyncio.Lock()
         self.speaker_lock=asyncio.Lock()
         self.speaking = asyncio.Lock()
-        self.next_prompt = ""
+        self.next_prompt = None
 
     async def setup(self):
         self.http = ClientSession()
         self.brain = Brain(self.o,self.http)
         if self.o.get("yandex_api_key"):
-            self.speech = SpeechKit(self.o["yandex_api_key"],self.o.get("yandex_voice","jane"))
+            self.speech = SpeechKit(
+                self.o["yandex_api_key"],
+                self.o.get("yandex_voice", "denis"),
+                self.o.get("yandex_role", "neutral"),
+            )
         await self.modem.start()
         self.mode = "ready"
 
     async def close(self):
+        if self.auto_answer_task:
+            self.auto_answer_task.cancel()
+            await asyncio.gather(self.auto_answer_task, return_exceptions=True)
         if self.session:
             self.session.cancel()
             try:
@@ -85,33 +94,46 @@ class Server:
         self.events.append({"name":name,"data":data})
         self.events=self.events[-25:]
         LOG.info("JARVIS event: %s",name)
-        if name == "incoming_call":
-            # Caller ID often arrives a moment after RING.
-            if self.o.get("auto_answer",False):
-                asyncio.create_task(self._maybe_answer())
-        if name == "call_connected":
-            asyncio.create_task(self._start_session())
+        if name == "modem_connected":
+            self.mode = "ready"
+        if (
+            name == "caller_id"
+            and self.o.get("auto_answer")
+            and self.o.get("allowed_number") == data["number"]
+            and (not self.auto_answer_task or self.auto_answer_task.done())
+        ):
+            self.auto_answer_task = asyncio.create_task(
+                self._maybe_answer(self.modem.call_id)
+            )
+        if name == "call_connected" and self.speech:
+            call_id = self.modem.call_id
+            prompt = ""
+            if self.next_prompt and self.next_prompt[0] == call_id:
+                _, prompt = self.next_prompt
+            self.next_prompt = None
+            self.session = asyncio.create_task(self._start_session(call_id, prompt))
         if name in ("call_ended","modem_offline"):
-            if self.session:
+            self.next_prompt = None
+            if self.session and self.session is not asyncio.current_task() and not self.session.cancelling():
                 self.session.cancel()
-                self.session = None
-            await self.audio.stop()
             self.mode="ready" if name=="call_ended" else "offline"
 
-    async def _maybe_answer(self):
-        await asyncio.sleep(1)
-        number=self.modem.active_number
-        allowed=self.o.get("allowed_number","")
-        if not allowed or number!=allowed:
-            LOG.warning("Ignoring incoming call: caller not on allowlist")
+    async def _maybe_answer(self, call_id):
+        if (
+            self.modem.call_id != call_id
+            or self.modem.call_state != "ringing"
+            or self.modem.active_number != self.o.get("allowed_number")
+        ):
             return
-        if self.modem.call_state=="ringing":
+        try:
             await self.modem.answer()
+        except (RuntimeError, ConnectionError, OSError):
+            LOG.exception("Automatic answer failed")
 
-    async def _start_session(self):
-        if self.session and not self.session.done():
-            return
-        self.session=asyncio.create_task(self._dialog())
+    async def _start_session(self, call_id, prompt):
+        async with self.session_lock:
+            if (self.modem.call_id, self.modem.call_state) == (call_id, "connected"):
+                await self._dialog(prompt)
 
     async def _say(self, text):
         if not self.speech:
@@ -120,17 +142,13 @@ class Server:
             async for pcm in self.speech.synthesize(text):
                 await self.audio.write(pcm)
 
-    async def _dialog(self):
+    async def _dialog(self, prompt):
         try:
             self.mode="starting_audio"
             await self.modem.enable_pcm()
             await self.audio.start()
-            if not self.speech:
-                raise RuntimeError("Configure Yandex API key for dialog")
             self.mode="talking"
-            prompt=self.next_prompt or "Здравствуйте. Это Джарвис. Слушаю вас."
-            self.next_prompt = ""
-            await self._say(prompt)
+            await self._say(prompt or "Здравствуйте. Это Джарвис. Слушаю вас.")
             # Half-duplex prevents false STT caused by remote playback echo.
             while self.modem.call_state=="connected":
                 while not self.audio.queue.empty():
@@ -188,22 +206,36 @@ class Server:
         prompt=str(data.get("prompt","")).strip()
         if len(prompt)>1200:
             raise web.HTTPBadRequest(text="prompt too long")
-        self.next_prompt=prompt
+        if self.modem.call_state != "idle":
+            raise web.HTTPConflict(text="Modem is busy or offline")
+        pending_prompt = self.next_prompt = (self.modem.call_id + 1, prompt)
         try:
             await self.modem.dial(number)
             return web.json_response({"ok":True,"state":self.modem.call_state})
-        except (RuntimeError,ValueError,ConnectionError) as exc:
-            raise web.HTTPConflict(text=str(exc))
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise web.HTTPConflict(text=str(exc)) from exc
+        finally:
+            if self.next_prompt is pending_prompt and (
+                self.modem.call_id, self.modem.call_state
+            ) != (pending_prompt[0], "dialing"):
+                self.next_prompt = None
+            raise
 
     async def hangup(self, request):
-        await self.modem.hangup()
+        try:
+            await self.modem.hangup()
+        except (RuntimeError, OSError) as exc:
+            raise web.HTTPConflict(text=str(exc)) from exc
         return web.json_response({"ok":True})
 
     async def answer(self, request):
         # Explicit answer still requires caller ID.
         if not self.o.get("allowed_number") or self.modem.active_number != self.o["allowed_number"]:
             raise web.HTTPForbidden(text="Caller not allowlisted")
-        await self.modem.answer()
+        try:
+            await self.modem.answer()
+        except (RuntimeError, OSError) as exc:
+            raise web.HTTPConflict(text=str(exc)) from exc
         return web.json_response({"ok":True})
 
     async def chat(self, request):
@@ -239,6 +271,7 @@ class Server:
         answer=await self.brain.reply(phrase)
         if self.o.get("q1_speaker_device"):
             async with self.speaker_lock:
+                await self.media.stop()
                 await play_stream(self.o["q1_speaker_device"],self.speech.synthesize(answer))
         return web.json_response({"recognized":phrase,"response":answer})
 
@@ -252,6 +285,7 @@ class Server:
         if not text or len(text)>2000:
             raise web.HTTPBadRequest(text="text must be 1..2000 chars")
         async with self.speaker_lock:
+            await self.media.stop()
             await play_stream(self.o["q1_speaker_device"],self.speech.synthesize(text))
         return web.json_response({"ok":True})
 
@@ -304,15 +338,17 @@ class Server:
     async def q1_play_media(self,request):
         data=await request.json()
         try:
-            await self.media.play(str(data.get("url","")),
-                self.o.get("q1_speaker_device",""),
-                self.o.get("media_allowed_hosts",["homeassistant","supervisor","homeassistant.local"]))
+            async with self.speaker_lock:
+                await self.media.play(self.http, str(data.get("url","")),
+                    self.o.get("q1_speaker_device",""),
+                    self.o.get("media_allowed_hosts",["homeassistant","supervisor","homeassistant.local"]))
         except (ValueError,RuntimeError) as exc:
             raise web.HTTPBadRequest(text=str(exc))
         return web.json_response({"ok":True,"playing":True})
 
     async def q1_stop_media(self,request):
-        await self.media.stop()
+        async with self.speaker_lock:
+            await self.media.stop()
         return web.json_response({"ok":True})
 
     async def q1_mic_stream(self,request):
@@ -333,8 +369,8 @@ class Server:
                 "Content-Type":"application/octet-stream",
                 "X-Audio-Format":"s16le;rate=16000;channels=1",
                 "Cache-Control":"no-store"})
-            await response.prepare(request)
             try:
+                await response.prepare(request)
                 end=asyncio.get_running_loop().time()+seconds
                 while asyncio.get_running_loop().time()<end:
                     frame=await asyncio.wait_for(proc.stdout.read(3200),timeout=4)

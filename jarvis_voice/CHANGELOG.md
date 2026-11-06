@@ -1,3 +1,9 @@
+## 0.3.1 (experimental)
+- Fix the startup crash under s6 by installing SpeechKit gRPC modules into the Python virtual environment and restoring the add-on environment at launch.
+- Recover from AT-port read errors and timeouts, distinguish call failures from other AT replies, and bind prompts and caller authorization to the current call.
+- Validate HTTP media redirects against the configured hosts and isolate FFmpeg from network and file access.
+- Keep concurrent DeepSeek requests and incomplete tool exchanges from corrupting conversation history.
+- Support stable camera paths under `/dev/v4l/by-id` and read GPS speed from the correct modem response field.
 
 ## 0.3.0 (experimental)
 - App bundle contains an auto-installable, dedicated `jarvis_q1` companion custom integration.

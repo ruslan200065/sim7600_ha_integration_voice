@@ -46,7 +46,11 @@ class SIM7600Modem:
             self._reader = None
             self._writer = None
 
-    async def send_command(self, command: str, timeout: float = 5.0) -> list[str]:
+    async def send_command(
+        self,
+        command: str,
+        timeout: float = 5.0,  # noqa: ASYNC109
+    ) -> list[str]:
         """Send an AT command and return the response lines."""
         async with self._lock:
             await self.connect()
@@ -59,19 +63,19 @@ class SIM7600Modem:
 
             lines = []
             try:
-                while True:
-                    line_bytes = await asyncio.wait_for(
-                        self._reader.readline(), timeout
-                    )
-                    line = line_bytes.decode().strip()
-                    if self.debug:
-                        LOGGER.log(5, "Trace: Raw line: %s", line)
-                    if not line:
-                        continue
-                    lines.append(line)
-                    if line in ("OK", "ERROR"):
-                        break
-            except asyncio.TimeoutError:
+                async with asyncio.timeout(timeout):
+                    while line_bytes := await self._reader.readline():
+                        line = line_bytes.decode(errors="replace").strip()
+                        if self.debug:
+                            LOGGER.log(5, "Trace: Raw line: %s", line)
+                        if not line:
+                            continue
+                        lines.append(line)
+                        if line in ("OK", "ERROR") or line.startswith(
+                            ("+CME ERROR:", "+CMS ERROR:")
+                        ):
+                            break
+            except TimeoutError:
                 LOGGER.warning("Timeout waiting for response to: %s", command)
 
             LOGGER.debug("Response: %s", lines)
@@ -175,7 +179,11 @@ class SIM7600Modem:
             # Set text mode
             self._writer.write(b"AT+CMGF=1\r\n")
             await self._writer.drain()
-            await self._reader.readuntil(b"OK\r\n")
+            try:
+                await asyncio.wait_for(self._reader.readuntil(b"OK\r\n"), timeout=5)
+            except (TimeoutError, asyncio.IncompleteReadError):
+                LOGGER.warning("No response to SMS text mode setup")
+                return False
 
             # Start SMS
             LOGGER.debug("Sending SMS to %s", number)
@@ -189,7 +197,7 @@ class SIM7600Modem:
                 )
                 if b"> " not in response:
                     return False
-            except asyncio.TimeoutError:
+            except (TimeoutError, asyncio.IncompleteReadError):
                 LOGGER.warning("Timeout waiting for SMS prompt")
                 return False
 
@@ -199,16 +207,18 @@ class SIM7600Modem:
 
             # Wait for OK
             try:
-                while True:
-                    line_bytes = await asyncio.wait_for(self._reader.readline(), 10)
-                    line = line_bytes.decode().strip()
-                    if line == "OK":
-                        return True
-                    if line == "ERROR":
-                        return False
-            except asyncio.TimeoutError:
+                async with asyncio.timeout(10):
+                    while line_bytes := await self._reader.readline():
+                        line = line_bytes.decode(errors="replace").strip()
+                        if line == "OK":
+                            return True
+                        if line == "ERROR" or line.startswith(
+                            ("+CME ERROR:", "+CMS ERROR:")
+                        ):
+                            return False
+            except TimeoutError:
                 LOGGER.warning("Timeout waiting for SMS confirmation")
-                return False
+            return False
 
     async def get_unread_sms(self) -> list[SmsData]:
         """Check for unread SMS messages and return them with their storage index."""

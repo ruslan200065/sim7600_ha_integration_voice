@@ -19,3 +19,22 @@ jobs:
       - run: python -m compileall -q jarvis_voice
       - run: python -m pip install pyserial pytest aiohttp
       - run: pytest -q jarvis_voice/tests
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Home Assistant add-on
+        run: |
+          base=$(awk '$1 == "amd64:" { print $2 }' jarvis_voice/build.yaml)
+          docker build --build-arg BUILD_FROM="$base" -t jarvis-voice-test jarvis_voice
+      - name: Start through s6 and check health
+        run: |
+          printf '%s\n' '{"auto_install_integration":false,"at_port":"/dev/missing","api_token":"smoke-test","yandex_api_key":"smoke-test"}' > "$RUNNER_TEMP/jarvis-options.json"
+          docker run -d --name jarvis-voice-test -p 127.0.0.1:8099:8099 \
+            -e OPTIONS_PATH=/tmp/jarvis-options.json \
+            -v "$RUNNER_TEMP/jarvis-options.json:/tmp/jarvis-options.json:ro" jarvis-voice-test
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8099/health
+          curl --fail -H 'Authorization: Bearer smoke-test' http://127.0.0.1:8099/status
+      - name: Show container log on failure
+        if: failure()
+        run: docker logs jarvis-voice-test || true

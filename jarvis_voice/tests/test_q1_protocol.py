@@ -30,11 +30,12 @@ class Q1ProtocolTests(unittest.TestCase):
             gps_coordinate("9266.000","N")
 
     def test_gps_info(self):
-        res=parse_gpsinfo(["+CGPSINFO: 5545.0000,N,03737.5000,E,061126,174010.0,120.3,0.0,0.0"])
+        res=parse_gpsinfo(["+CGPSINFO: 5545.0000,N,03737.5000,E,061126,174010.0,120.3,12.5,270.0"])
         self.assertTrue(res["fix"])
         self.assertEqual(res["latitude"],55.75)
         self.assertEqual(res["longitude"],37.625)
         self.assertEqual(res["altitude_m"],120.3)
+        self.assertEqual(res["speed_knots"],12.5)
 
     def test_gps_status_same_at_owner(self):
         modem=FakeModem({"AT+CGPS?":["+CGPS: 1,2","OK"],"AT+CGPSINFO":["+CGPSINFO: ,,,,,,,,","OK"]})

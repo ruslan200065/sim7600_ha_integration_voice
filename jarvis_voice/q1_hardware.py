@@ -39,6 +39,16 @@ ORIGINAL_CONTROLS = {
     "exposure_auto_priority": 0,
 }
 VIDEO_PATH = re.compile(r"^/dev/video[0-9]{1,3}$")
+VIDEO_LINK = re.compile(r"/dev/v4l/by-id/[a-zA-Z0-9_.+-]+-video-index[0-9]+")
+
+
+def camera_device(device):
+    """Resolve a stable udev path only if it points to a V4L2 device node."""
+    if VIDEO_LINK.fullmatch(device):
+        device = os.path.realpath(device)
+    if not VIDEO_PATH.fullmatch(device):
+        raise ValueError("Use /dev/videoN or a /dev/v4l/by-id link to that device")
+    return device
 
 
 async def _run(*args, timeout=8):
@@ -47,10 +57,16 @@ async def _run(*args, timeout=8):
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
+    except (TimeoutError, asyncio.CancelledError) as exc:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         await proc.communicate()
-        raise RuntimeError(f"{args[0]} timed out")
+        if isinstance(exc, TimeoutError):
+            raise RuntimeError(f"{args[0]} timed out") from exc
+        raise
     if proc.returncode:
         raise RuntimeError(f"{args[0]} exit={proc.returncode}: {stderr.decode(errors='replace')[-250:]}")
     return stdout
@@ -100,15 +116,13 @@ async def probe_audio():
 
 
 async def probe_camera(device):
-    if not VIDEO_PATH.fullmatch(device):
-        raise ValueError("Only /dev/videoN paths are permitted")
+    device = camera_device(device)
     return (await _run("v4l2-ctl", "-d", device, "--list-formats-ext", timeout=8)).decode(errors="replace")[:10000]
 
 
 async def snapshot(device):
     """Original Q1 analytics uses uncompressed YUYV 640x480 @30. Try that first."""
-    if not VIDEO_PATH.fullmatch(device):
-        raise ValueError("Only /dev/videoN paths are permitted")
+    device = camera_device(device)
     presets = [
         ("-input_format", "yuyv422", "-video_size", "640x480", "-framerate", "30"),
         ("-video_size", "640x480"),
@@ -131,8 +145,7 @@ async def snapshot(device):
 
 async def apply_original_camera_controls(device):
     """Opt-in copy of camera.opts values; never applied at service start."""
-    if not VIDEO_PATH.fullmatch(device):
-        raise ValueError("Only /dev/videoN paths are permitted")
+    device = camera_device(device)
     results = {}
     for control, value in ORIGINAL_CONTROLS.items():
         try:
@@ -145,9 +158,9 @@ async def apply_original_camera_controls(device):
 
 async def diagnostics(camera=""):
     result = {"usb_devices": list_usb(), "serial_ports": list_serial(),
-              "video_nodes": sorted(glob.glob("/dev/video*")),
+              "video_nodes": sorted(glob.glob("/dev/video*") + glob.glob("/dev/v4l/by-id/*")),
               "audio": await probe_audio()}
-    if camera and VIDEO_PATH.fullmatch(camera) and os.path.exists(camera):
+    if camera:
         try:
             result["video_formats"] = await probe_camera(camera)
         except Exception as exc:

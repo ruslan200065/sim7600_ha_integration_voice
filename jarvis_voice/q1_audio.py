@@ -40,7 +40,7 @@ async def play_stream(device, stream):
         raise RuntimeError("q1_speaker_device not set")
     proc=await asyncio.create_subprocess_exec(
         "aplay","-q","-D",device,"-f","S16_LE","-r","16000","-c","1",
-        stdin=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+        stdin=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
     try:
         async for frame in stream:
             proc.stdin.write(frame)
@@ -49,11 +49,13 @@ async def play_stream(device, stream):
         await proc.wait()
         if proc.returncode:
             raise RuntimeError("aplay failed")
-    except Exception:
+    finally:
         if proc.returncode is None:
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
             await proc.wait()
-        raise
 
 
 async def recognize_microphone_live(speech, device, timeout=12):

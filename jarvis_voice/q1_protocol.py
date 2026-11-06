@@ -53,8 +53,8 @@ def parse_gpsinfo(lines):
                 data["time_utc"] = fields[5] or None
             if len(fields) > 6 and fields[6]:
                 data["altitude_m"] = float(fields[6])
-            if len(fields) > 8 and fields[8]:
-                data["speed_knots"] = float(fields[8])
+            if len(fields) > 7 and fields[7]:
+                data["speed_knots"] = float(fields[7])
             return data
         except (ValueError, IndexError):
             return {"fix": False, "error": "invalid_gpsinfo"}
