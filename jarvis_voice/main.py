@@ -301,16 +301,17 @@ class Server:
                          "configured_at_port":self.modem.port}
         return web.json_response(result)
 
-    async def capture_camera(self):
-        device=self.o.get("q1_video_device","")
+    async def capture_camera(self, device=None):
+        if device is None:
+            device = self.o.get("q1_video_device", "")
         if not device:
             raise RuntimeError("Configure q1_video_device")
         async with self.camera_lock:
             now = asyncio.get_running_loop().time
-            if self.camera_frame and now() - self.camera_frame[0] < 1:
-                return self.camera_frame[1]
+            if self.camera_frame and self.camera_frame[0] == device and now() - self.camera_frame[1] < 1:
+                return self.camera_frame[2]
             content = await snapshot(device)
-            self.camera_frame = (now(), content)
+            self.camera_frame = (device, now(), content)
             return content
 
     async def q1_snapshot(self,request):

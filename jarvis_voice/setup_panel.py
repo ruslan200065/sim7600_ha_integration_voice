@@ -276,7 +276,25 @@ class SetupPanel:
         check = request.match_info["check"]
         try:
             if check == "camera":
-                jpeg = await service.capture_camera()
+                device = None
+                if request.can_read_body:
+                    data = await request.json()
+                    if not isinstance(data, dict) or not isinstance(
+                        data.get("device"), str
+                    ):
+                        raise ValueError("Выберите видеоустройство.")
+                    device = data["device"].strip()
+                    if not device:
+                        raise ValueError("Выберите видеоустройство.")
+                try:
+                    jpeg = await service.capture_camera(device)
+                except RuntimeError as exc:
+                    if "resource busy" in str(exc).lower():
+                        raise RuntimeError(
+                            "Камера занята другим процессом. Выберите другой видеовход "
+                            "или проверьте настройки motionEye и go2rtc."
+                        ) from exc
+                    raise
                 return web.Response(body=jpeg, content_type="image/jpeg")
             if check == "modem":
                 modem = service.modem

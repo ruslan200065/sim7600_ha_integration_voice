@@ -187,7 +187,10 @@ for (const button of document.querySelectorAll("[data-check]")) {
     output.dataset.error = "false";
     button.disabled = true;
     try {
-      const response = await request("checks/" + button.dataset.check, "POST");
+      const input = button.dataset.check === "camera"
+        ? {device: form.elements.namedItem("q1_video_device").value.trim()}
+        : undefined;
+      const response = await request("checks/" + button.dataset.check, "POST", input);
       if (button.dataset.check === "camera") {
         if (snapshotUrl) URL.revokeObjectURL(snapshotUrl);
         snapshotUrl = URL.createObjectURL(await response.blob());

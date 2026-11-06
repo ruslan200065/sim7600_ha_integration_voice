@@ -1,3 +1,6 @@
+## 0.4.1 (experimental)
+- Preview the selected camera before applying settings and show a specific message if another process holds the device.
+
 ## 0.4.0 (experimental)
 - Add a Russian-language setup panel for Home Assistant administrators. It uses the existing Supervisor options and includes camera, modem, GPS, audio and cloud key checks.
 - Add labels and explanations to the standard add-on configuration.
