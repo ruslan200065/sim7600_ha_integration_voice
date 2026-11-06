@@ -1,3 +1,7 @@
+## 0.4.19 (experimental)
+
+- Accept natural requests for camera photos without asking the caller to repeat the command.
+
 ## 0.4.18 (experimental)
 
 - Resolve spoken camera names before capture and prioritize the requested device type.

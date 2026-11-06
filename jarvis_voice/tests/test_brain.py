@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from brain import Brain
+from brain import Brain, photo_requested
 
 
 class BrainTools(unittest.IsolatedAsyncioTestCase):
@@ -99,3 +99,18 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
         await brain._tool("send_camera_photo", {"camera": "двор"}, explicit_photo=True)
         brain._picture.assert_awaited_once_with("camera.yard")
         photo.assert_awaited_once_with("notify.owner", b"image", "image/jpeg")
+
+    def test_natural_photo_requests(self):
+        for phrase in (
+            "Отправить фото с камеры", "Фото с камеры двора, пожалуйста",
+            "Сделай снимок с камеры", "Можно фото с камеры в телегу?",
+            "Кадр с камеры на калитке", "Скинь кадр", "Отправь в телегу",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(photo_requested(phrase))
+        for phrase in (
+            "Посмотри, что на камере", "Опиши кадр с камеры",
+            "Не отправляй фото с камеры", "Не надо делать фото с камеры",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertFalse(photo_requested(phrase))
