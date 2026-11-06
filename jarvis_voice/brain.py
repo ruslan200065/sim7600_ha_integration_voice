@@ -30,7 +30,7 @@ def tool(name, description, required=(), **properties):
 
 
 TOOLS = [
-    tool("find_devices", "Find permitted HA devices by name, alias, room, device type or entity ID. Pass only the relevant search words, e.g. свет гостиная. An empty query lists devices. Use before guessing any entity ID.", query="string"),
+    tool("find_devices", "Find permitted HA devices by name, alias, room, device type or entity ID. Pass only the relevant search words, e.g. свет гостиная. An empty query lists devices. Use before guessing any entity ID. Pass domain=camera for camera queries.", query="string", domain="string"),
     tool("get_entity_state", "Read actual HA state and selected attributes.", ("entity_id",), entity_id="string"),
     tool("call_ha_service", "Control a device with can_control enabled. Use a domain action such as turn_on, open_cover, media_pause or volume_set. For volume_set, supply a level between 0 and 1.", ("service", "entity_id"), domain="string", service="string", entity_id="string", volume_level="number"),
     tool("see_camera", "Inspect an allowed camera snapshot. Omit camera to use this call's camera or the configured Q1 camera.", camera="string", question="string"),
@@ -228,11 +228,16 @@ class Brain:
             }
         return metadata
 
-    async def _find_devices(self, query):
+    async def _find_devices(self, query, domain_filter=None):
         query = str(query).strip()[:120].lower().replace("ё", "е")
         words = set(SEARCH_WORDS.findall(query)) - SEARCH_FILLERS
+        query_stems = {search_stem(word) for word in words}
         rows = await self._ha("GET", "/api/states")
-        visible = [self._state(row) for row in rows if self._visible(row.get("entity_id"))]
+        visible = [
+            self._state(row) for row in rows
+            if self._visible(row.get("entity_id"))
+            and (not domain_filter or row["entity_id"].split(".", 1)[0] == domain_filter)
+        ]
         metadata = await self._registry_metadata({row["entity_id"] for row in visible})
         matches = []
         for row in visible:
@@ -255,7 +260,9 @@ class Brain:
             if words and not matched and query != entity_id:
                 continue
             actions = self._control_actions(entity_id)
-            priority = (query == entity_id, len(matched), len(words & index))
+            type_words = DEVICE_WORDS.get(domain, "").split()
+            requested_type = bool(query_stems & {search_stem(word) for word in type_words})
+            priority = (query == entity_id, len(matched), requested_type, len(words & index))
             matches.append((priority, {
                 "entity_id": entity_id, "state": row["state"], "domain": domain,
                 "name": row.get("friendly_name"), "area": details.get("area"),
@@ -288,7 +295,7 @@ class Brain:
         if not isinstance(arguments, dict):
             return "Некорректные аргументы команды"
         if name == "find_devices":
-            return await self._find_devices(arguments.get("query", ""))
+            return await self._find_devices(arguments.get("query", ""), arguments.get("domain"))
 
         if name in ("see_camera", "send_camera_photo"):
             entity = arguments.get("camera") or camera_entity or self.options.get("camera_entity")
@@ -300,6 +307,14 @@ class Brain:
                 and ENTITY_ID.fullmatch(target)
             ):
                 return "Получатель Telegram не настроен в панели JARVIS"
+            if not isinstance(entity, str) and entity is not None:
+                return "Укажи название камеры"
+            if entity and not ENTITY_ID.fullmatch(entity):
+                matches = await self._find_devices(entity, "camera")
+                if matches["partial_match"] or matches["total"] != 1:
+                    names = [row["name"] or row["entity_id"] for row in matches["devices"][:3]]
+                    return {"error": "Уточни название камеры", "cameras": names}
+                entity = matches["devices"][0]["entity_id"]
             try:
                 picture, mime = await self._camera_picture(entity)
             except (RuntimeError, ValueError, TimeoutError, aiohttp.ClientError) as exc:

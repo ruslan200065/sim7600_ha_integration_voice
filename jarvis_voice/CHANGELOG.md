@@ -1,3 +1,7 @@
+## 0.4.18 (experimental)
+
+- Resolve spoken camera names before capture and prioritize the requested device type.
+
 ## 0.4.17 (experimental)
 
 - Keep call recognition and playback independent of tool execution.

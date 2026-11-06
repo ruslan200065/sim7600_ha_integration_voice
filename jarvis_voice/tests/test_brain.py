@@ -84,3 +84,18 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
         )
         brain._picture.assert_awaited_once_with("camera.gate")
         photo.assert_awaited_once_with("notify.telegram_bot_owner", b"image", "image/jpeg")
+
+    async def test_photo_resolves_camera_name_without_matching_other_domains(self):
+        photo = AsyncMock()
+        brain = Brain({
+            "observe_all_entities": True,
+            "telegram_photo_target": "notify.owner",
+        }, None, None, share_photo=photo)
+        brain._ha = AsyncMock(return_value=[
+            {"entity_id": "camera.yard", "attributes": {"friendly_name": "Камера двора"}},
+            {"entity_id": "binary_sensor.yard", "attributes": {"friendly_name": "Двор"}},
+        ])
+        brain._picture = AsyncMock(return_value=(b"image", "image/jpeg"))
+        await brain._tool("send_camera_photo", {"camera": "двор"}, explicit_photo=True)
+        brain._picture.assert_awaited_once_with("camera.yard")
+        photo.assert_awaited_once_with("notify.owner", b"image", "image/jpeg")
