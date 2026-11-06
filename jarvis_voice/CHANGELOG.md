@@ -1,3 +1,6 @@
+## 0.4.10 (experimental)
+- Release the modem's USB PCM route after each call so later calls can start with a fresh audio route.
+
 ## 0.4.9 (experimental)
 - Add a call playback volume control with a 50% default for JARVIS speech.
 - Retry USB audio registration once when the modem initially rejects it during an active call.

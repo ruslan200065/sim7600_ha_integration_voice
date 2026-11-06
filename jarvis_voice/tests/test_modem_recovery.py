@@ -131,6 +131,16 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
             for entry in self.modem.command.call_args_list
         ))
 
+    async def test_call_end_releases_pcm_using_the_idle_call_guard(self):
+        self.modem.call_state = "connected"
+        self.modem.pcm_call_id = self.modem.call_id
+        self.modem.command = AsyncMock(return_value=["OK"])
+        await self.modem._urc("VOICE CALL: END")
+        await self.modem.pcm_cleanup
+        self.modem.command.assert_awaited_once_with(
+            "AT+CPCMREG=0,1", timeout=2, expected_call=(self.modem.call_id, "idle")
+        )
+
     async def test_phone_diagnostics_expose_ims_support_without_cell_identifiers(self):
         async def command(cmd, **_kwargs):
             return {

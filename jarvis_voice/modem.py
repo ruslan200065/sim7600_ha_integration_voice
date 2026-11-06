@@ -27,6 +27,8 @@ class Modem:
         self.pending = None
         self.pending_command = ""
         self.reader_task = None
+        self.pcm_call_id = None
+        self.pcm_cleanup = None
         self.call_state = "offline"
         self.active_number = ""
         self.call_id = 0
@@ -39,6 +41,9 @@ class Modem:
         self.reader_task = asyncio.create_task(self._supervise())
 
     async def stop(self):
+        if self.pcm_cleanup:
+            self.pcm_cleanup.cancel()
+            await asyncio.gather(self.pcm_cleanup, return_exceptions=True)
         if self.reader_task:
             self.reader_task.cancel()
             try:
@@ -93,6 +98,7 @@ class Modem:
                 disconnected = True
             finally:
                 self.call_state = "offline"
+                self.pcm_call_id = None
                 self.active_number = ""
                 self.signal = None
                 port, self.serial = self.serial, None
@@ -196,6 +202,9 @@ class Modem:
         ):
             self.call_state = "idle"
             self.active_number = ""
+            if self.pcm_call_id == self.call_id:
+                self.pcm_call_id = None
+                self.pcm_cleanup = asyncio.create_task(self._disable_pcm(self.call_id))
             await self._emit("call_ended", reason=value)
 
     async def phone_diagnostics(self):
@@ -366,6 +375,7 @@ class Modem:
         if self.call_state != "connected":
             raise RuntimeError("No connected call")
         call = (self.call_id, "connected")
+        self.pcm_call_id = call[0]
         for cmd in ("AT+CPCMFRM=1", "AT+CPCMREG=1"):
             result = await self.command(cmd, expected_call=call)
             if cmd == "AT+CPCMREG=1" and result and result[-1] != "OK":
@@ -379,3 +389,13 @@ class Modem:
             LOG.info("Modem reports 16 kHz USB call audio")
         else:
             LOG.warning("Could not confirm 16 kHz USB call audio: %s", reported)
+
+    async def _disable_pcm(self, call_id):
+        call = (call_id, "idle")
+        try:
+            result = await self.command("AT+CPCMREG=0,1", timeout=2, expected_call=call)
+            if result[-1] != "OK":
+                LOG.warning("Modem did not release USB call audio: %s", result)
+        except (RuntimeError, OSError) as exc:
+            if (self.call_id, self.call_state) == call:
+                LOG.warning("Could not release USB call audio: %s", exc)
