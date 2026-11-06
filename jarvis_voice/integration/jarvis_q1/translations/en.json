@@ -1,0 +1,24 @@
+{
+  "title": "JARVIS Q1 Voice Gateway",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect JARVIS Q1",
+        "data": {
+          "host": "App hostname",
+          "port": "Port",
+          "token": "API token"
+        }
+      },
+      "hassio_confirm": {
+        "title": "JARVIS Q1 discovered",
+        "description": "Configure camera, speaker, microphone and SIM7600 in Home Assistant?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to App",
+      "invalid_host": "Invalid hostname",
+      "invalid_response": "Unexpected response"
+    }
+  }
+}

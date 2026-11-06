@@ -1,0 +1,25 @@
+{
+  "title": "JARVIS Q1 Voice Gateway",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to JARVIS Q1",
+        "description": "Connect to the local JARVIS Voice App.",
+        "data": {
+          "host": "App hostname or IP",
+          "port": "HTTP port",
+          "token": "App API token"
+        }
+      },
+      "hassio_confirm": {
+        "title": "JARVIS Q1 detected",
+        "description": "Set up JARVIS Q1 with camera, speaker, microphone and SIM7600 controls?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the App. Check its configuration and restart it.",
+      "invalid_host": "Invalid host",
+      "invalid_response": "Unexpected response from App"
+    }
+  }
+}

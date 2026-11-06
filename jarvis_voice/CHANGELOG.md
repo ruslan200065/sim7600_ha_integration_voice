@@ -1,3 +1,13 @@
+
+## 0.3.0 (experimental)
+- App bundle contains an auto-installable, dedicated `jarvis_q1` companion custom integration.
+- Supervisor discovery for one-click HA integration setup after one HA Core restart.
+- Device entities: Q1 snapshot camera, generic media_player, signal/GPS/transcription sensors and action buttons.
+- Optional live Q1 raw microphone PCM endpoint and pure `jarvis_q1.transcribe` STT without DeepSeek.
+- Independent speak/listen/call/LED/GPS services and media-source/TTS audio playback.
+- Security: App-generated random API token, allowlisted media URL hosts, managed marker for safe integration updates.
+- Full Assist satellite, hardware microphone and modem phone PCM still require testing.
+
 # Changelog
 
 ## 0.2.0 (experimental)

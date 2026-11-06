@@ -101,3 +101,18 @@ The original hardware source map is in [docs/Q1_HARDWARE.md](../docs/Q1_HARDWARE
 The App's audio/video/serial mapping no longer assumes both /dev/ttyUSB2 and /dev/ttyUSB4 must always exist. Configure actual device paths. Default LiveTTS is denis / neutral with model livetts; earlier voice jane is incompatible.
 
 The stock archive **proves USB speaker playback** but does not prove an accessible microphone or USB modem call audio. Hardware tests are necessary.
+
+## Bundled companion integration (v0.3.0)
+
+On start the App can copy the companion integration to `/homeassistant/custom_components/jarvis_q1` and publish Supervisor Discovery. After the initial install **restart HA Core once** and confirm the discovered JARVIS Q1 integration; no HACS step is needed. Auto-install requires writable `homeassistant_config` mapping and never overwrites a component not managed by this App. To disable this write access behavior, set `auto_install_integration: false` and use manual setup instead.
+
+The companion adds:
+- `camera` snapshot entity for Q1, `media_player` usable by standard HA TTS/media-source playback.
+- `sensor` for call state, GPS coordinates and latest speech text; `binary_sensor` for GPS fix and configured microphone.
+- `button` for starting voice dialogue, GPS and hanging up.
+- HA actions `jarvis_q1.speak`, `jarvis_q1.listen`, `jarvis_q1.transcribe` (without DeepSeek), call, LED and GPS.
+- Q1 raw PCM microphone access on `/q1/microphone/stream` with authorization and a time limit.
+
+The normal HA media player allows playback from specific HTTP(S) hosts on `media_allowed_hosts`; the host list must contain the hostname/IP used by your Home Assistant URL. See [Companion Integration](../docs/COMPANION_INTEGRATION.md).
+
+An unverified microphone is **not** advertised as a working Assist Satellite. Native voice satellites require additional pipeline/wake word support; do not confuse the microphone capture service with that full integration.

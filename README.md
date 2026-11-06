@@ -64,3 +64,11 @@ https://github.com/ruslan200065/sim7600_ha_integration_voice
 See [docs/Q1_HARDWARE.md](docs/Q1_HARDWARE.md) and [jarvis_voice/README.md](jarvis_voice/README.md).
 
 **Experimental hardware:** The stock Q1 archive does not demonstrate microphone input or phone-call PCM transfer on this SIM7600E firmware. Do not run both this App and the original HACS integration against the same AT port.
+
+## JARVIS Q1 companion Home Assistant integration (v0.3.0)
+
+The `jarvis_voice` Home Assistant App now bundles and **auto-installs** its matching custom integration `jarvis_q1` (option `auto_install_integration: true`). Start the App, restart Home Assistant Core once, then confirm **JARVIS Q1 Voice Gateway** under discovered integrations in Devices & Services. No separate HACS installation or manual copying is needed.
+
+Creates a Q1 camera, general-purpose `media_player` speaker, cellular/GPS sensors, microphone transcript sensor and buttons. HA actions include `jarvis_q1.speak`, `jarvis_q1.transcribe`, `jarvis_q1.listen`, `jarvis_q1.call`, LED and GPS. Speech transcription can be consumed by any automation without DeepSeek; raw Q1 PCM microphone streaming is available for custom clients. Full Assist satellite and hardware microphone compatibility still require further work/testing.
+
+See [Companion Integration](docs/COMPANION_INTEGRATION.md) for step-by-step installation, use and security constraints.

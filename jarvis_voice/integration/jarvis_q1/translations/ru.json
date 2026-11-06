@@ -1,0 +1,24 @@
+{
+  "title": "Джарвис Q1 — камера, голос и модем",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Подключение JARVIS Q1",
+        "data": {
+          "host": "Имя хоста приложения",
+          "port": "Порт",
+          "token": "Токен API"
+        }
+      },
+      "hassio_confirm": {
+        "title": "Обнаружено приложение JARVIS Q1",
+        "description": "Подключить камеру, динамик, микрофон и SIM7600 к Home Assistant?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Не удалось подключиться к приложению",
+      "invalid_host": "Неверный хост",
+      "invalid_response": "Некорректный ответ приложения"
+    }
+  }
+}

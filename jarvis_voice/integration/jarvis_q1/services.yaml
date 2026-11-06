@@ -1,0 +1,74 @@
+speak:
+  name: Speak on Q1
+  description: Play Yandex LiveTTS through the configured Q1 speaker.
+  fields:
+    text:
+      name: Text
+      required: true
+      example: "Дверь открыта"
+      selector:
+        text:
+listen:
+  name: Listen and reply
+  description: Capture speech on Q1, ask DeepSeek, optionally speak the answer and fire jarvis_q1_transcript event.
+  fields:
+    seconds:
+      name: Timeout
+      default: 12
+      selector:
+        number:
+          min: 3
+          max: 30
+          step: 1
+          unit_of_measurement: s
+transcribe:
+  name: Transcribe microphone
+  description: Stream microphone audio to Yandex STT without using DeepSeek. Fires jarvis_q1_transcript event.
+  fields:
+    seconds:
+      name: Timeout
+      default: 12
+      selector:
+        number:
+          min: 3
+          max: 30
+          step: 1
+          unit_of_measurement: s
+call:
+  name: Call my phone
+  description: Dial the allowlisted number and read the question once connected.
+  fields:
+    prompt:
+      name: Question
+      selector:
+        text:
+hangup:
+  name: End phone call
+  description: Hang up the current cellular call.
+set_led:
+  name: Set Q1 indicator color
+  fields:
+    color:
+      name: Color
+      required: true
+      selector:
+        select:
+          options:
+            - red
+            - green
+            - blue
+            - white
+            - pink
+            - yellow
+            - cyan
+            - off
+gps_start:
+  name: Activate GPS
+  fields:
+    assisted:
+      name: A-GPS mode
+      selector:
+        boolean:
+probe:
+  name: Inspect Q1 hardware
+  description: Return detected camera, serial devices and audio sources/sinks.

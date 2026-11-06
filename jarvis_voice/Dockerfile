@@ -15,6 +15,7 @@ RUN python3 -m venv /opt/venv && \
       yandex/cloud/ai/tts/v3/tts_service.proto yandex/cloud/ai/tts/v3/tts.proto && \
     rm -rf /tmp/cloudapi
 COPY *.py /app/
+COPY integration/jarvis_q1/ /opt/jarvis_q1_integration/jarvis_q1/
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
 ENV PYTHONPATH=/opt/protos:/app PYTHONUNBUFFERED=1
