@@ -1,6 +1,7 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
 version: 0.1.0
+stage: experimental
 description: SIM7600 voice + Yandex SpeechKit LiveTTS / STT + DeepSeek + HA and Q1
 arch:
   - amd64
