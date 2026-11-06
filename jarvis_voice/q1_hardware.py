@@ -1,4 +1,4 @@
-"""Signal Q1 hardware discovery and UVC camera capture.
+"""USB hardware discovery and UVC camera capture.
 
 Facts from original Q1 /opt code, not assumptions:
   camera VID:PID 0c45:6366 (Sonix), YUYV 640x480@30 used for vision,

@@ -1,74 +1,81 @@
-# SIM7600 4G & GPS Gateway Integration for Home Assistant
+# JARVIS · умный GSM-помощник для SIM7600 и Home Assistant
 
-This custom integration allows you to connect a SIM7600 4G & GPS module to Home Assistant via a serial port (USB). It provides real-time monitoring of network status, signal strength, SMS capabilities, and GPS tracking.
+Позвони JARVIS с телефона, чтобы узнать состояние дома, управлять устройствами, запросить снимок или поставить напоминание. Home Assistant может сам позвонить нужному человеку по событию автоматизации.
 
-## Features
+В репозитории два способа работы с SIM7600.
 
-*   **Network Monitoring**:
-    *   Signal Strength (RSSI in dBm)
-    *   Operator name
-    *   Network Mode (LTE, GSM, etc.)
-    *   System status
-*   **Diagnostics**:
-    *   IMEI number
-    *   Firmware version
-    *   SIM card status
-*   **SMS Support**:
-    *   Send SMS via `sim7600.send_sms` service
-    *   Sensor for the last received SMS (with sender and timestamp attributes)
-*   **GPS Tracking**:
-    *   Integrated as a `device_tracker` entity (latitude, longitude, altitude)
-*   **Setup**: 
-    *   Easy UI configuration
-    *   Support for automatic USB discovery
+| Компонент | Для чего подходит | Установка |
+| --- | --- | --- |
+| **JARVIS SIM7600 Voice Bridge** | Звонки, голосовой диалог, семейные профили, журнал, домашние устройства, звук и камера | Магазин дополнений Home Assistant |
+| **SIM7600 4G & GPS Gateway** | Состояние сети, GPS и отправка SMS без голосового помощника | HACS или ручная установка |
 
-## Installation
+Последовательным AT-портом должен владеть один компонент. Если запускаешь JARVIS, отключи отдельную интеграцию SIM7600, которая читает тот же порт.
 
-### Via HACS (Recommended)
-1. Open HACS in your Home Assistant.
-2. Click the three dots (⋮) in the top right -> **Custom repositories**.
-3. Add `https://github.com/ruslan200065/sim7600_ha_integration_voice` as category **Integration**.
-4. Search for "SIM7600 4G & GPS Gateway" and click **Download**.
-5. Restart Home Assistant.
+## Возможности JARVIS
 
-### Manual Installation
-1. Copy the `custom_components/sim7600` directory to your `custom_components` folder in your Home Assistant configuration directory.
-2. Restart Home Assistant.
+- **Телефония**. Входящие и исходящие звонки, автоответ разрешённым номерам, звонки по автоматизациям, DTMF и журнал звонков и входящих SMS. Разговор можно закончить голосом. После длительной тишины JARVIS завершает вызов автоматически.
+- **Диалог**. Русскоязычное распознавание и озвучка через SpeechKit, ответы через DeepSeek, возможность перебить ответ. Уже начатые команды могут выполняться в фоне. Повторяющиеся фразы озвучки используют локальный кэш.
+- **Умный дом**. Поиск по названию, псевдониму, комнате и типу. Чтение датчиков с единицами измерения и поддерживаемое управление светом, выключателями, приводами, вентиляторами, сценами и медиаплеерами. Владелец отдельно выбирает права чтения и управления.
+- **Семья**. У каждого участника свой номер, набор доступных устройств, контекст, заметки и предпочтения. Для назначенной калитки можно включить дополнительный цифровой код с вводом через DTMF.
+- **Напоминания и одноразовые правила**. Напоминание в указанное время, при прибытии в зону HA или изменении состояния датчика. JARVIS звонит тому, кто создал напоминание. Напоминание по времени можно отразить в личном календаре. Те же условия могут запустить одноразовое разрешённое действие, например включить свет.
+- **Камеры и Telegram**. Снимки с совместимой USB-камеры или разрешённой камеры HA, описание кадра с совместимой моделью и отправка фото настроенному получателю Telegram.
+- **Микрофон и динамик**. Микрофон доступен в HA через переключатель мониторинга, датчик уровня и бинарный датчик звука. Есть отдельные действия для распознавания речи, ответа через динамик и воспроизведения на домашнем медиаплеере. Для своих клиентов доступен защищённый PCM-поток.
+- **Оборудование и панель**. Настройки звука и портов, состояние модема, SIM и сети, GPS, проверка устройств. В панели можно выбирать сущности HA по имени и комнате, создавать семейные карточки и листать журнал.
 
-## Configuration
-1. Go to **Settings** -> **Devices & Services**.
-2. Click **+ Add Integration**.
-3. Search for **SIM7600 4G & GPS Gateway**.
-4. Select the serial port (e.g., `/dev/ttyUSB2`) and baud rate.
+## Установка голосового помощника
 
-## Services
-*   `sim7600.send_sms`:
-    *   `number`: Recipient's phone number.
-    *   `message`: Message text.
+**Что понадобится**
 
----
-*Built with ❤️ for Home Assistant.*
+- Home Assistant OS с магазином дополнений на `amd64` или `aarch64`.
+- SIM7600 с доступным AT-портом, антенной и SIM-картой с голосовыми вызовами. Для голосового диалога в звонке нужен совместимый аудиоканал модема. USB-микрофон и домашний динамик настраиваются отдельно.
+- Ключ SpeechKit для распознавания и озвучки. Ключ DeepSeek нужен для диалога и голосового управления. Мониторинг уровня микрофона выполняется локально и ключей не требует.
 
+**Первый запуск**
 
-## JARVIS SIM7600 Voice Bridge / Yandex Signal Q1 (experimental)
+1. В Home Assistant открой **Настройки → Дополнения → Магазин дополнений → ⋮ → Репозитории** и добавь этот репозиторий. [Репозиторий на GitHub](https://github.com/ruslan200065/sim7600_ha_integration_voice)
+2. Установи **JARVIS SIM7600 Voice Bridge**. Подключи модем к хосту HA и запусти дополнение.
+3. В веб-панели открой **Оборудование**. Выбери AT-порт модема, предпочтительно из `/dev/serial/by-id/`. Настрой порт звука звонка по документации своего модуля. При наличии выбери микрофон, динамик и USB-камеру.
+4. В **Звонках** укажи свой номер в международном формате. В **Голосе и интеграциях** добавь ключи. Выбери нужные права в **Устройствах**, затем нажми **Применить**.
+5. При включённой автоматической установке интеграции перезапусти **Home Assistant Core** один раз. В **Настройки → Устройства и службы** подтверди обнаруженную интеграцию **JARVIS**. Она добавляет сущности и действия `jarvis_q1.*`. [Руководство по подключению](docs/COMPANION_INTEGRATION.md)
 
-This fork also contains an independent **Home Assistant App**, located in the jarvis_voice folder.
+Совместимость голосового USB-аудио, VoLTE, входящего DTMF и GPS зависит от модуля, прошивки и оператора. Сначала проверь SIM и сеть в панели, затем входящий и исходящий звонок и звук в обе стороны. [Руководство по оборудованию](docs/Q1_HARDWARE.md)
 
-- SIM7600 call control, optional experimental raw PCM voice channel, Yandex streaming STT + LiveTTS, DeepSeek and allowlisted HA tools.
-- Original Yandex Signal Q1 protocols: UVC camera (0c45:6366), GPS, modem RGB LEDs, Microchip USB speaker.
-- Self-diagnostics, UVC snapshots, optional ALSA/Pulse microphone and playback.
+## Как использовать микрофон в Home Assistant
 
-Install the repository in the Home Assistant App store as a custom repository:
-https://github.com/ruslan200065/sim7600_ha_integration_voice
+На устройстве JARVIS появятся **Microphone monitor**, **Microphone level** и **Microphone sound**. Имена можно поменять в HA. Включи мониторинг переключателем. Числовой датчик показывает относительный уровень от 0 до 100%, бинарный — наличие звука при уровне от 3%. Для своего порога создай автоматизацию с числовым условием по **Microphone level**.
 
-See [docs/Q1_HARDWARE.md](docs/Q1_HARDWARE.md) and [jarvis_voice/README.md](jarvis_voice/README.md).
+Мониторинг по умолчанию выключен. Он делает короткие локальные замеры примерно каждые три секунды, без записи аудио и без отправки в облако. Когда микрофон занят другой операцией, замер пропускается. Для текста из речи используй `jarvis_q1.transcribe` и событие `jarvis_q1_transcript`. Для своего аудиоклиента используй авторизованный маршрут `GET /q1/microphone/stream?seconds=15` с PCM S16LE, 16 кГц, моно.
 
-**Experimental hardware:** The stock Q1 archive does not demonstrate microphone input or phone-call PCM transfer on this SIM7600E firmware. Do not run both this App and the original HACS integration against the same AT port.
+## Примеры для автоматизаций и звонков
 
-## JARVIS Q1 companion Home Assistant integration
+- «Какая температура в спальне?»
+- «Пришли фото с камеры двора в Telegram».
+- «Запомни, что под светом во дворе я имею в виду прожектор».
+- «Когда температура в теплице опустится ниже десяти градусов, напомни мне».
+- «Завтра в восемь вечера включи ночник».
+- «Когда я приеду к магазину, напомни купить молоко». Для этого привяжи личный `person` и создай зону в HA.
 
-The `jarvis_voice` Home Assistant App now bundles and **auto-installs** its matching custom integration `jarvis_q1` (option `auto_install_integration: true`). Start the App, restart Home Assistant Core once, then confirm **JARVIS Q1 Voice Gateway** under discovered integrations in Devices & Services. No separate HACS installation or manual copying is needed.
+В редакторе автоматизаций выбери действие `jarvis_q1.call`. Поле `member` — имя участника из семейного профиля. Пустое поле означает звонок владельцу. Поля `prompt` и `camera_entity` позволяют передать текст события и соответствующую камеру.
 
-Creates a Q1 camera, general-purpose `media_player` speaker, cellular/GPS sensors, microphone transcript sensor and buttons. HA actions include `jarvis_q1.speak`, `jarvis_q1.transcribe`, `jarvis_q1.listen`, `jarvis_q1.call`, LED and GPS. Speech transcription can be consumed by any automation without DeepSeek; raw Q1 PCM microphone streaming is available for custom clients. Full Assist satellite and hardware microphone compatibility still require further work/testing.
+```yaml
+action: jarvis_q1.call
+data:
+  member: "Мама"
+  prompt: "У входа замечено движение."
+```
 
-See [Companion Integration](docs/COMPANION_INTEGRATION.md) for step-by-step installation, use and security constraints.
+Другие действия интеграции включают `jarvis_q1.speak`, `jarvis_q1.listen`, `jarvis_q1.transcribe`, `jarvis_q1.send_dtmf`, `jarvis_q1.hangup`, `jarvis_q1.gps_start`, `jarvis_q1.set_led` и `jarvis_q1.probe`.
+
+## Отдельная интеграция SIM7600 4G & GPS Gateway
+
+Если нужны сеть, SMS и GPS, добавь этот репозиторий в HACS как **Integration** и установи **SIM7600 4G & GPS Gateway**. При ручной установке скопируй `custom_components/sim7600` в `custom_components` конфигурации HA. Перезапусти Core, добавь интеграцию в **Устройствах и службах** и выбери AT-порт.
+
+Интеграция предоставляет данные о сигнале, операторе, режиме сети и SIM, последний входящий SMS и GPS-трекер. Для отправки SMS используй `sim7600.send_sms` с полями `number` и `message`.
+
+## Данные и разработка
+
+Номера, ключи, журнал, заметки и параметры дома хранятся на установленном экземпляре. Для голосовых функций SpeechKit обрабатывает аудио, DeepSeek получает текст и данные, необходимые для ответа. Панель открывается через защищённый вход Home Assistant. Для обычной работы открывать внешний порт не требуется.
+
+Для форка ориентируйся на ветку `develop`. Код дополнения расположен в `jarvis_voice/`, интеграция для него — в `jarvis_voice/integration/jarvis_q1/`, самостоятельная интеграция модема — в `custom_components/sim7600/`. После изменений проверь Python-тесты и сборку дополнения. Перед публикацией исключи реальные ключи, номера, настройки и выгрузки с устройства.
+
+[История изменений](jarvis_voice/CHANGELOG.md) · [Руководство по разработке](DEVELOPMENT_WORKFLOW.md)

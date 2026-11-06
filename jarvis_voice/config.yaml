@@ -1,8 +1,8 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.4.25
+version: 0.4.26
 stage: experimental
-description: SIM7600 voice + Yandex SpeechKit LiveTTS / STT + DeepSeek + HA and Q1
+description: Smart GSM assistant for SIM7600 and Home Assistant
 arch:
   - amd64
   - aarch64

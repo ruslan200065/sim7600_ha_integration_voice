@@ -51,3 +51,18 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
         self.hass.bus.async_fire("jarvis_q1_transcript",{
             "entry_id":self.entry.entry_id,"text":self.last_transcript,"response":""})
         return result
+
+
+class MicrophoneCoordinator(DataUpdateCoordinator[dict]):
+    def __init__(self, hass, client):
+        super().__init__(hass, _LOGGER, name="JARVIS microphone", update_interval=timedelta(seconds=3))
+        self.client = client
+
+    async def _async_update_data(self):
+        try:
+            return await self.client.get("/q1/microphone", timeout=5)
+        except Exception as exc:
+            raise UpdateFailed(str(exc)) from exc
+
+    async def set_enabled(self, enabled):
+        self.async_set_updated_data(await self.client.post("/q1/microphone", {"enabled": enabled}))

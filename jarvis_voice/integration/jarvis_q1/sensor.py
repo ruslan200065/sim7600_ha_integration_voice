@@ -1,5 +1,5 @@
 """Q1 call state, GPS coordinates and transcribed phrases as HA sensors."""
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from .entity import JarvisEntity
 
 SENSORS = {
@@ -12,7 +12,7 @@ SENSORS = {
 
 async def async_setup_entry(hass,entry,async_add_entities):
     c=hass.data["jarvis_q1"][entry.entry_id]
-    async_add_entities([Q1Sensor(c,key,*info) for key,info in SENSORS.items()])
+    async_add_entities([Q1Sensor(c,key,*info) for key,info in SENSORS.items()] + [MicrophoneLevel(c.microphone)])
 
 class Q1Sensor(JarvisEntity,SensorEntity):
     def __init__(self,coordinator,key,name,device_class):
@@ -40,3 +40,15 @@ class Q1Sensor(JarvisEntity,SensorEntity):
         if key=="last_transcript":
             return self.coordinator.last_transcript or None
         return None
+
+class MicrophoneLevel(JarvisEntity, SensorEntity):
+    _attr_native_unit_of_measurement = "%"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:microphone"
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator, "microphone_level", "Microphone level")
+
+    @property
+    def native_value(self):
+        return (self.coordinator.data or {}).get("level")

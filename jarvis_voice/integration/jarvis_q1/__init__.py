@@ -8,11 +8,11 @@ from homeassistant.core import SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .client import JarvisClient
-from .coordinator import JarvisCoordinator
+from .coordinator import JarvisCoordinator, MicrophoneCoordinator
 from .const import DOMAIN, CONF_HOST, CONF_PORT, CONF_TOKEN
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.SENSOR,Platform.BINARY_SENSOR,Platform.BUTTON,Platform.CAMERA,Platform.MEDIA_PLAYER]
+PLATFORMS = [Platform.SENSOR,Platform.BINARY_SENSOR,Platform.BUTTON,Platform.CAMERA,Platform.MEDIA_PLAYER,Platform.SWITCH]
 
 async def async_setup_entry(hass, entry):
     client = JarvisClient(async_get_clientsession(hass), entry.data[CONF_HOST],
@@ -20,6 +20,8 @@ async def async_setup_entry(hass, entry):
     coordinator = JarvisCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()
     await coordinator.async_probe()
+    coordinator.microphone = MicrophoneCoordinator(hass, client)
+    await coordinator.microphone.async_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

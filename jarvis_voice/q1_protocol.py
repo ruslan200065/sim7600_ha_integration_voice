@@ -1,4 +1,4 @@
-"""Signal Q1 original SIM7600 GPS and LED AT command protocol.
+"""SIM7600 GPS and LED AT command protocol.
 
 From opt/misc/gps.py and opt/watch/signalq_modem.py in user-supplied Q1 archive.
 Any AT commands are sent via the *same* Modem single serial-port owner.

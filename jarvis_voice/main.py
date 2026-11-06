@@ -28,6 +28,7 @@ from history import History
 from family import GATE_ACTIONS, family_profiles, profile_key
 from personal import Personal, condition_matches
 from speech_cache import SpeechCache
+from microphone import MicrophoneMonitor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOG = logging.getLogger(__name__)
@@ -82,6 +83,9 @@ class Server:
         self.history = History(data_dir / "history.sqlite3")
         self.personal = Personal(data_dir / "personal.sqlite3")
         self.speech_cache = SpeechCache(data_dir / "speech_cache")
+        self.microphone = MicrophoneMonitor(options.get("q1_mic_device", ""), self.mic_lock,
+                                            data_dir / "microphone_monitor")
+        self.microphone_task = None
         self.family = family_profiles(options.get("family_members", []))
         self.family.pop((options.get("allowed_number") or "").lstrip("+"), None)
         self.gates = frozenset(member["gate"] for member in self.family.values() if member["gate"])
@@ -117,10 +121,14 @@ class Server:
                 self.o.get("yandex_role", "neutral"),
                 cache=self.speech_cache if self.o.get("speech_cache_enabled", True) else None,
             )
+        self.microphone_task = asyncio.create_task(self.microphone.run())
         await self.modem.start()
         self.sms_task = asyncio.create_task(self.sync_sms())
 
     async def close(self):
+        if self.microphone_task:
+            self.microphone_task.cancel()
+            await asyncio.gather(self.microphone_task, return_exceptions=True)
         if self.reminder_task:
             self.reminder_task.cancel()
             await asyncio.gather(self.reminder_task, return_exceptions=True)
@@ -695,6 +703,19 @@ class Server:
             await self.media.stop()
         return web.json_response({"ok":True})
 
+    async def microphone_status(self, _request):
+        return web.json_response(self.microphone.status())
+
+    async def microphone_switch(self, request):
+        data = await request.json()
+        if not isinstance(data, dict) or not isinstance(data.get("enabled"), bool):
+            raise web.HTTPBadRequest(text="Expected enabled: true or false")
+        try:
+            self.microphone.set_enabled(data["enabled"])
+        except ValueError as exc:
+            raise web.HTTPConflict(text=str(exc)) from exc
+        return web.json_response(self.microphone.status())
+
     async def q1_mic_stream(self,request):
         device=self.o.get("q1_mic_device","")
         if not device:
@@ -703,7 +724,7 @@ class Server:
             seconds=min(120,max(1,int(request.query.get("seconds","15"))))
         except ValueError:
             raise web.HTTPBadRequest(text="seconds must be integer")
-        if self.mic_lock.locked():
+        if self.mic_lock.locked() and not self.microphone.sampling:
             raise web.HTTPConflict(text="Microphone already in use")
         async with self.mic_lock:
             device, env = audio_route(device, "capture")
@@ -752,7 +773,7 @@ class Server:
             raise web.HTTPConflict(text="Configure Q1 microphone device")
         data=await request.json()
         seconds=min(30,max(3,int(data.get("seconds",12))))
-        if self.mic_lock.locked():
+        if self.mic_lock.locked() and not self.microphone.sampling:
             raise web.HTTPConflict(text="Microphone is already in use")
         async with self.mic_lock:
             text=await recognize_microphone_live(self.speech,self.o["q1_mic_device"],seconds)
@@ -795,6 +816,8 @@ class Server:
             ("POST","/q1/play_media",self.q1_play_media),
             ("POST","/q1/stop_media",self.q1_stop_media),
             ("GET","/q1/microphone/stream",self.q1_mic_stream),
+            ("GET","/q1/microphone",self.microphone_status),
+            ("POST","/q1/microphone",self.microphone_switch),
             ("POST","/q1/transcribe",self.q1_transcribe)):
             app.router.add_route(method,path,fn)
         return app

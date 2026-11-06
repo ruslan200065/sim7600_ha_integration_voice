@@ -1,3 +1,8 @@
+## 0.4.26 (experimental)
+
+- Expose local microphone level, sound activity and a monitoring switch in Home Assistant.
+- Document the GSM assistant and installation in Russian.
+
 ## 0.4.25 (experimental)
 
 - Reorganize the settings panel and add searchable Home Assistant pickers, editable family cards and a call recipient selector.

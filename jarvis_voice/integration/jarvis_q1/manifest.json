@@ -1,7 +1,7 @@
 {
   "domain": "jarvis_q1",
   "name": "JARVIS Q1 Voice Gateway",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "config_flow": true,
   "documentation": "https://github.com/ruslan200065/sim7600_ha_integration_voice/blob/develop/jarvis_voice/README.md",
   "codeowners": [
