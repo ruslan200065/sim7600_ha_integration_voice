@@ -13,6 +13,10 @@ PLAYBACK_PREFILL = 6  # 120ms of audio before writing to the modem
 PLAYBACK_SAMPLES = struct.Struct(f"<{PLAYBACK_FRAME // 2}h")
 
 
+class PCMPlaybackError(RuntimeError):
+    """The modem audio route could not accept PCM."""
+
+
 async def playback_frames(chunks):
     """Frame a byte stream across SpeechKit message boundaries."""
     pending = bytearray()
@@ -48,16 +52,17 @@ class PCMTransport:
 
     async def stop(self):
         self.running = False
-        if self.rx_task:
-            self.rx_task.cancel()
-            try:
-                await self.rx_task
-            except asyncio.CancelledError:
-                pass
-            self.rx_task = None
-        if self.serial:
-            self.serial.close()
-            self.serial = None
+        reader, self.rx_task = self.rx_task, None
+        port, self.serial = self.serial, None
+        try:
+            if reader:
+                reader.cancel()
+                result, = await asyncio.gather(reader, return_exceptions=True)
+                if isinstance(result, Exception):
+                    LOG.warning("PCM reader stopped: %s", type(result).__name__)
+        finally:
+            if port:
+                port.close()
 
     async def _reader(self):
         pending = bytearray()
@@ -76,7 +81,7 @@ class PCMTransport:
     async def write_stream(self, chunks):
         port = self.serial
         if not self.running or port is None:
-            raise RuntimeError("PCM audio unavailable")
+            raise PCMPlaybackError("PCM audio unavailable")
         frames = asyncio.Queue(maxsize=24)
         ready = asyncio.Event()
         interval = PLAYBACK_FRAME / (RATE * 2)
@@ -99,7 +104,9 @@ class PCMTransport:
 
         async with asyncio.TaskGroup() as group:
             group.create_task(fill())
-            await ready.wait()
+            async with asyncio.timeout(8):
+                await ready.wait()
+            sent = False
             deadline = clock()
             while (frame := await frames.get()) is not None:
                 now = clock()
@@ -109,17 +116,22 @@ class PCMTransport:
                 if deadline > now:
                     await asyncio.sleep(deadline - now)
                 if not self.running or self.serial is not port:
-                    raise RuntimeError("PCM audio unavailable")
+                    raise PCMPlaybackError("PCM audio unavailable")
                 write = asyncio.create_task(asyncio.to_thread(port.write, frame))
                 try:
                     written = await asyncio.shield(write)
+                except OSError as exc:
+                    raise PCMPlaybackError("USB PCM write failed") from exc
                 except asyncio.CancelledError:
                     # A cancelled await cannot stop the serial write in its thread.
                     await asyncio.gather(write, return_exceptions=True)
                     raise
                 if written != len(frame):
-                    raise RuntimeError("Incomplete PCM write")
+                    raise PCMPlaybackError("Incomplete PCM write")
+                sent = True
                 deadline += interval
+            if not sent:
+                raise RuntimeError("Speech synthesis returned no PCM")
             await asyncio.sleep(max(0, deadline - clock()))
 
 

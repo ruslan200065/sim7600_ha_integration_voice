@@ -15,7 +15,7 @@ from pathlib import Path
 from aiohttp import web, ClientError, ClientSession
 
 from modem import Modem
-from audio import PCMTransport, rms
+from audio import PCMPlaybackError, PCMTransport, rms
 from voice_dialog import run_dialog
 from speech import SpeechKit
 from brain import Brain
@@ -351,17 +351,51 @@ class Server:
             if (self.modem.call_id, self.modem.call_state) == (call_id, "connected"):
                 await self._dialog(prompt, camera, reminder_id)
 
+    async def start_call_audio(self, call_id):
+        for attempt in range(3):
+            if (self.modem.call_id, self.modem.call_state) != (call_id, "connected"):
+                raise RuntimeError("Call already ended")
+            try:
+                await self.modem.enable_pcm()
+                await self.audio.start()
+                return
+            except (RuntimeError, OSError, TimeoutError) as exc:
+                LOG.warning("Call audio setup attempt %d: %s", attempt + 1, type(exc).__name__)
+                await self.audio.stop()
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.25 * (attempt + 1))
+
     async def _say(self, text):
         if not self.speech:
             raise RuntimeError("Yandex SpeechKit API key is missing")
-        async with self.speaking, aclosing(self.speech.synthesize(text)) as chunks:
-            await self.audio.write_stream(chunks)
+        call_id = self.modem.call_id
+        async with self.speaking:
+            for attempt in range(2):
+                if (self.modem.call_id, self.modem.call_state) != (call_id, "connected"):
+                    return
+                try:
+                    async with aclosing(self.speech.synthesize(text)) as chunks:
+                        await self.audio.write_stream(chunks)
+                    return
+                except Exception as exc:
+                    failures = [exc]
+                    while any(isinstance(error, ExceptionGroup) for error in failures):
+                        failures = [nested for error in failures for nested in
+                                    (error.exceptions if isinstance(error, ExceptionGroup) else [error])]
+                    kinds = [type(error).__name__ for error in failures]
+                    LOG.warning("Call playback attempt %d: %s", attempt + 1, ", ".join(kinds))
+                    if attempt or (self.modem.call_id, self.modem.call_state) != (call_id, "connected"):
+                        raise
+                    await asyncio.sleep(0.2)
+                    if any(isinstance(error, PCMPlaybackError) for error in failures):
+                        await self.audio.stop()
+                        await self.start_call_audio(call_id)
 
     async def _dialog(self, prompt, camera, reminder_id=None):
         try:
             self.mode="starting_audio"
-            await self.modem.enable_pcm()
-            await self.audio.start()
+            await self.start_call_audio(self.modem.call_id)
             self.mode="talking"
             member = self.family.get((self.modem.active_number or "").removeprefix("+"))
             brain = self.caller_brain(member)

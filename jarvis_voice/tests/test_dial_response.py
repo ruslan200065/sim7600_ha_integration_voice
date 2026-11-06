@@ -79,3 +79,27 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
                 service.brain._ha.assert_awaited_once_with("POST", "/api/services/cover/open_cover", {"entity_id": "cover.test"})
                 self.assertEqual(service.events, [])
                 self.assertIsNone(service.keypad)
+
+    async def test_failed_greeting_retries_in_the_same_call(self):
+        for error, reset in ((RuntimeError("speech unavailable"), False),
+                             (server_module.PCMPlaybackError("USB write failed"), True)):
+            with self.subTest(reset=reset):
+                service = Server({"api_token": "test"})
+                service.modem.call_state = "connected"
+                service.modem.call_id = 12
+
+                async def synthesize(_text):
+                    yield b"pcm"
+
+                service.speech = SimpleNamespace(synthesize=synthesize)
+                service.audio.write_stream = AsyncMock(side_effect=[ExceptionGroup("audio", [error]), None])
+                service.audio.stop = AsyncMock()
+                service.start_call_audio = AsyncMock()
+                await service._say("Привет.")
+                self.assertEqual(service.audio.write_stream.await_count, 2)
+                if reset:
+                    service.audio.stop.assert_awaited_once()
+                    service.start_call_audio.assert_awaited_once_with(12)
+                else:
+                    service.audio.stop.assert_not_awaited()
+                    service.start_call_audio.assert_not_awaited()

@@ -1,3 +1,7 @@
+## 0.4.31 (experimental)
+
+- Retry failed phone audio and speech playback during the same call, reopening the modem audio route when needed.
+
 ## 0.4.30 (experimental)
 
 - Disable the call echo text filter by default and make it configurable.
