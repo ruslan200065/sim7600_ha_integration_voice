@@ -18,13 +18,14 @@ from aiohttp import ClientError, ClientTimeout, web
 from audio import rms
 from modem import NUMBER
 from brain import SAFE_SERVICES
+from family import family_profiles
 from q1_audio import capture_pcm, play_pcm
 from q1_hardware import VIDEO_LINK, VIDEO_PATH, list_serial, list_video, probe_audio
 from q1_protocol import gps_status
 
 LOG = logging.getLogger(__name__)
 ASSETS = Path(__file__).with_name("web")
-SECRET_KEYS = {"yandex_api_key", "deepseek_api_key"}
+SECRET_KEYS = {"yandex_api_key", "deepseek_api_key", "gate_pin"}
 TEXT_FIELDS = {
     "at_port": 256,
     "pcm_port": 256,
@@ -38,13 +39,15 @@ TEXT_FIELDS = {
     "camera_entity": 256,
     "home_tts_entity": 256,
     "telegram_photo_target": 256,
+    "reminder_calendar": 256,
+    "reminder_person": 256,
 }
 INTEGER_FIELDS = {
     "serial_baud": (1200, 921600),
     "max_calls_per_hour": (1, 20),
     "call_playback_volume": (10, 100),
 }
-BOOLEAN_FIELDS = {"auto_answer", "observe_all_entities", "control_all_entities"}
+BOOLEAN_FIELDS = {"auto_answer", "observe_all_entities", "control_all_entities", "speech_cache_enabled"}
 OPTION_FIELDS = (
     set(TEXT_FIELDS)
     | set(INTEGER_FIELDS)
@@ -53,6 +56,7 @@ OPTION_FIELDS = (
         "allowed_entities",
         "observed_entities",
         "allow_domains",
+        "family_members",
     }
 )
 AUDIO_FIELDS = ("audio_input", "audio_output")
@@ -80,6 +84,8 @@ def validate_changes(changes, current):
                 raise ValueError(f"{key}: допустимо от {lo} до {hi}.")
         elif key in BOOLEAN_FIELDS and not isinstance(value, bool):
             raise ValueError(f"Неверное значение поля {key}.")
+        elif key == "family_members":
+            family_profiles(value)
         elif key in {"allowed_entities", "observed_entities"}:
             if (
                 not isinstance(value, list)
@@ -120,7 +126,24 @@ def validate_changes(changes, current):
         raise ValueError(
             "Введите номер в международном формате, например +79991234567."
         )
-    if options.get("auto_answer") and not number:
+    family = family_profiles(options.get("family_members", []))
+    if number and number.lstrip("+") in family:
+        raise ValueError("Номер владельца уже добавлен отдельно.")
+    pin = options.get("gate_pin", "")
+    if pin and not re.fullmatch(r"[0-9]{6}", pin):
+        raise ValueError("Код калитки должен состоять из шести цифр.")
+    calendar = options.get("reminder_calendar", "")
+    if calendar and (not ENTITY_ID.fullmatch(calendar) or not calendar.startswith("calendar.")):
+        raise ValueError("Укажите календарь Home Assistant вида calendar.name.")
+    person = options.get("reminder_person", "")
+    if person and (not ENTITY_ID.fullmatch(person) or not person.startswith("person.")):
+        raise ValueError("Укажите свою сущность Home Assistant вида person.name.")
+    calendars = [member["calendar"] for member in family.values() if member["calendar"]]
+    if calendar:
+        calendars.append(calendar)
+    if len(calendars) != len(set(calendars)):
+        raise ValueError("Для каждого участника выберите отдельный календарь напоминаний.")
+    if options.get("auto_answer") and not (number or family):
         raise ValueError("Укажите разрешённый номер для автоответа.")
     for key, domain in (("home_tts_entity", "tts"), ("telegram_photo_target", "notify")):
         entity = changes.get(key, "").strip()

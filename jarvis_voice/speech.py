@@ -3,6 +3,7 @@ import asyncio
 import grpc
 import time
 from collections import deque
+from contextlib import aclosing
 from audio import rms
 import yandex.cloud.ai.stt.v3.stt_pb2 as stt
 import yandex.cloud.ai.stt.v3.stt_service_pb2_grpc as stt_grpc
@@ -11,10 +12,11 @@ import yandex.cloud.ai.tts.v3.tts_service_pb2_grpc as tts_grpc
 
 
 class SpeechKit:
-    def __init__(self, api_key, voice="denis", role="neutral"):
+    def __init__(self, api_key, voice="denis", role="neutral", *, cache=None):
         self.auth = (("authorization", "Api-Key " + api_key),)
         self.voice = voice
         self.role = role
+        self.cache = cache
         self.stt_channel = grpc.aio.secure_channel("stt.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
         self.tts_channel = grpc.aio.secure_channel("tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
         self.stt_stub = stt_grpc.RecognizerStub(self.stt_channel)
@@ -102,6 +104,12 @@ class SpeechKit:
         return " ".join(refined or final).strip()
 
     async def synthesize(self, text):
+        source = self.cache.stream(text, self.voice, self.role, self._synthesize) if self.cache else self._synthesize(text)
+        async with aclosing(source) as chunks:
+            async for chunk in chunks:
+                yield chunk
+
+    async def _synthesize(self, text):
         options = tts.SynthesisOptions(
             model="livetts", voice=self.voice, role=self.role,
             output_audio_spec=tts.AudioFormatOptions(raw_audio=tts.RawAudio(

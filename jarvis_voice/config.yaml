@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.4.20
+version: 0.4.21
 stage: experimental
 description: SIM7600 voice + Yandex SpeechKit LiveTTS / STT + DeepSeek + HA and Q1
 arch:
@@ -52,6 +52,11 @@ options:
     - homeassistant
     - supervisor
     - homeassistant.local
+  family_members: []
+  gate_pin: ""
+  reminder_calendar: ""
+  reminder_person: ""
+  speech_cache_enabled: true
   observe_all_entities: false
   control_all_entities: false
   observed_entities: []
@@ -87,6 +92,12 @@ schema:
   q1_speaker_device: str
   media_allowed_hosts:
     - str
+  family_members:
+    - str
+  gate_pin: password
+  reminder_calendar: str
+  reminder_person: str
+  speech_cache_enabled: bool
   observe_all_entities: bool
   control_all_entities: bool
   observed_entities:

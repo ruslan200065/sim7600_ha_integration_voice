@@ -41,7 +41,7 @@ class PanelTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("!secret", response.text)
         self.assertEqual(
             json.loads(response.text)["keys"],
-            {"yandex_api_key": True, "deepseek_api_key": True},
+            {"yandex_api_key": True, "deepseek_api_key": True, "gate_pin": False},
         )
 
     async def test_save_preserves_advanced_options_and_secret_reference(self):

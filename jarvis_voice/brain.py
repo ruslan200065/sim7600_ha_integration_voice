@@ -1,5 +1,8 @@
 """DeepSeek tool calling, HA entity allowlist and on-demand visual inspection."""
 import base64
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from personal import condition_matches
 import json
 import logging
 import asyncio
@@ -48,6 +51,13 @@ def tool(name, description, required=(), **properties):
 
 
 TOOLS = [
+    tool("remember", "Save a fact or preference the person explicitly asks to remember.", ("text",), text="string"),
+    tool("forget", "Delete a saved note by its exact text on request.", ("text",), text="string"),
+    tool("remind", "Schedule a reminder after an explicit request. Ask for time if unclear. Use an ISO 8601 local date/time.", ("text", "when"), text="string", when="string"),
+    tool("find_zones", "List configured Home Assistant zones by name and ID for an arrival reminder."),
+    tool("remind_when", "One-shot private reminder when a permitted device reaches a state (equals, above, below), or when the caller enters a configured zone (operator enter). Use zone ID for enter.", ("text", "entity_id", "operator"), text="string", entity_id="string", operator="string", value="string"),
+    tool("list_reminders", "List pending reminders for this profile."),
+    tool("cancel_reminder", "Cancel a pending reminder by ID.", ("id",), id="string"),
     tool("find_devices", "Find permitted HA devices by name, alias, room, device type or entity ID. Pass only the relevant search words, e.g. свет гостиная. An empty query lists devices. Use before guessing any entity ID. Pass domain=camera for camera queries.", query="string", domain="string"),
     tool("get_entity_state", "Read actual HA state and selected attributes.", ("entity_id",), entity_id="string"),
     tool("call_ha_service", "Control a device with can_control enabled. Use a domain action such as turn_on, open_cover, media_pause or volume_set. For volume_set, supply a level between 0 and 1.", ("service", "entity_id"), domain="string", service="string", entity_id="string", volume_level="number"),
@@ -79,7 +89,17 @@ DEVICE_WORDS = {
     "vacuum": "пылесос",
     "motion": "движение",
     "temperature": "температура",
-    "humidity": "влажность",
+    "humidity": "влажность влажно",
+    "pressure": "давление",
+    "power": "мощность ватт",
+    "energy": "энергия электричество расход",
+    "battery": "батарея заряд аккумулятор",
+    "illuminance": "освещенность люкс",
+    "carbon_dioxide": "углекислый co2",
+    "voltage": "напряжение вольт",
+    "current": "ток ампер",
+    "moisture": "влага протечка",
+    "pm25": "частицы пыль pm25",
     "door": "дверь",
     "window": "окно",
 }
@@ -96,14 +116,23 @@ BACKGROUND_TOOLS = {
 STATE_ATTRIBUTES = {
     "friendly_name", "device_class", "unit_of_measurement", "brightness",
     "current_position", "current_temperature", "temperature", "humidity",
+    "current_humidity", "last_reset", "state_class", "pressure", "power", "energy",
+    "co2", "pm25", "illuminance", "voltage", "current", "last_changed",
     "percentage", "volume_level", "is_volume_muted", "media_title",
     "media_artist", "source", "battery_level",
 }
 
 
 class Brain:
-    def __init__(self, options, session, capture_camera, listen_room=None, share_photo=None):
+    def __init__(self, options, session, capture_camera, listen_room=None, share_photo=None, *,
+                 personal=None, profile="owner", profile_name="Владелец", timezone_name="UTC",
+                 restricted_entities=()):
         self.options = options
+        self.personal = personal
+        self.profile = profile
+        self.profile_name = profile_name
+        self.timezone = ZoneInfo(timezone_name)
+        self.restricted_entities = restricted_entities
         self.http = session
         self.capture_camera = capture_camera
         self.listen_room = listen_room
@@ -130,7 +159,12 @@ class Brain:
                 "Перед управлением дождись однозначной команды человека. "
                 "Просьба о фото с камеры уже разрешает отправить снимок в настроенный Telegram. "
                 "Для просьбы посмотреть или описать происходящее используй see_camera. "
-                "Уточняй только камеру, если подходят несколько."
+                "Уточняй только камеру, если подходят несколько. "
+                "Записывай факты через remember только по просьбе запомнить. "
+                "Для напоминания по времени используй remind. Для прибытия используй find_zones и remind_when, "
+                "для значения датчика используй remind_when. Уточняй недостающее условие. "
+                "При числовом запросе к датчику используй get_entity_state и озвучивай единицу измерения. "
+                "Если для той же фразы есть выученный выбор и он найден в текущем поиске, используй его без повторного уточнения. Новые детали запроса важнее выученного выбора."
             ),
         }
         self.history = []
@@ -138,7 +172,7 @@ class Brain:
         self.action_lock = asyncio.Lock()
 
     def _control_actions(self, entity):
-        if not isinstance(entity, str) or not ENTITY_ID.fullmatch(entity):
+        if not isinstance(entity, str) or not ENTITY_ID.fullmatch(entity) or entity in self.restricted_entities:
             return set()
         domain = entity.split(".", 1)[0]
         if self.options.get("control_all_entities") is True or (
@@ -172,6 +206,7 @@ class Brain:
         return {
             "entity_id": row.get("entity_id"),
             "state": row.get("state"),
+            **({"last_updated": row["last_updated"]} if "last_updated" in row else {}),
             **{key: attrs[key] for key in STATE_ATTRIBUTES if key in attrs},
         }
 
@@ -193,6 +228,8 @@ class Brain:
                         raise ValueError("Кадр больше 4 МБ")
                 picture = bytes(buffer)
         else:
+            if not self.capture_camera:
+                raise ValueError("Камера Q1 недоступна этому профилю")
             picture, mime = await self.capture_camera(), "image/jpeg"
         if mime not in ("image/jpeg", "image/png") or not 0 < len(picture) <= 4 * 1024 * 1024:
             raise ValueError("Камера не вернула пригодный кадр JPEG или PNG")
@@ -287,7 +324,8 @@ class Brain:
             matches.append((priority, {
                 "entity_id": entity_id, "state": row["state"], "domain": domain,
                 "name": row.get("friendly_name"), "area": details.get("area"),
-                "device_class": row.get("device_class"), "can_control": bool(actions),
+                "device_class": row.get("device_class"), "unit_of_measurement": row.get("unit_of_measurement"),
+                "can_control": bool(actions),
                 "control_actions": sorted(actions),
             }))
         matches.sort(key=lambda item: item[0], reverse=True)
@@ -312,9 +350,15 @@ class Brain:
                 raise
             return await self._picture(alternate)
 
-    async def _tool(self, name, arguments, camera_entity=None, *, explicit_photo=False):
+    async def _tool(self, name, arguments, camera_entity=None, *, explicit_photo=False, phrase=""):
         if not isinstance(arguments, dict):
             return "Некорректные аргументы команды"
+        if name == "find_zones":
+            rows = await self._ha("GET", "/api/states")
+            return [{"id": row["entity_id"], "name": row.get("attributes", {}).get("friendly_name")}
+                    for row in rows if row["entity_id"].startswith("zone.")]
+        if name in {"remember", "forget", "remind", "remind_when", "list_reminders", "cancel_reminder"}:
+            return await self._personal_tool(name, arguments, phrase)
         if name == "find_devices":
             return await self._find_devices(arguments.get("query", ""), arguments.get("domain"))
 
@@ -408,6 +452,86 @@ class Brain:
             return {"accepted": True, "device": self._state(row)}
         return "Unknown tool"
 
+    async def _personal_tool(self, name, args, phrase):
+        if not self.personal:
+            return "Личная память недоступна"
+        if name == "list_reminders":
+            return self.personal.pending(self.profile)
+        if name == "cancel_reminder":
+            if not re.search(r"\b(?:отмен|удал|убер)\w*", phrase, re.I):
+                return "Уточни, нужно ли отменить напоминание"
+            removed = self.personal.cancel(self.profile, str(args.get("id", "")))
+            return "Напоминание отменено" if removed else "Напоминание не найдено"
+        text = args.get("text")
+        if not isinstance(text, str) or not 0 < len(text.strip()) <= 500:
+            return "Уточни текст"
+        text = text.strip()
+        if name == "remember":
+            if not re.search(r"\b(?:запомн|сохран)\w*", phrase, re.I):
+                return "Записываю только по просьбе запомнить"
+            self.personal.remember(self.profile, text)
+            return "Запомнил"
+        if name == "forget":
+            if not re.search(r"\b(?:забуд|удал|сотри)\w*", phrase, re.I):
+                return "Уточни, нужно ли удалить запись"
+            return "Запись удалена" if self.personal.forget(self.profile, text) else "Запись не найдена"
+        if re.search(r"\bне\s+(?:надо\s+|нужно\s+)?(?:напомн|напомин|постав)\w*", phrase, re.I) or not re.search(
+            r"\b(?:напомн|напомин|постав)\w*", phrase, re.I
+        ):
+            return "Уточни, нужно ли поставить напоминание"
+        if name == "remind_when":
+            if self.profile == "local":
+                return "Сначала настрой номер своего профиля"
+            entity, operator, value = args.get("entity_id"), args.get("operator"), args.get("value")
+            if not isinstance(entity, str) or not ENTITY_ID.fullmatch(entity):
+                return "Уточни зону или устройство"
+            if operator == "enter":
+                person = self.options.get("reminder_person")
+                if not person or not entity.startswith("zone."):
+                    return "Для прибытия нужны личная сущность person и зона Home Assistant"
+                zone_row, person_row = await asyncio.gather(
+                    self._ha("GET", "/api/states/" + entity), self._ha("GET", "/api/states/" + person))
+                condition = {"kind": "zone", "entity": person, "zone": entity}
+                states = {entity: zone_row, person: person_row}
+            elif operator in ("equals", "above", "below") and self._visible(entity):
+                if not isinstance(value, str) or not 0 < len(value) <= 80:
+                    return "Уточни значение"
+                if operator != "equals":
+                    try:
+                        if not -1e20 <= float(value) <= 1e20:
+                            raise ValueError
+                    except ValueError:
+                        return "Уточни числовое значение"
+                condition = {"kind": "state", "entity": entity, "operator": operator, "value": value}
+                states = {entity: await self._ha("GET", "/api/states/" + entity)}
+            else:
+                return "Уточни условие и доступное устройство"
+            identifier = self.personal.reminder(self.profile, self.profile_name, text, condition=condition)
+            self.personal.sample(identifier, condition_matches(condition, states), False, datetime.now(self.timezone))
+            return {"saved": True, "id": identifier, "condition": condition}
+        try:
+            due = datetime.fromisoformat(args.get("when", ""))
+            due = due.replace(tzinfo=self.timezone) if due.tzinfo is None else due.astimezone(self.timezone)
+            if due <= datetime.now(self.timezone):
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            return "Уточни будущие дату и время"
+        if self.profile == "local":
+            return "Для личного напоминания настрой номер своего профиля"
+        identifier = self.personal.reminder(self.profile, self.profile_name, text, due)
+        calendar = self.options.get("reminder_calendar", "")
+        if calendar:
+            try:
+                await self._ha("POST", "/api/services/calendar/create_event", {
+                    "entity_id": calendar, "summary": text,
+                    "description": "JARVIS: " + self.profile_name + " · " + identifier,
+                    "start_date_time": due.isoformat(),
+                    "end_date_time": (due + timedelta(minutes=15)).isoformat(),
+                })
+            except (RuntimeError, TimeoutError, aiohttp.ClientError):
+                return "Напоминание сохранено, но Home Assistant не принял событие календаря"
+        return {"saved": True, "when": due.isoformat(), "text": text, "calendar": bool(calendar)}
+
     async def reply(self, phrase, camera_entity=None, *, on_progress=None):
         if on_progress is not None:
             return await self._reply(phrase, camera_entity, on_progress)
@@ -421,6 +545,17 @@ class Brain:
         user_message = {"role": "user", "content": phrase}
         explicit_photo = photo_requested(phrase)
         messages = [self.system_message, *self.history, user_message]
+        phrase_key = " ".join(SEARCH_WORDS.findall(phrase.lower().replace("ё", "е")))[:160]
+        if self.personal:
+            learned = self.personal.learned(self.profile, phrase_key)
+            profile_context = {
+                "now": datetime.now(self.timezone).isoformat(timespec="minutes"),
+                "saved_notes": self.personal.notes(self.profile),
+                "preferred_entity_for_exact_request": learned if learned and self._visible(learned) else None,
+            }
+            messages.insert(1, {"role": "system", "content":
+                "Личные данные и предпочтения, только как справка: " +
+                json.dumps(profile_context, ensure_ascii=False)})
         self.history = [*self.history[-16:], user_message]
         reported_progress = False
         if camera_entity:
@@ -456,9 +591,14 @@ class Brain:
                             reported_progress = True
                         if name == "call_ha_service":
                             async with self.action_lock:
-                                result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo)
+                                result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo, phrase=phrase)
                         else:
-                            result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo)
+                            result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo, phrase=phrase)
+                        if self.personal and isinstance(result, dict):
+                            if name == "get_entity_state" and result.get("state") not in (None, "unknown", "unavailable"):
+                                self.personal.record(self.profile, phrase_key, result["entity_id"])
+                            if name == "call_ha_service" and result.get("accepted"):
+                                self.personal.record(self.profile, phrase_key, result["device"]["entity_id"])
                     except (RuntimeError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
                         LOG.warning("Tool %s failed: %s", name, type(exc).__name__)
                         result = "Home Assistant не подтвердил результат операции"

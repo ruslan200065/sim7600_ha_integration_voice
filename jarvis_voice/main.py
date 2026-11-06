@@ -1,6 +1,10 @@
 """JARVIS Voice Bridge: HA add-on HTTP API, SIM7600 call management, SpeechKit and DeepSeek."""
 import asyncio
 import json
+import hmac
+import re
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import logging
 import os
 import secrets
@@ -8,7 +12,7 @@ import socket
 from contextlib import aclosing
 from functools import partial
 from pathlib import Path
-from aiohttp import web, ClientSession
+from aiohttp import web, ClientError, ClientSession
 
 from modem import Modem
 from audio import PCMTransport, rms
@@ -21,6 +25,9 @@ from q1_hardware import diagnostics, snapshot, apply_original_camera_controls
 from q1_media import Q1Media
 from setup_panel import SetupPanel
 from history import History
+from family import GATE_ACTIONS, family_profiles, profile_key
+from personal import Personal, condition_matches
+from speech_cache import SpeechCache
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOG = logging.getLogger(__name__)
@@ -70,7 +77,21 @@ class Server:
         self.speaking = asyncio.Lock()
         self.next_prompt = None
         self.shared_photos = {}
-        self.history = History(Path(os.environ.get("OPTIONS_PATH", "/data/options.json")).with_name("history.sqlite3"))
+        data_dir = Path(os.environ.get("OPTIONS_PATH", "/data/options.json")).parent
+        self.history = History(data_dir / "history.sqlite3")
+        self.personal = Personal(data_dir / "personal.sqlite3")
+        self.speech_cache = SpeechCache(data_dir / "speech_cache")
+        self.family = family_profiles(options.get("family_members", []))
+        self.family.pop((options.get("allowed_number") or "").lstrip("+"), None)
+        self.gates = frozenset(member["gate"] for member in self.family.values() if member["gate"])
+        self.family_brains = {}
+        self.reminder_task = None
+        self.reminder_call = None
+        owner = self.o.get("allowed_number") or ""
+        self.owner_key = profile_key("Владелец", owner) if owner else None
+        self.reminder_numbers = {member["key"]: member["number"] for member in self.family.values()}
+        if self.owner_key:
+            self.reminder_numbers[self.owner_key] = owner
         self.sms_task = None
         self.sms_wake = asyncio.Event()
         self.sms_status = {}
@@ -78,17 +99,30 @@ class Server:
     async def setup(self):
         await self.history.start()
         self.http = ClientSession()
-        self.brain = Brain(self.o, self.http, self.capture_camera, self.listen_room, self.share_photo)
+        self.brain = Brain(self.o, self.http, self.capture_camera, self.listen_room, self.share_photo,
+                           personal=self.personal, profile=self.owner_key or "local",
+                           restricted_entities=self.gates)
+        if self.brain.hass_token:
+            try:
+                config = await self.brain._ha("GET", "/api/config", timeout=3)
+                self.brain.timezone = ZoneInfo(config["time_zone"])
+            except (RuntimeError, OSError, ValueError, KeyError, TimeoutError, ZoneInfoNotFoundError, ClientError):
+                LOG.warning("Home Assistant time zone unavailable")
+        self.reminder_task = asyncio.create_task(self.deliver_reminders())
         if self.o.get("yandex_api_key"):
             self.speech = SpeechKit(
                 self.o["yandex_api_key"],
                 self.o.get("yandex_voice", "denis"),
                 self.o.get("yandex_role", "neutral"),
+                cache=self.speech_cache if self.o.get("speech_cache_enabled", True) else None,
             )
         await self.modem.start()
         self.sms_task = asyncio.create_task(self.sync_sms())
 
     async def close(self):
+        if self.reminder_task:
+            self.reminder_task.cancel()
+            await asyncio.gather(self.reminder_task, return_exceptions=True)
         if self.sms_task:
             self.sms_task.cancel()
             await asyncio.gather(self.sms_task, return_exceptions=True)
@@ -124,15 +158,23 @@ class Server:
             self.auto_answer_task = asyncio.create_task(
                 self._maybe_answer(self.modem.call_id)
             )
-        if name == "call_connected" and self.speech:
+        if name == "call_connected" and self.speech and self.caller_allowed():
             call_id = self.modem.call_id
             prompt, camera = "", None
             if self.next_prompt and self.next_prompt[0] == call_id:
                 _, prompt, camera = self.next_prompt
             self.next_prompt = None
-            self.session = asyncio.create_task(self._start_session(call_id, prompt, camera))
+            reminder_id = None
+            if self.reminder_call and self.reminder_call[0] == call_id:
+                _, identifier, number = self.reminder_call
+                if number.lstrip("+") == self.modem.active_number.lstrip("+"):
+                    reminder_id = identifier
+                else:
+                    prompt = ""
+            self.session = asyncio.create_task(self._start_session(call_id, prompt, camera, reminder_id))
         if name in ("call_ended","modem_offline"):
             self.next_prompt = None
+            self.reminder_call = None
             if self.session and self.session is not asyncio.current_task() and not self.session.cancelling():
                 self.session.cancel()
             self.mode="ready" if name=="call_ended" else "offline"
@@ -175,15 +217,80 @@ class Server:
         except (RuntimeError, ConnectionError, OSError):
             LOG.exception("Automatic answer failed")
 
-    def caller_allowed(self):
-        allowed = self.o.get("allowed_number") or ""
-        caller = self.modem.active_number
-        return bool(allowed and caller) and allowed.removeprefix("+") == caller.removeprefix("+")
+    async def deliver_reminders(self):
+        clock = asyncio.get_running_loop().time
+        next_sample = 0
+        while True:
+            if clock() >= next_sample:
+                next_sample = clock() + 15
+                try:
+                    await self.sample_reminder_conditions()
+                except Exception as exc:
+                    LOG.warning("Reminder condition check failed: %s", type(exc).__name__)
+            if self.modem.call_state == "idle":
+                try:
+                    now = datetime.now(timezone.utc)
+                    due = self.personal.due(now, self.reminder_numbers)
+                    if due:
+                        identifier, profile, text = due[0]
+                        self.personal.retry_after(identifier, now + timedelta(minutes=15))
+                        self.reminder_call = (self.modem.call_id + 1, identifier, self.reminder_numbers[profile])
+                        try:
+                            await self.dial_number(self.reminder_numbers[profile], "Напоминание. " + text)
+                        except (web.HTTPException, RuntimeError, OSError):
+                            self.reminder_call = None
+                            LOG.info("Reminder call deferred")
+                except Exception as exc:
+                    LOG.warning("Reminder dispatch failed: %s", type(exc).__name__)
+            await asyncio.sleep(5)
 
-    async def _start_session(self, call_id, prompt, camera):
+    async def sample_reminder_conditions(self):
+        watches = self.personal.watches()
+        if not watches:
+            return
+        profiles = {member["key"]: member for member in self.family.values()}
+        rows = await self.brain._ha("GET", "/api/states")
+        states = {row["entity_id"]: row for row in rows}
+        now = datetime.now(timezone.utc)
+        for identifier, profile, condition, armed in watches:
+            if profile not in self.reminder_numbers:
+                continue
+            brain = self.caller_brain(profiles.get(profile))
+            if condition["kind"] == "zone":
+                permitted = condition["entity"] == brain.options.get("reminder_person")
+            else:
+                permitted = brain._visible(condition["entity"])
+            if permitted:
+                matched = condition_matches(condition, states)
+                self.personal.sample(identifier, matched, armed, now)
+
+    def caller_allowed(self):
+        caller = (self.modem.active_number or "").removeprefix("+")
+        owner = (self.o.get("allowed_number") or "").removeprefix("+")
+        return bool(caller and (caller == owner or caller in self.family))
+
+    def caller_brain(self, member):
+        if not member:
+            return self.brain
+        key = member["key"]
+        if key not in self.family_brains:
+            entities = member["entities"]
+            options = {
+                **self.o, "allowed_entities": entities, "observed_entities": entities,
+                "observe_all_entities": False, "control_all_entities": False, "camera_entity": "",
+                "reminder_calendar": member["calendar"], "reminder_person": member["person"],
+            }
+            self.family_brains[key] = Brain(
+                options, self.http, None, personal=self.personal, profile=key,
+                profile_name=member["name"], timezone_name=self.brain.timezone.key,
+                restricted_entities=self.gates,
+            )
+        return self.family_brains[key]
+
+    async def _start_session(self, call_id, prompt, camera, reminder_id=None):
         async with self.session_lock:
             if (self.modem.call_id, self.modem.call_state) == (call_id, "connected"):
-                await self._dialog(prompt, camera)
+                await self._dialog(prompt, camera, reminder_id)
 
     async def _say(self, text):
         if not self.speech:
@@ -191,15 +298,60 @@ class Server:
         async with self.speaking, aclosing(self.speech.synthesize(text)) as chunks:
             await self.audio.write_stream(chunks)
 
-    async def _dialog(self, prompt, camera):
+    async def _dialog(self, prompt, camera, reminder_id=None):
         try:
             self.mode="starting_audio"
             await self.modem.enable_pcm()
             await self.audio.start()
             self.mode="talking"
+            member = self.family.get((self.modem.active_number or "").removeprefix("+"))
+            brain = self.caller_brain(member)
+            pending_pin = 0.0
+            attempts = 0
+            clock = asyncio.get_running_loop().time
+
+            async def reply(phrase, *, on_progress):
+                nonlocal pending_pin, attempts
+                if reminder_id:
+                    if re.fullmatch(r"(?:да|давай|слушаю|напомни)[.! ]*", phrase.lower().strip()):
+                        return prompt
+                    return "Скажи «да», чтобы услышать напоминание."
+                gate = member["gate"] if member else ""
+                pin = self.o.get("gate_pin", "")
+                if pending_pin > clock():
+                    pending_pin = 0.0
+                    digits = re.sub(r"[^0-9]", "", phrase)
+                    attempts += 1
+                    if not hmac.compare_digest(digits, pin):
+                        return "Код не подошёл."
+                    domain = gate.split(".", 1)[0]
+                    try:
+                        await self.brain._ha("POST", f"/api/services/{domain}/{GATE_ACTIONS[domain]}",
+                                             {"entity_id": gate})
+                    except (RuntimeError, TimeoutError, ClientError):
+                        return "Home Assistant не подтвердил команду открытия."
+                    return "Команда открытия отправлена."
+                if gate and re.search(r"\b(?:откро|открыв|открыть|отопр)\w*", phrase, re.I) and re.search(r"\b(?:калит|ворот)\w*", phrase, re.I):
+                    if re.search(r"\bне\s+(?:откро|открыв|открыть|отопр)\w*", phrase, re.I):
+                        return "Хорошо."
+                    if not re.fullmatch(r"[0-9]{6}", pin) or attempts >= 3:
+                        return "Открытие по телефону недоступно."
+                    pending_pin = clock() + 30
+                    return "Назови шестизначный код."
+                return await brain.reply(phrase, camera_entity=camera, on_progress=on_progress)
+
+            async def play(text):
+                nonlocal reminder_id
+                await self._say(text)
+                if reminder_id and text == prompt:
+                    self.personal.delivered(reminder_id)
+                    reminder_id = None
+
             await run_dialog(
-                self.speech, partial(self.brain.reply, camera_entity=camera), self.audio.queue, self._say, self.modem.hangup,
-                prompt or "Здравствуйте. Это Джарвис. Слушаю вас.", background_tools=True,
+                self.speech, reply, self.audio.queue, play, self.modem.hangup,
+                ("У меня для вас напоминание. Скажите «да», чтобы его услышать."
+                 if reminder_id else prompt or "Здравствуйте. Это Джарвис. Слушаю вас."),
+                background_tools=True,
             )
         except asyncio.CancelledError:
             raise
@@ -242,12 +394,23 @@ class Server:
         if not isinstance(data, dict):
             raise web.HTTPBadRequest(text="Expected a JSON object")
         return await self.dial_number(
-            data.get("number"), data.get("prompt", ""), data.get("camera_entity"),
+            data.get("number"), data.get("prompt", ""), data.get("camera_entity"), data.get("member"),
         )
 
-    async def dial_number(self, number=None, prompt="", camera=None):
-        number=number or self.o.get("allowed_number","")
-        if not self.o.get("allowed_number") or number != self.o["allowed_number"]:
+    async def dial_number(self, number=None, prompt="", camera=None, member=None):
+        owner = self.o.get("allowed_number", "")
+        family = getattr(self, "family", {})
+        if member:
+            if not isinstance(member, str) or number:
+                raise web.HTTPBadRequest(text="Select one family recipient")
+            profile = next((entry for entry in family.values() if entry["name"].casefold() == member.strip().casefold()), None)
+            if not profile:
+                raise web.HTTPBadRequest(text="Unknown family recipient")
+            number = profile["number"]
+        number = number or owner
+        if not isinstance(number, str) or not number or (
+            number.removeprefix("+") != owner.removeprefix("+") and number.removeprefix("+") not in family
+        ):
             raise web.HTTPForbidden(text="Number not allowlisted")
         prompt=str(prompt).strip()
         if len(prompt)>1200:

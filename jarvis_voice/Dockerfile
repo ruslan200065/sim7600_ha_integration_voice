@@ -1,6 +1,6 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
-RUN apk add --no-cache python3 py3-pip git ffmpeg alsa-utils alsa-plugins-pulse v4l-utils pulseaudio-utils build-base python3-dev linux-headers
+RUN apk add --no-cache python3 py3-pip tzdata git ffmpeg alsa-utils alsa-plugins-pulse v4l-utils pulseaudio-utils build-base python3-dev linux-headers
 COPY requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt && \

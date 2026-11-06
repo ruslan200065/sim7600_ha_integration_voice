@@ -10,6 +10,7 @@ const routes = [
   {select: "#output-route", field: "q1_speaker_device", option: "audio_output", devices: "outputs"},
 ];
 const secrets = [
+  {field: "gate_pin", clear: "#clear-gate-pin"},
   {field: "yandex_api_key", hint: "#speech-key-hint", clear: "#clear-speech"},
   {field: "deepseek_api_key", hint: "#deepseek-key-hint", clear: "#clear-deepseek"},
 ];
@@ -67,6 +68,7 @@ function setRoute(route, state) {
 }
 
 function fieldValue(key, element) {
+  if (key === "family_members") return element.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (["allowed_entities", "observed_entities", "allow_domains"].includes(key)) {
     return element.value.split(/\s+/).filter(Boolean);
   }

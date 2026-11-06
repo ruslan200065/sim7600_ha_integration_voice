@@ -61,7 +61,8 @@ def _register_services(hass):
 
     async def handle_call(call):
         await _get_coordinator(hass,call.data.get("entry_id")).client.post(
-            "/dial", {"prompt": call.data.get("prompt", ""), "camera_entity": call.data.get("camera_entity")}, timeout=25)
+            "/dial", {"prompt": call.data.get("prompt", ""), "camera_entity": call.data.get("camera_entity"),
+                       "member": call.data.get("member")}, timeout=25)
 
     async def handle_dtmf(call):
         await _get_coordinator(hass, call.data.get("entry_id")).client.post(
@@ -96,6 +97,7 @@ def _register_services(hass):
     hass.services.async_register(DOMAIN,"call",handle_call,schema=vol.Schema({
         **common,vol.Optional("prompt",default=""):vol.All(str,vol.Length(max=1200)),
         vol.Optional("camera_entity"):cv.entity_id,
+        vol.Optional("member"):vol.All(str,vol.Length(min=1,max=60)),
     }))
     hass.services.async_register(DOMAIN,"hangup",handle_hangup,schema=vol.Schema(common))
     hass.services.async_register(DOMAIN, "send_dtmf", handle_dtmf, schema=vol.Schema({

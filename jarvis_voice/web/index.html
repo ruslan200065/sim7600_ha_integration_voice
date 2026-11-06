@@ -90,6 +90,21 @@
             </div>
           </details>
           <details class="card">
+            <summary>Семья, память и напоминания</summary>
+            <div class="fields advanced">
+              <label>Члены семьи<textarea name="family_members" rows="5"></textarea>
+                <span class="hint">По одному на строку: имя | номер в международном формате | ID устройств через пробел | ID калитки | личный календарь | person участника. Достаточно имени и номера.</span>
+              </label>
+              <label>Код калитки<input name="gate_pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password">
+                <span class="hint">Шесть цифр. Запрашивается перед открытием назначенной этому участнику калитки.</span>
+              </label>
+              <label class="check"><input type="checkbox" id="clear-gate-pin"> Удалить код калитки</label>
+              <label>Календарь напоминаний владельца<input name="reminder_calendar" placeholder="calendar.reminders"></label>
+              <label>Профиль местоположения владельца<input name="reminder_person" placeholder="person.owner"></label>
+              <label class="check"><input type="checkbox" name="speech_cache_enabled"> Кэшировать озвучку на диске (до 64 МБ)</label>
+            </div>
+          </details>
+          <details class="card">
             <summary>Дополнительные настройки</summary>
             <div class="fields advanced">
               <label>Скорость AT-порта<input name="serial_baud" type="number" min="1200" max="921600"></label>

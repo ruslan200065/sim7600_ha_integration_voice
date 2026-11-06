@@ -35,9 +35,14 @@ transcribe:
           step: 1
           unit_of_measurement: s
 call:
-  name: Call my phone
-  description: Dial the allowlisted number and read the question once connected.
+  name: Call an owner or family member
+  description: Dial the configured recipient and read the question once connected.
   fields:
+    member:
+      name: Family member
+      description: Enter the profile name exactly as configured in JARVIS. Leave empty for the owner.
+      selector:
+        text:
     prompt:
       name: Question
       selector:

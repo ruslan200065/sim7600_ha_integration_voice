@@ -150,3 +150,31 @@ The companion adds:
 The normal HA media player allows playback from specific HTTP(S) hosts on `media_allowed_hosts`; the host list must contain the hostname/IP used by your Home Assistant URL. See [Companion Integration](../docs/COMPANION_INTEGRATION.md).
 
 An unverified microphone is **not** advertised as a working Assist Satellite. Native voice satellites require additional pipeline/wake word support; do not confuse the microphone capture service with that full integration.
+
+## Family profiles and reminders
+
+Open **Семья, память и напоминания** in the JARVIS panel. Enter one profile per line as
+`name | number | entity IDs separated by spaces | gate entity | personal calendar | person entity`. Only the name and number
+are required. Keep the legacy owner number in its own field. Save and restart the add-on.
+Family callers can read and use supported controls for the entities assigned to their profile.
+A gate can be a dedicated `cover`, `lock`, `button` or `script`. Set the six-digit gate code
+in the panel. JARVIS requests it within the call before issuing the configured gate action.
+Speech recognition processes spoken codes. Choose a code unique to JARVIS.
+
+Ask JARVIS to remember or forget a fact, or say when to remind you. Each caller has separate
+notes and recent conversational context. Successful reads and controls can teach the device for an exact repeated phrase. Notes and learned choices stay in the add-on database and can be used as context for
+DeepSeek. At the due time JARVIS calls only the profile that created the reminder and marks it delivered
+once the person answers and confirms playback. Missed calls are retried after 15 minutes. A profile can
+opt in to mirroring new reminders to its own `calendar.*`. Use calendars with appropriate
+Home Assistant visibility. Cancelling through JARVIS cancels the call. Remove any mirrored
+calendar event in Home Assistant if needed.
+
+For a one-shot arrival reminder, assign the correct `person.*` to the profile and add a named
+`zone.*` in Home Assistant. Ask JARVIS to remind you when you arrive there. You can also ask
+for a one-shot reminder on a readable device state or a numeric threshold. The condition
+must become true after it has been observed false. Location coordinates are evaluated locally.
+
+Use `jarvis_q1.call` with the optional `member` field to route an automation call to the named
+profile. Restart Home Assistant Core once after installing the updated companion integration
+to load the revised action schema. The owner remains the default recipient. SpeechKit caches
+complete synthesized PCM locally up to 64 MB. Repeated replies can reuse the cached audio.

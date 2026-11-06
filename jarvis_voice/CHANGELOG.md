@@ -1,3 +1,10 @@
+## 0.4.21 (experimental)
+
+- Add separate family caller profiles, PIN-protected gate actions and named automation recipients.
+- Keep personal notes, learned sensor choices and reminders in local storage. Reminders call only the original requester and can mirror to their personal Home Assistant calendar.
+- Add one-shot reminders for arrival at a Home Assistant zone or a sensor state change.
+- Add bounded SpeechKit synthesis cache and more sensor classes and values.
+
 ## 0.4.20 (experimental)
 
 - Speak only the latest conversation turn while earlier actions finish in the background.

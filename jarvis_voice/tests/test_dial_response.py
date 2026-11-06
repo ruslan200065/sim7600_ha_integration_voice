@@ -36,3 +36,11 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
             await service.dial_number()
         self.assertEqual(error.exception.text, "Dial failed: BUSY")
         self.assertIsNone(service.next_prompt)
+
+    async def test_named_family_recipient_is_resolved_without_using_owner(self):
+        service = Server({"api_token": "test", "allowed_number": "+12025550101",
+                          "family_members": ["Test family | +12025550102"]})
+        service.modem.call_state = "idle"
+        service.modem.dial = AsyncMock()
+        await service.dial_number(member="test FAMILY")
+        service.modem.dial.assert_awaited_once_with("+12025550102")
