@@ -101,7 +101,7 @@ class Server:
         if (
             name == "caller_id"
             and self.o.get("auto_answer")
-            and self.o.get("allowed_number") == data["number"]
+            and self.caller_allowed()
             and (not self.auto_answer_task or self.auto_answer_task.done())
         ):
             self.auto_answer_task = asyncio.create_task(
@@ -124,13 +124,18 @@ class Server:
         if (
             self.modem.call_id != call_id
             or self.modem.call_state != "ringing"
-            or self.modem.active_number != self.o.get("allowed_number")
+            or not self.caller_allowed()
         ):
             return
         try:
             await self.modem.answer()
         except (RuntimeError, ConnectionError, OSError):
             LOG.exception("Automatic answer failed")
+
+    def caller_allowed(self):
+        allowed = self.o.get("allowed_number") or ""
+        caller = self.modem.active_number
+        return bool(allowed and caller) and allowed.removeprefix("+") == caller.removeprefix("+")
 
     async def _start_session(self, call_id, prompt):
         async with self.session_lock:
@@ -204,10 +209,15 @@ class Server:
 
     async def dial(self, request):
         data=await request.json()
-        number=data.get("number") or self.o.get("allowed_number","")
+        if not isinstance(data, dict):
+            raise web.HTTPBadRequest(text="Expected a JSON object")
+        return await self.dial_number(data.get("number"), data.get("prompt", ""))
+
+    async def dial_number(self, number=None, prompt=""):
+        number=number or self.o.get("allowed_number","")
         if not self.o.get("allowed_number") or number != self.o["allowed_number"]:
             raise web.HTTPForbidden(text="Number not allowlisted")
-        prompt=str(data.get("prompt","")).strip()
+        prompt=str(prompt).strip()
         if len(prompt)>1200:
             raise web.HTTPBadRequest(text="prompt too long")
         if self.modem.call_state != "idle":
@@ -234,7 +244,7 @@ class Server:
 
     async def answer(self, request):
         # Explicit answer still requires caller ID.
-        if not self.o.get("allowed_number") or self.modem.active_number != self.o["allowed_number"]:
+        if not self.caller_allowed():
             raise web.HTTPForbidden(text="Caller not allowlisted")
         try:
             await self.modem.answer()

@@ -84,6 +84,19 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
             await answer
         self.assertTrue(self.port.lines.empty())
 
+    async def test_extended_voice_ring_and_international_caller_id(self):
+        await self.modem._urc("+CRING: GPRS")
+        self.assertEqual(self.modem.call_state, "idle")
+        await self.modem._urc("+CRING:VOICE")
+        self.assertEqual(self.modem.call_state, "ringing")
+        await self.modem._urc('+CLIP: "79991234567",145,,,0')
+        self.assertEqual(self.modem.active_number, "+79991234567")
+        await self.modem.answer()
+        await self.modem._urc("VOICE CALL:BEGIN")
+        self.assertEqual(self.modem.call_state, "connected")
+        await self.modem._urc("VOICE CALL:END")
+        self.assertEqual(self.modem.call_state, "idle")
+
     async def test_read_failure_reopens_port(self):
         ports = [FakePort(), FakePort()]
         opened_twice = asyncio.Event()

@@ -50,15 +50,27 @@
               <label class="check"><input type="checkbox" id="clear-deepseek"> Удалить ключ DeepSeek</label>
             </div>
           </section>
-          <details class="card">
+          <details class="card" id="phone">
             <summary>Телефонные звонки</summary>
-            <p class="hint">Звонки доступны только для указанного номера. Передача звука через SIM7600 зависит от прошивки.</p>
+            <p class="hint">Разрешённый номер — телефон, на который звонит JARVIS и с которого он может принять вызов. Для входящего звонка набирайте номер SIM-карты в Q1.</p>
             <div class="fields">
               <label>Разрешённый номер<input name="allowed_number" type="tel" placeholder="+79991234567"></label>
               <label>Лимит звонков в час<input name="max_calls_per_hour" type="number" min="1" max="20"></label>
               <label>Порт звука звонка<input name="pcm_port" list="serial-ports" placeholder="Отключён"></label>
               <label class="check"><input name="auto_answer" type="checkbox"> Автоответ разрешённому номеру</label>
             </div>
+            <div class="phone-actions actions">
+              <button type="button" data-phone="dial" disabled>Позвонить на сохранённый номер</button>
+              <button type="button" data-phone="answer" disabled>Ответить</button>
+              <button type="button" data-phone="hangup" disabled>Завершить</button>
+            </div>
+            <output id="phone-status" aria-live="polite"></output>
+            <output id="phone-result" aria-live="polite"></output>
+            <div class="phone-actions">
+              <button type="button" data-check="network">Проверить SIM и сеть</button>
+              <output aria-live="polite"></output>
+            </div>
+            <p class="hint">Для автозвонка добавьте действие <code>jarvis_q1.call</code> в автоматизацию Home Assistant. Передача звука через SIM7600 зависит от прошивки.</p>
           </details>
           <details class="card">
             <summary>Дополнительные настройки</summary>

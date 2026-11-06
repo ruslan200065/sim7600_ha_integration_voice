@@ -9,6 +9,7 @@ import serial
 LOG = logging.getLogger(__name__)
 NUMBER = re.compile(r"^\+?[0-9]{7,16}$")
 CALL_END = {"NO CARRIER", "BUSY", "NO ANSWER", "NO DIALTONE"}
+VOICE_RING = re.compile(r"(?:RING|\+CRING:\s*VOICE(?:/[^ ]+)?)$")
 
 
 class Modem:
@@ -112,7 +113,7 @@ class Modem:
             partial = b""
             if not value:
                 continue
-            if value == "RING" or value.startswith(("VOICE CALL:", "+CLIP:")):
+            if VOICE_RING.fullmatch(value) or value.startswith(("VOICE CALL:", "+CLIP:")):
                 await self._urc(value)
                 continue
             future = self.pending
@@ -138,24 +139,52 @@ class Modem:
 
     async def _urc(self, value):
         if value.startswith("+CLIP:") and self.call_state == "ringing":
-            match = re.search(r'"([^"]+)"', value)
+            match = re.match(r'\+CLIP:\s*"(\+?[0-9]+)"\s*,\s*(\d+)(?:,|$)', value)
             if match:
-                self.active_number = match.group(1)
+                number, address_type = match.groups()
+                self.active_number = (
+                    "+" + number if address_type == "145" and not number.startswith("+")
+                    else number
+                )
                 await self._emit("caller_id", number=self.active_number)
-        elif value == "RING" and self.call_state == "idle":
+        elif VOICE_RING.fullmatch(value) and self.call_state == "idle":
             self.call_id += 1
             self.active_number = ""
             self.call_state = "ringing"
             await self._emit("incoming_call", number=self.active_number)
-        elif value.startswith("VOICE CALL: BEGIN") and self.call_state in ("dialing", "answering"):
+        elif re.match(r"VOICE CALL:\s*BEGIN\b", value) and self.call_state in ("dialing", "answering"):
             self.call_state = "connected"
             await self._emit("call_connected", number=self.active_number)
-        elif (value in CALL_END or value.startswith("VOICE CALL: END")) and self.call_state not in (
+        elif (value in CALL_END or re.match(r"VOICE CALL:\s*END\b", value)) and self.call_state not in (
             "offline", "idle"
         ):
             self.call_state = "idle"
             self.active_number = ""
             await self._emit("call_ended", reason=value)
+
+    async def phone_diagnostics(self):
+        """Read network and call indicators without altering the modem settings."""
+        fields = {}
+        for name, command, prefix in (
+            ("SIM", "AT+CPIN?", "+CPIN:"),
+            ("CREG", "AT+CREG?", "+CREG:"),
+            ("CEREG", "AT+CEREG?", "+CEREG:"),
+            ("CPSI", "AT+CPSI?", "+CPSI:"),
+            ("CNMP", "AT+CNMP?", "+CNMP:"),
+            ("CRC", "AT+CRC?", "+CRC:"),
+            ("CEER", "AT+CEER", "+CEER:"),
+            ("VoLTE", "AT+VOLTESETTING?", "+VOLTESETTING:"),
+        ):
+            response = await self.command(command, timeout=3)
+            value = next(
+                (line.removeprefix(prefix).strip() for line in response if line.startswith(prefix)),
+                None,
+            )
+            if value is not None:
+                if name in {"CREG", "CEREG", "CPSI"}:
+                    value = ",".join(value.split(",")[:2])
+                fields[name] = value
+        return fields
 
     async def command(self, cmd, timeout=6, *, expected_call=None):
         if not re.fullmatch(r"[\x20-\x7e]+", cmd) or "\r" in cmd or "\n" in cmd:

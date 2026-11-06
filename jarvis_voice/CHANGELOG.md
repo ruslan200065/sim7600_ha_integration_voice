@@ -1,3 +1,7 @@
+## 0.4.2 (experimental)
+- Add outgoing call, answer, hangup, and read-only SIM/network checks to the phone settings panel.
+- Accept extended voice ringing indications and international caller IDs from the modem.
+
 ## 0.4.1 (experimental)
 - Preview the selected camera before applying settings and show a specific message if another process holds the device.
 

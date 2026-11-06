@@ -271,6 +271,29 @@ class SetupPanel:
         except web.HTTPException as exc:
             LOG.warning("Could not restart add-on from ingress: %s", exc.status)
 
+    async def phone_state(self, _request):
+        service = self.service
+        state = service.modem.call_state
+        return web.json_response(
+            {
+                "state": state,
+                "auto_answer": bool(service.o.get("auto_answer")),
+                "can_dial": state == "idle" and bool(service.o.get("allowed_number")),
+                "can_answer": state == "ringing" and service.caller_allowed(),
+                "can_hangup": state in {"ringing", "answering", "dialing", "connected"},
+            }
+        )
+
+    async def phone_action(self, request):
+        action = request.match_info["action"]
+        if action == "dial":
+            return await self.service.dial_number()
+        if action == "answer":
+            return await self.service.answer(request)
+        if action == "hangup":
+            return await self.service.hangup(request)
+        raise web.HTTPNotFound()
+
     async def check(self, request):
         service = self.service
         check = request.match_info["check"]
@@ -306,6 +329,12 @@ class SetupPanel:
                     f"{modem.model} · {modem.firmware} · CSQ {modem.signal or '—'}"
                 )
                 return web.json_response({"message": message})
+            if check == "network":
+                if service.modem.call_state == "offline":
+                    raise RuntimeError("Модем недоступен. Проверьте AT-порт.")
+                status = await service.modem.phone_diagnostics()
+                message = " · ".join(f"{key} {value}" for key, value in status.items())
+                return web.json_response({"message": message, "network": status})
             if check == "gps":
                 result = await gps_status(service.modem)
                 status = result["modem_gps_status"]
@@ -390,6 +419,8 @@ class SetupPanel:
         app.router.add_get("/state", self.state)
         app.router.add_put("/settings", self.save)
         app.router.add_post("/restart", self.restart)
+        app.router.add_get("/phone", self.phone_state)
+        app.router.add_post("/phone/{action}", self.phone_action)
         app.router.add_post("/checks/{check}", self.check)
         return app
 

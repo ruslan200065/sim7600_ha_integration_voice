@@ -209,6 +209,56 @@ for (const button of document.querySelectorAll("[data-check]")) {
   });
 }
 
+const phone = document.querySelector("#phone");
+const phoneStatus = document.querySelector("#phone-status");
+const phoneResult = document.querySelector("#phone-result");
+const phoneButtons = Array.from(document.querySelectorAll("[data-phone]"));
+const phoneStates = {
+  offline: "Модем недоступен",
+  idle: "Готов к вызову",
+  ringing: "Входящий звонок",
+  dialing: "Исходящий звонок",
+  answering: "Подключение",
+  connected: "Разговор",
+};
+let phoneBusy = false;
+
+async function refreshPhone() {
+  if (!phone.open || phoneBusy || document.hidden) return;
+  try {
+    const state = await (await request("phone")).json();
+    phoneStatus.textContent = (phoneStates[state.state] || state.state)
+      + " · автоответ " + (state.auto_answer ? "включён" : "выключен");
+    for (const button of phoneButtons) button.disabled = !state["can_" + button.dataset.phone];
+  } catch {
+    phoneStatus.textContent = "Состояние модема недоступно.";
+    for (const button of phoneButtons) button.disabled = true;
+  }
+}
+
+phone.addEventListener("toggle", refreshPhone);
+setInterval(refreshPhone, 3000);
+for (const button of phoneButtons) {
+  button.addEventListener("click", async () => {
+    phoneBusy = true;
+    for (const control of phoneButtons) control.disabled = true;
+    phoneResult.textContent = "Команда отправляется…";
+    phoneResult.dataset.error = "false";
+    try {
+      await request("phone/" + button.dataset.phone, "POST");
+      phoneResult.textContent = button.dataset.phone === "dial"
+        ? "Модем принял команду вызова. Состояние обновится ниже."
+        : "Команда принята.";
+    } catch (error) {
+      phoneResult.textContent = error.message;
+      phoneResult.dataset.error = "true";
+    } finally {
+      phoneBusy = false;
+      await refreshPhone();
+    }
+  });
+}
+
 request("state")
   .then(response => response.json())
   .then(render)
