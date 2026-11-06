@@ -1,3 +1,7 @@
+## 0.4.7 (experimental)
+- Use modem call-state reports as a fallback for missing RING, caller ID, and call connection indications.
+- Show packet attachment and call-state reporting in the phone diagnostics.
+
 ## 0.4.6 (experimental)
 - Archive call events and incoming SMS in a private SQLite database, with filters and paging in the web panel.
 - Import PDU messages from the SIM and modem stores, deduplicate them and join multipart text.

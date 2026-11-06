@@ -10,6 +10,10 @@ LOG = logging.getLogger(__name__)
 NUMBER = re.compile(r"^\+?[0-9]{7,16}$")
 CALL_END = {"NO CARRIER", "BUSY", "NO ANSWER", "NO DIALTONE"}
 VOICE_RING = re.compile(r"(?:RING|\+CRING:\s*VOICE(?:/[^ ]+)?)$")
+CALL_STATUS = re.compile(
+    r'\+CLCC:\s*\d+\s*,\s*([01])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*[01]'
+    r'(?:\s*,\s*"(\+?[0-9]+)"\s*,\s*(\d+))?(?:,.*)?$'
+)
 
 
 class Modem:
@@ -68,6 +72,7 @@ class Modem:
                 await self.command("ATE0")
                 await self.command("AT+CMEE=2")
                 await self.command("AT+CLIP=1")
+                await self.command("AT+CLCC=1")
                 self.model = " ".join((await self.command("AT+CGMM"))[:-1]).strip()
                 self.firmware = " ".join((await self.command("AT+CGMR"))[:-1]).strip()
                 self.call_state = "idle"
@@ -121,6 +126,10 @@ class Modem:
             if VOICE_RING.fullmatch(value) or value.startswith(("VOICE CALL:", "+CLIP:")):
                 await self._urc(value)
                 continue
+            status = CALL_STATUS.fullmatch(value)
+            if status and self.pending_command != "AT+CLCC":
+                await self._call_status(status)
+                continue
             future = self.pending
             if value in CALL_END:
                 if future and not future.done() and self.pending_command.startswith(
@@ -142,24 +151,46 @@ class Modem:
             ):
                 future.set_result(response)
 
+    async def _incoming(self):
+        self.call_id += 1
+        self.active_number = ""
+        self.call_state = "ringing"
+        await self._emit("incoming_call", number=self.active_number)
+
+    async def _caller(self, number, address_type):
+        if address_type == "145" and not number.startswith("+"):
+            number = "+" + number
+        if number != self.active_number:
+            self.active_number = number
+            await self._emit("caller_id", number=number)
+
+    async def _connected(self):
+        self.call_state = "connected"
+        await self._emit("call_connected", number=self.active_number)
+
+    async def _call_status(self, status):
+        direction, state, mode, number, address_type = status.groups()
+        if mode != "0":
+            return
+        if direction == "1" and state == "4":
+            if self.call_state == "idle":
+                await self._incoming()
+            if self.call_state == "ringing" and number:
+                await self._caller(number, address_type)
+        elif state == "0" and (direction, self.call_state) in (
+            ("0", "dialing"), ("1", "answering")
+        ):
+            await self._connected()
+
     async def _urc(self, value):
         if value.startswith("+CLIP:") and self.call_state == "ringing":
             match = re.match(r'\+CLIP:\s*"(\+?[0-9]+)"\s*,\s*(\d+)(?:,|$)', value)
             if match:
-                number, address_type = match.groups()
-                self.active_number = (
-                    "+" + number if address_type == "145" and not number.startswith("+")
-                    else number
-                )
-                await self._emit("caller_id", number=self.active_number)
+                await self._caller(*match.groups())
         elif VOICE_RING.fullmatch(value) and self.call_state == "idle":
-            self.call_id += 1
-            self.active_number = ""
-            self.call_state = "ringing"
-            await self._emit("incoming_call", number=self.active_number)
+            await self._incoming()
         elif re.match(r"VOICE CALL:\s*BEGIN\b", value) and self.call_state in ("dialing", "answering"):
-            self.call_state = "connected"
-            await self._emit("call_connected", number=self.active_number)
+            await self._connected()
         elif (value in CALL_END or re.match(r"VOICE CALL:\s*END\b", value)) and self.call_state not in (
             "offline", "idle"
         ):
@@ -174,10 +205,12 @@ class Modem:
             ("SIM", "AT+CPIN?", "+CPIN:"),
             ("CREG", "AT+CREG?", "+CREG:"),
             ("CEREG", "AT+CEREG?", "+CEREG:"),
+            ("CGATT", "AT+CGATT?", "+CGATT:"),
             ("CPSI", "AT+CPSI?", "+CPSI:"),
             ("COPS", "AT+COPS?", "+COPS:"),
             ("CNMP", "AT+CNMP?", "+CNMP:"),
             ("CRC", "AT+CRC?", "+CRC:"),
+            ("CLCC", "AT+CLCC?", "+CLCC:"),
             ("CEER", "AT+CEER", "+CEER:"),
             ("USB PID", "AT+CUSBPIDSWITCH?", "+CUSBPIDSWITCH:"),
             ("IMS", "AT+CIREG?", "+CIREG:"),

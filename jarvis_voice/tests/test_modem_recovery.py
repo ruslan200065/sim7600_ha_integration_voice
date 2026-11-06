@@ -97,6 +97,27 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
         await self.modem._urc("VOICE CALL:END")
         self.assertEqual(self.modem.call_state, "idle")
 
+    async def test_unsolicited_call_status_recovers_missing_voice_events(self):
+        self.modem.on_event = AsyncMock()
+        self.port.reply = [
+            b'+CLCC: 1,1,4,0,0,"79991234567",145\r\n',
+            b'RING\r\n',
+            b'+CLIP: "+79991234567",145\r\n',
+            b'+CSQ: 20,99\r\n',
+            b'OK\r\n',
+        ]
+        self.assertEqual(await self.modem.command("AT+CSQ"), ["+CSQ: 20,99", "OK"])
+        self.assertEqual(self.modem.call_state, "ringing")
+        self.assertEqual(self.modem.active_number, "+79991234567")
+        self.assertEqual(self.modem.call_id, 1)
+        self.port.reply = [b"+CLCC: 1,1,0,0,0\r\n", b"VOICE CALL: BEGIN\r\n", b"OK\r\n"]
+        await self.modem.answer()
+        self.assertEqual(self.modem.call_state, "connected")
+        self.assertEqual(
+            [item.args[0] for item in self.modem.on_event.call_args_list],
+            ["incoming_call", "caller_id", "call_connected"],
+        )
+
     async def test_phone_diagnostics_expose_ims_support_without_cell_identifiers(self):
         async def command(cmd, **_kwargs):
             return {
