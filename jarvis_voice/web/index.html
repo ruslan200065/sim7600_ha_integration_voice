@@ -70,6 +70,7 @@
               <button type="button" data-check="network">Проверить SIM и сеть</button>
               <output aria-live="polite"></output>
             </div>
+            <button type="button" id="volte" class="phone-actions" disabled>Попробовать включить VoLTE</button>
             <p class="hint">Для автозвонка добавьте действие <code>jarvis_q1.call</code> в автоматизацию Home Assistant. Передача звука через SIM7600 зависит от прошивки.</p>
           </details>
           <details class="card">
@@ -111,6 +112,22 @@
         <p class="hint">Проверка микрофона длится одну секунду. Звук используется для измерения уровня. Проверка SpeechKit отправляет короткую тестовую фразу на синтез.</p>
       </aside>
     </div>
+    <section class="card" aria-labelledby="history-title">
+      <h2 id="history-title">Звонки и SMS</h2>
+      <div class="actions history-controls">
+        <label>Показывать
+          <select id="history-type">
+            <option value="">Всё</option>
+            <option value="call">Звонки</option>
+            <option value="sms">Входящие SMS</option>
+          </select>
+        </label>
+        <button type="button" id="history-refresh">Обновить журнал</button>
+      </div>
+      <output id="history-status" aria-live="polite"></output>
+      <ul id="history-items"></ul>
+      <button type="button" id="history-older" hidden>Показать более ранние</button>
+    </section>
   </main>
 </body>
 </html>

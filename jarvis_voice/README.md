@@ -4,6 +4,8 @@ In Home Assistant, open **Settings → Apps → JARVIS SIM7600 Voice Bridge → 
 
 Use the diagnostics column to check each device independently. A microphone check measures local PCM level and does not send the recording to SpeechKit. The separate SpeechKit check synthesizes a short test phrase. The GPS check reads status without changing the modem configuration.
 
+The **Звонки и SMS** section lists calls observed by the running add-on and incoming messages present in the SIM or modem memory. The archive is private to the add-on and survives restarts. Import can mark an SMS as read on the modem. It leaves messages in their original stores. Use the storage counters to spot a full SIM or modem store.
+
 This project adds an **independent Home Assistant App** to the HACS integration, without stealing its serial port. The App owns the AT and PCM ports. **Do not run the original HACS SIM7600 integration on the same AT port at the same time**.
 
 ## Supported now

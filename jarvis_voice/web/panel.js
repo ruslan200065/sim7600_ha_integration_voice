@@ -213,6 +213,7 @@ const phone = document.querySelector("#phone");
 const phoneStatus = document.querySelector("#phone-status");
 const phoneResult = document.querySelector("#phone-result");
 const phoneButtons = Array.from(document.querySelectorAll("[data-phone]"));
+const volteButton = document.querySelector("#volte");
 const phoneStates = {
   offline: "Модем недоступен",
   idle: "Готов к вызову",
@@ -230,11 +231,105 @@ async function refreshPhone() {
     phoneStatus.textContent = (phoneStates[state.state] || state.state)
       + " · автоответ " + (state.auto_answer ? "включён" : "выключен");
     for (const button of phoneButtons) button.disabled = !state["can_" + button.dataset.phone];
+    volteButton.disabled = state.state !== "idle";
   } catch {
     phoneStatus.textContent = "Состояние модема недоступно.";
     for (const button of phoneButtons) button.disabled = true;
+    volteButton.disabled = true;
   }
 }
+
+volteButton.addEventListener("click", async () => {
+  phoneBusy = true;
+  volteButton.disabled = true;
+  phoneResult.dataset.error = "false";
+  try {
+    phoneResult.textContent = (await (await request("phone/volte", "POST")).json()).message;
+  } catch (error) {
+    phoneResult.textContent = error.message;
+    phoneResult.dataset.error = "true";
+  } finally {
+    phoneBusy = false;
+    await refreshPhone();
+  }
+});
+
+const historyType = document.querySelector("#history-type");
+const historyStatus = document.querySelector("#history-status");
+const historyItems = document.querySelector("#history-items");
+const historyOlder = document.querySelector("#history-older");
+const historyStates = {
+  ringing: "Звонит", dialing: "Набор", connected: "Разговор",
+  missed: "Пропущен", failed: "Без соединения", completed: "Завершён",
+  interrupted: "Прерван", received: "Получено",
+};
+let historyOffset = 0;
+let historyRequest = 0;
+
+async function loadHistory(append = false) {
+  const ticket = ++historyRequest;
+  const params = new URLSearchParams();
+  if (historyType.value) params.set("type", historyType.value);
+  if (append) params.set("offset", historyOffset);
+  historyOlder.disabled = true;
+  try {
+    const result = await (await request("history?" + params)).json();
+    if (ticket !== historyRequest) return;
+    if (!append) {
+      historyItems.replaceChildren();
+      historyOffset = 0;
+    }
+    for (const item of result.items) {
+      const row = document.createElement("li");
+      const heading = document.createElement("strong");
+      const time = new Date(item.created_at * 1000).toLocaleString();
+      const direction = item.direction === "incoming" ? "Входящий звонок" : "Исходящий звонок";
+      const state = historyStates[item.state] || ("Частей " + item.state);
+      const duration = item.connected_at && item.ended_at
+        ? " · " + Math.max(0, Math.round(item.ended_at - item.connected_at)) + " с"
+        : "";
+      heading.textContent = time + " · " + (item.kind === "sms" ? "SMS" : direction)
+        + " · " + (item.number || "Номер скрыт") + " · " + state + duration;
+      row.append(heading);
+      if (item.text) {
+        const body = document.createElement("p");
+        body.textContent = item.text;
+        row.append(body);
+      }
+      historyItems.append(row);
+    }
+    historyOffset += result.items.length;
+    const storage = Object.entries(result.sms.storage || {})
+      .map(([name, count]) => name + " " + count.used + "/" + count.total).join(" · ");
+    historyStatus.dataset.error = String(Boolean(result.sms.error));
+    historyStatus.textContent = result.sms.error || [
+      historyOffset ? "" : "Записей пока нет.",
+      storage ? "Память SMS: " + storage : "",
+    ].filter(Boolean).join(" ");
+    historyOlder.hidden = !result.more;
+  } catch (error) {
+    if (ticket !== historyRequest) return;
+    historyStatus.textContent = error.message;
+    historyStatus.dataset.error = "true";
+  } finally {
+    if (ticket === historyRequest) historyOlder.disabled = false;
+  }
+}
+
+historyType.addEventListener("change", () => loadHistory());
+historyOlder.addEventListener("click", () => loadHistory(true));
+document.querySelector("#history-refresh").addEventListener("click", async () => {
+  try {
+    await request("history/refresh", "POST");
+    await new Promise(resolve => setTimeout(resolve, 1200));
+  } catch (error) {
+    historyStatus.textContent = error.message;
+    historyStatus.dataset.error = "true";
+    return;
+  }
+  await loadHistory();
+});
+loadHistory();
 
 phone.addEventListener("toggle", refreshPhone);
 setInterval(refreshPhone, 3000);

@@ -48,6 +48,11 @@ class Modem:
     async def _emit(self, name, **kwargs):
         if self.on_event:
             try:
+                if name in {
+                    "incoming_call", "outgoing_call", "caller_id", "call_connected",
+                    "call_ended", "call_failed",
+                }:
+                    kwargs.setdefault("call_id", self.call_id)
                 await self.on_event(name, kwargs)
             except Exception:
                 LOG.exception("Event listener failed: %s", name)
@@ -174,6 +179,7 @@ class Modem:
             ("CNMP", "AT+CNMP?", "+CNMP:"),
             ("CRC", "AT+CRC?", "+CRC:"),
             ("CEER", "AT+CEER", "+CEER:"),
+            ("USB PID", "AT+CUSBPIDSWITCH?", "+CUSBPIDSWITCH:"),
             ("IMS", "AT+CIREG?", "+CIREG:"),
             ("VoLTE", "AT+VOLTESETTING?", "+VOLTESETTING:"),
             ("VoLTE modes", "AT+VOLTESETTING=?", "+VOLTESETTING:"),
@@ -190,6 +196,59 @@ class Modem:
             elif name in {"IMS", "VoLTE", "VoLTE modes"} and response:
                 fields[name] = response[-1]
         return fields
+
+    async def data_diagnostics(self):
+        response = await self.command("AT+CGDCONT?", timeout=3)
+        return [
+            {"cid": int(cid), "type": kind, "apn": apn}
+            for line in response
+            if (match := re.match(r'\+CGDCONT:\s*(\d+)\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"', line))
+            for cid, kind, apn in [match.groups()]
+        ]
+
+    async def read_sms(self, on_messages):
+        """Import both SIM and flash stores and restore modem SMS preferences."""
+        idle = (self.call_id, "idle")
+        saved = await self.command("AT+CPMS?", timeout=3, expected_call=idle)
+        previous = next(
+            (match[1] for line in saved if (match := re.match(r'\+CPMS:\s*"(ME|SM|MT|SR)"', line))),
+            None,
+        )
+        format_response = await self.command("AT+CMGF?", timeout=3, expected_call=idle)
+        old_format = next(
+            (match[1] for line in format_response if (match := re.fullmatch(r"\+CMGF:\s*([01])", line))),
+            None,
+        )
+        if previous is None or old_format is None:
+            raise RuntimeError("Не удалось прочитать настройки памяти SMS.")
+        selected = previous
+        usage = {}
+        try:
+            if old_format != "0":
+                result = await self.command("AT+CMGF=0", timeout=3, expected_call=idle)
+                if result[-1] != "OK":
+                    raise RuntimeError("Модем не принял формат PDU для SMS.")
+            for storage in ("SM", "ME"):
+                result = await self.command(f'AT+CPMS="{storage}"', timeout=3, expected_call=idle)
+                if result[-1] != "OK":
+                    continue
+                selected = storage
+                for line in result:
+                    if match := re.match(r"\+CPMS:\s*(\d+)\s*,\s*(\d+)", line):
+                        usage[storage] = {"used": int(match[1]), "total": int(match[2])}
+                lines = await self.command("AT+CMGL=4", timeout=8, expected_call=idle)
+                if lines[-1] != "OK":
+                    raise RuntimeError(f"Модем не прочитал SMS из памяти {storage}.")
+                await on_messages(lines)
+            if not usage:
+                raise RuntimeError("Модем не открыл память SMS.")
+            return usage
+        finally:
+            if self.serial and self.serial.is_open:
+                if selected != previous:
+                    await self.command(f'AT+CPMS="{previous}"', timeout=3)
+                if old_format != "0":
+                    await self.command(f"AT+CMGF={old_format}", timeout=3)
 
     async def command(self, cmd, timeout=6, *, expected_call=None):
         if not re.fullmatch(r"[\x20-\x7e]+", cmd) or "\r" in cmd or "\n" in cmd:
@@ -230,16 +289,18 @@ class Modem:
         self.active_number = number
         self.call_state = "dialing"
         try:
+            await self._emit("outgoing_call", number=number)
             lines = await self.command("ATD" + number + ";", timeout=12, expected_call=call)
             if lines[-1] != "OK":
                 raise RuntimeError("Dial failed: " + " ".join(lines))
             self.calls.append(now)
             if (self.call_id, self.call_state) == call:
                 await self._emit("call_dialing", number=number)
-        except (Exception, asyncio.CancelledError):
+        except (Exception, asyncio.CancelledError) as exc:
             if (self.call_id, self.call_state) == call:
                 self.call_state = "idle"
                 self.active_number = ""
+                await self._emit("call_failed", reason=str(exc) or type(exc).__name__)
             raise
 
     async def answer(self):

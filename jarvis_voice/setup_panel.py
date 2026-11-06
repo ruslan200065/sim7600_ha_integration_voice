@@ -292,7 +292,47 @@ class SetupPanel:
             return await self.service.answer(request)
         if action == "hangup":
             return await self.service.hangup(request)
+        if action == "volte":
+            modem = self.service.modem
+            if modem.call_state != "idle":
+                raise web.HTTPConflict(text="Дождитесь окончания звонка.")
+            try:
+                lines = await modem.command(
+                    "AT+VOLTESETTING=1",
+                    timeout=4,
+                    expected_call=(modem.call_id, "idle"),
+                )
+            except (RuntimeError, OSError) as exc:
+                raise web.HTTPConflict(text=str(exc)) from exc
+            if lines[-1] != "OK":
+                raise web.HTTPConflict(
+                    text="Модем отклонил включение VoLTE: " + lines[-1]
+                )
+            return web.json_response(
+                {
+                    "message": "Модем принял команду. Проверьте сеть во время следующего звонка."
+                }
+            )
         raise web.HTTPNotFound()
+
+    async def history(self, request):
+        kind = request.query.get("type")
+        if kind not in (None, "call", "sms"):
+            raise web.HTTPBadRequest(text="Неизвестный тип записи.")
+        try:
+            offset = int(request.query.get("offset", 0))
+            if not 0 <= offset <= 100_000:
+                raise ValueError
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text="Неверная страница журнала.") from exc
+        result = await self.service.history.page(kind, offset)
+        return web.json_response({**result, "sms": self.service.sms_status})
+
+    async def refresh_sms(self, _request):
+        if self.service.modem.call_state != "idle":
+            raise web.HTTPConflict(text="SMS обновятся, когда модем освободится.")
+        self.service.sms_wake.set()
+        return web.json_response({"queued": True}, status=202)
 
     async def check(self, request):
         service = self.service
@@ -333,8 +373,18 @@ class SetupPanel:
                 if service.modem.call_state == "offline":
                     raise RuntimeError("Модем недоступен. Проверьте AT-порт.")
                 status = await service.modem.phone_diagnostics()
+                contexts = await service.modem.data_diagnostics()
                 message = " · ".join(f"{key} {value}" for key, value in status.items())
-                return web.json_response({"message": message, "network": status})
+                apns = ", ".join(item["apn"] for item in contexts if item["apn"])
+                if apns:
+                    message += " · APN " + apns
+                return web.json_response(
+                    {
+                        "message": message,
+                        "network": status,
+                        "data_contexts": contexts,
+                    }
+                )
             if check == "gps":
                 result = await gps_status(service.modem)
                 status = result["modem_gps_status"]
@@ -421,6 +471,8 @@ class SetupPanel:
         app.router.add_post("/restart", self.restart)
         app.router.add_get("/phone", self.phone_state)
         app.router.add_post("/phone/{action}", self.phone_action)
+        app.router.add_get("/history", self.history)
+        app.router.add_post("/history/refresh", self.refresh_sms)
         app.router.add_post("/checks/{check}", self.check)
         return app
 

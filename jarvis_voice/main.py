@@ -18,6 +18,7 @@ from q1_protocol import gps_status, gps_start, led_set
 from q1_hardware import diagnostics, snapshot, apply_original_camera_controls
 from q1_media import Q1Media
 from setup_panel import SetupPanel
+from history import History
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOG = logging.getLogger(__name__)
@@ -63,8 +64,13 @@ class Server:
         self.camera_frame=None
         self.speaking = asyncio.Lock()
         self.next_prompt = None
+        self.history = History(Path(os.environ.get("OPTIONS_PATH", "/data/options.json")).with_name("history.sqlite3"))
+        self.sms_task = None
+        self.sms_wake = asyncio.Event()
+        self.sms_status = {}
 
     async def setup(self):
+        await self.history.start()
         self.http = ClientSession()
         self.brain = Brain(self.o,self.http, self.capture_camera)
         if self.o.get("yandex_api_key"):
@@ -74,8 +80,12 @@ class Server:
                 self.o.get("yandex_role", "neutral"),
             )
         await self.modem.start()
+        self.sms_task = asyncio.create_task(self.sync_sms())
 
     async def close(self):
+        if self.sms_task:
+            self.sms_task.cancel()
+            await asyncio.gather(self.sms_task, return_exceptions=True)
         if self.auto_answer_task:
             self.auto_answer_task.cancel()
             await asyncio.gather(self.auto_answer_task, return_exceptions=True)
@@ -120,6 +130,32 @@ class Server:
             if self.session and self.session is not asyncio.current_task() and not self.session.cancelling():
                 self.session.cancel()
             self.mode="ready" if name=="call_ended" else "offline"
+        if name in {
+            "incoming_call", "outgoing_call", "caller_id", "call_connected",
+            "call_ended", "call_failed", "modem_offline",
+        }:
+            try:
+                await self.history.call(name, data)
+            except Exception:
+                LOG.exception("Could not save call history")
+
+    async def sync_sms(self):
+        while True:
+            self.sms_wake.clear()
+            if self.modem.call_state == "idle":
+                try:
+                    usage = await self.modem.read_sms(self.history.import_sms)
+                    self.sms_status = {"storage": usage}
+                except (RuntimeError, OSError) as exc:
+                    if self.modem.call_state == "idle":
+                        self.sms_status = {"error": str(exc)}
+                except Exception:
+                    LOG.exception("Could not synchronize the SMS archive")
+                    self.sms_status = {"error": "Не удалось сохранить SMS."}
+            try:
+                await asyncio.wait_for(self.sms_wake.wait(), timeout=15)
+            except TimeoutError:
+                pass
 
     async def _maybe_answer(self, call_id):
         if (

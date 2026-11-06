@@ -64,6 +64,10 @@ summary { font-weight: 700; cursor: pointer; }
 details .fields { margin-top: 12px; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .phone-actions { margin-top: 12px; }
+.history-controls { align-items: end; }
+#history-items { list-style: none; padding: 0; }
+#history-items li { padding: 9px 0; border-top: 1px solid var(--border); }
+#history-items p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .checks { list-style: none; padding: 0; margin: 14px 0; display: grid; gap: 8px; }
 .checks button { width: 100%; text-align: left; }
 output { display: block; font-size: .84rem; overflow-wrap: anywhere; }

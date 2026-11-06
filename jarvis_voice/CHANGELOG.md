@@ -1,3 +1,8 @@
+## 0.4.6 (experimental)
+- Archive call events and incoming SMS in a private SQLite database, with filters and paging in the web panel.
+- Import PDU messages from the SIM and modem stores, deduplicate them and join multipart text.
+- Show the modem USB mode and data APNs. Add a manual VoLTE enable request that reports the firmware's response.
+
 ## 0.4.5 (experimental)
 - Include the operator, IMS registration and firmware responses to VoLTE queries in read-only cellular diagnostics.
 
