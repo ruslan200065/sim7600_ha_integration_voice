@@ -78,7 +78,7 @@ set_led:
             - pink
             - yellow
             - cyan
-            - off
+            - "off"
 gps_start:
   name: Activate GPS
   fields:

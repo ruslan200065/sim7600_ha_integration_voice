@@ -1,3 +1,6 @@
+## 0.4.14 (experimental)
+- Fix HA action selectors so call camera and DTMF fields are visible in the action editor.
+
 ## 0.4.13 (experimental)
 - Play a five-second local microphone sample in the private settings panel.
 
