@@ -315,7 +315,7 @@ class Server:
                 if reminder_id:
                     if re.fullmatch(r"(?:да|давай|слушаю|напомни)[.! ]*", phrase.lower().strip()):
                         return prompt
-                    return "Скажи «да», чтобы услышать напоминание."
+                    return "Можно озвучить напоминание?"
                 gate = member["gate"] if member else ""
                 pin = self.o.get("gate_pin", "")
                 if pending_pin > clock():
@@ -349,7 +349,7 @@ class Server:
 
             await run_dialog(
                 self.speech, reply, self.audio.queue, play, self.modem.hangup,
-                ("У меня для вас напоминание. Скажите «да», чтобы его услышать."
+                ("У меня для вас напоминание. Можно озвучить?"
                  if reminder_id else prompt or "Здравствуйте. Это Джарвис. Слушаю вас."),
                 background_tools=True,
             )

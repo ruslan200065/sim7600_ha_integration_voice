@@ -1,3 +1,7 @@
+## 0.4.22 (experimental)
+
+- Keep the reminder confirmation word out of the spoken prompt so echo filtering accepts the caller’s answer.
+
 ## 0.4.21 (experimental)
 
 - Add separate family caller profiles, PIN-protected gate actions and named automation recipients.
