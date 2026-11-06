@@ -1,3 +1,7 @@
+## 0.4.11 (experimental)
+- Listen during phone playback and stop a reply when the caller interrupts.
+- Keep speech pre-roll between phone turns and filter transcripts that match recent assistant speech.
+
 ## 0.4.10 (experimental)
 - Release the modem's USB PCM route after each call so later calls can start with a fresh audio route.
 

@@ -41,6 +41,8 @@ class PCMTransport:
         if self.running:
             return
         self.serial = serial.Serial(self.port, baudrate=115200, timeout=0.1, write_timeout=2)
+        while not self.queue.empty():
+            self.queue.get_nowait()
         self.running = True
         self.rx_task = asyncio.create_task(self._reader())
 
@@ -108,7 +110,13 @@ class PCMTransport:
                     await asyncio.sleep(deadline - now)
                 if not self.running or self.serial is not port:
                     raise RuntimeError("PCM audio unavailable")
-                written = await asyncio.to_thread(port.write, frame)
+                write = asyncio.create_task(asyncio.to_thread(port.write, frame))
+                try:
+                    written = await asyncio.shield(write)
+                except asyncio.CancelledError:
+                    # A cancelled await cannot stop the serial write in its thread.
+                    await asyncio.gather(write, return_exceptions=True)
+                    raise
                 if written != len(frame):
                     raise RuntimeError("Incomplete PCM write")
                 deadline += interval

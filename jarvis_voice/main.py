@@ -11,6 +11,7 @@ from aiohttp import web, ClientSession
 
 from modem import Modem
 from audio import PCMTransport
+from voice_dialog import run_dialog
 from speech import SpeechKit
 from brain import Brain
 from q1_audio import recognize_microphone_live, play_stream
@@ -194,22 +195,10 @@ class Server:
             await self.modem.enable_pcm()
             await self.audio.start()
             self.mode="talking"
-            await self._say(prompt or "Здравствуйте. Это Джарвис. Слушаю вас.")
-            # Half-duplex prevents false STT caused by remote playback echo.
-            while self.modem.call_state=="connected":
-                while not self.audio.queue.empty():
-                    self.audio.queue.get_nowait()
-                phrase=await self.speech.recognize_live(self.audio.queue)
-                if not phrase:
-                    continue
-                LOG.info("Live STT recognized %d chars",len(phrase))
-                if phrase.lower().strip(" .!") in ("пока","до свидания","заверши звонок"):
-                    await self._say("До связи.")
-                    await self.modem.hangup()
-                    return
-                answer=await self.brain.reply(phrase)
-                LOG.info("LLM answer length=%d",len(answer))
-                await self._say(answer)
+            await run_dialog(
+                self.speech, self.brain, self.audio.queue, self._say, self.modem.hangup,
+                prompt or "Здравствуйте. Это Джарвис. Слушаю вас.",
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

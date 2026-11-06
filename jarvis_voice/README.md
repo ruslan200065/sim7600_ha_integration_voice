@@ -20,7 +20,7 @@ This project adds an **independent Home Assistant App** to the HACS integration,
 ## Critical limitations / hardware verification
 - This release is **not confirmed end-to-end** on the user's SIM7600E firmware, SIM network, or Yandex Q1. A verified SIM7600G-H can expose raw 16k PCM on ttyUSB4; SIM7600E firmware may differ.
 - The audio driver assumes /dev/ttyUSB4 delivers unframed, little-endian 16-bit 16kHz mono PCM. A positive AT command response does **not** prove usable audio. Confirm with hardware first.
-- Voice interaction currently uses VAD turns (half-duplex), not interruption/barge-in. STT on phone and optionally Q1 microphone streams PCM chunks to SpeechKit while the user is speaking, after local voice detection. The phone call is still half-duplex (no barge-in).
+- Phone recognition runs during JARVIS playback. Recognized caller speech can interrupt the current reply. Transcripts matching recent JARVIS playback are filtered to reduce echo-triggered interruptions.
 - Phone-call PCM and local Q1 audio use separate devices. Check the playback and capture devices listed by `/q1/probe` before setting the optional ALSA devices.
 - Home Assistant service calling is restricted to explicitly allowlisted entity IDs and light/switch/cover safe operations; no locks, alarms or arbitrary shell execution. Other operations need intentional code changes.
 - SpeechKit/DeepSeek API calls are billable. No credentials are committed to GitHub.

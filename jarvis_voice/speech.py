@@ -1,4 +1,5 @@
 """Yandex SpeechKit v3 gRPC: streaming STT and bidirectional LiveTTS."""
+import asyncio
 import grpc
 import time
 from collections import deque
@@ -49,7 +50,7 @@ class SpeechKit:
         return " ".join(refined or final).strip()
 
 
-    async def recognize_live(self, source, threshold=700):
+    async def recognize_live(self, source, threshold=700, *, on_voice_start=None, on_partial=None):
         """SpeechKit receives real-time PCM while user talks; local VAD ends turn."""
         preroll=deque(maxlen=5)
         # Don't open a paid SpeechKit stream during a long silent call.
@@ -57,6 +58,8 @@ class SpeechKit:
             chunk=await source.get()
             preroll.append(chunk)
             if rms(chunk)>=threshold:
+                if on_voice_start:
+                    on_voice_start()
                 break
 
         async def requests():
@@ -76,8 +79,8 @@ class SpeechKit:
             last_voice = started = time.monotonic()
             while time.monotonic()-started<20:
                 try:
-                    frame=await __import__("asyncio").wait_for(source.get(),timeout=3)
-                except __import__("asyncio").TimeoutError:
+                    frame=await asyncio.wait_for(source.get(), timeout=3)
+                except TimeoutError:
                     break
                 now=time.monotonic()
                 if rms(frame)>=threshold:
@@ -90,6 +93,8 @@ class SpeechKit:
         refined=[]
         async for response in self.stt_stub.RecognizeStreaming(requests(),metadata=self.auth,timeout=35):
             kind=response.WhichOneof("Event")
+            if kind=="partial" and on_partial and response.partial.alternatives:
+                on_partial(response.partial.alternatives[0].text)
             if kind=="final" and response.final.alternatives:
                 final.append(response.final.alternatives[0].text)
             if kind=="final_refinement" and response.final_refinement.normalized_text.alternatives:
