@@ -50,7 +50,7 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
         brain.reply = AsyncMock(return_value="Проверяю погоду")
         hangup = AsyncMock()
         async with asyncio.timeout(2):
-            await run_dialog(Speech(), brain.reply, asyncio.Queue(), play, hangup, greeting)
+            await run_dialog(Speech(), brain.reply, asyncio.Queue(), play, hangup, greeting, echo_filter=True)
 
         brain.reply.assert_awaited_once_with("Какая погода сегодня?")
         hangup.assert_awaited_once()
@@ -139,3 +139,31 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
 
         async with asyncio.timeout(2):
             await run_dialog(Speech(), reply, asyncio.Queue(), play, AsyncMock(), "Привет")
+
+    async def test_echo_filter_is_off_by_default(self):
+        greeting = "Добрый вечер слушаю"
+        started = asyncio.Event()
+        answered = asyncio.Event()
+
+        async def play(text):
+            if text == greeting:
+                started.set()
+                await asyncio.Future()
+            if text == "Привет.":
+                answered.set()
+
+        class Speech:
+            turn = 0
+            async def recognize_live(self, _source, *, on_partial, **kwargs):
+                self.turn += 1
+                if self.turn == 1:
+                    await started.wait()
+                    on_partial(greeting)
+                    return greeting
+                await answered.wait()
+                return "До свидания"
+
+        reply = AsyncMock(return_value="Привет.")
+        async with asyncio.timeout(2):
+            await run_dialog(Speech(), reply, asyncio.Queue(), play, AsyncMock(), greeting)
+        reply.assert_awaited_once_with(greeting)

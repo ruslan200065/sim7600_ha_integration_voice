@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.4.29
+version: 0.4.30
 stage: experimental
 description: Smart GSM assistant for SIM7600 and Home Assistant
 arch:
@@ -37,6 +37,7 @@ options:
   api_token: ""
   max_calls_per_hour: 4
   call_playback_volume: 50
+  call_echo_filter: false
   auto_answer: false
   yandex_api_key: ""
   yandex_voice: "denis"
@@ -83,6 +84,7 @@ schema:
   api_token: password
   max_calls_per_hour: int(1,20)
   call_playback_volume: int(10,100)
+  call_echo_filter: bool
   auto_answer: bool
   yandex_api_key: password
   yandex_voice: str

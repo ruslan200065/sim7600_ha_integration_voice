@@ -35,7 +35,7 @@ def echoes_playback(phrase, outputs):
 
 
 async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, background_tools=False,
-                     keypad=None, on_key=None, idle_seconds=75):
+                     keypad=None, on_key=None, idle_seconds=75, echo_filter=False):
     """Listen throughout a reply and interrupt once the caller is recognized."""
     clock = asyncio.get_running_loop().time
     last_spoken = []
@@ -43,13 +43,15 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
 
     async def speak(text):
         nonlocal last_spoken, echo_until
-        last_spoken = words(text)
-        echo_until = float("inf")
+        if echo_filter:
+            last_spoken = words(text)
+            echo_until = float("inf")
         try:
             await play(text)
         finally:
             # Remote speaker echo and delayed transcripts can outlast playback.
-            echo_until = clock() + 2.0
+            if echo_filter:
+                echo_until = clock() + 2.0
 
     output = asyncio.Queue()
     audio_ready = asyncio.Event()
@@ -132,7 +134,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                     remember_output()
                     tokens = words(partial)
                     confirmed = len(tokens) >= 2 or (len(tokens) == 1 and tokens[0] in STOP_WORDS)
-                    if confirmed and not echoes_playback(tokens, heard_playback):
+                    if confirmed and not (echo_filter and echoes_playback(tokens, heard_playback)):
                         user_partial = True
                         if STATUS_PHRASE.fullmatch(" ".join(tokens)):
                             return
@@ -171,7 +173,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                     idle = None
                 remember_output()
                 tokens = words(phrase)
-                if not tokens or echoes_playback(tokens, heard_playback):
+                if not tokens or (echo_filter and echoes_playback(tokens, heard_playback)):
                     audio_ready.set()
                     if not tokens and user_partial and clock() - last_recovery >= 5:
                         output.put_nowait(("Не расслышал конец фразы. Повтори, пожалуйста.", generation))

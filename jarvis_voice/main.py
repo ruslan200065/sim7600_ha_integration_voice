@@ -447,6 +447,7 @@ class Server:
                 ("У меня для вас напоминание. Можно озвучить?"
                  if reminder_id else prompt or "Здравствуйте. Это Джарвис. Слушаю вас."),
                 background_tools=True, keypad=keypad, on_key=press,
+                echo_filter=self.o.get("call_echo_filter", False),
             )
         except asyncio.CancelledError:
             raise

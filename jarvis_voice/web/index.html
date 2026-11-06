@@ -50,6 +50,7 @@
                   <label>Имя владельца<input name="owner_name" placeholder="Как к тебе обращаться"></label>
                   <label>Номер владельца<input name="allowed_number" type="tel" placeholder="+7…"></label>
                   <label>Громкость JARVIS <output id="volume-value"></output><input name="call_playback_volume" type="range" min="10" max="100"></label>
+                  <label class="check"><input name="call_echo_filter" type="checkbox"> Фильтровать эхо в звонке</label>
                   <label class="check"><input name="auto_answer" type="checkbox"> Автоответ владельцу и семье</label>
                 </div>
                 <p class="hint">Чтобы позвонить JARVIS, наберите номер SIM-карты в Q1. Для автоматизаций используйте действие <code>jarvis_q1.call</code>.</p>

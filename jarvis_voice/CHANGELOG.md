@@ -1,3 +1,7 @@
+## 0.4.30 (experimental)
+
+- Disable the call echo text filter by default and make it configurable.
+
 ## 0.4.29 (experimental)
 
 - Recover from missed speech and acknowledge delayed voice turns.

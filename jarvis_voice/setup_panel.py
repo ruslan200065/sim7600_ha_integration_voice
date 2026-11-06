@@ -52,7 +52,7 @@ INTEGER_FIELDS = {
     "max_calls_per_hour": (1, 20),
     "call_playback_volume": (10, 100),
 }
-BOOLEAN_FIELDS = {"auto_answer", "observe_all_entities", "control_all_entities", "speech_cache_enabled"}
+BOOLEAN_FIELDS = {"auto_answer", "observe_all_entities", "control_all_entities", "speech_cache_enabled", "call_echo_filter"}
 OPTION_FIELDS = (
     set(TEXT_FIELDS)
     | set(INTEGER_FIELDS)
