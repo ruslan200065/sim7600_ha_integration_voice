@@ -121,6 +121,7 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
     async def test_phone_diagnostics_expose_ims_support_without_cell_identifiers(self):
         async def command(cmd, **_kwargs):
             return {
+                "AT+CPIN?": ["+CME ERROR: SIM not inserted"],
                 "AT+CPSI?": ["+CPSI: LTE,Online,250-01,0x1234", "OK"],
                 "AT+COPS?": ['+COPS: 0,0,"Operator",7', "OK"],
                 "AT+CIREG?": ["+CIREG: 0,1", "OK"],
@@ -129,6 +130,7 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
 
         self.modem.command = AsyncMock(side_effect=command)
         diagnostics = await self.modem.phone_diagnostics()
+        self.assertEqual(diagnostics["SIM"], "+CME ERROR: SIM not inserted")
         self.assertEqual(diagnostics["CPSI"], "LTE,Online")
         self.assertEqual(diagnostics["COPS"], '0,0,"Operator",7')
         self.assertEqual(diagnostics["IMS"], "0,1")

@@ -226,7 +226,7 @@ class Modem:
                 if name in {"CREG", "CEREG", "CPSI"}:
                     value = ",".join(value.split(",")[:2])
                 fields[name] = value
-            elif name in {"IMS", "VoLTE", "VoLTE modes"} and response:
+            elif name in {"SIM", "IMS", "VoLTE", "VoLTE modes"} and response and response[-1] != "OK":
                 fields[name] = response[-1]
         return fields
 

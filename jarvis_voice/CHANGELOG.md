@@ -1,3 +1,6 @@
+## 0.4.8 (experimental)
+- Include SIM detection errors in the network check.
+
 ## 0.4.7 (experimental)
 - Use modem call-state reports as a fallback for missing RING, caller ID, and call connection indications.
 - Show packet attachment and call-state reporting in the phone diagnostics.
