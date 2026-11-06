@@ -114,3 +114,40 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(phrase=phrase):
                 self.assertFalse(photo_requested(phrase))
+
+    async def test_registry_cache_reuses_metadata_and_filters_each_request(self):
+        brain = Brain({}, None, None)
+        brain.hass_token = "test"
+        brain.registry_cache.live = True
+        brain._load_registry_metadata = AsyncMock(return_value={"light.a": {"area": "A"}, "light.b": {"area": "B"}})
+        self.assertEqual(await brain._registry_metadata({"light.a"}), {"light.a": {"area": "A"}})
+        self.assertEqual(await brain._registry_metadata({"light.b"}), {"light.b": {"area": "B"}})
+        brain._load_registry_metadata.assert_awaited_once()
+        brain.registry_cache.invalidate()
+        await brain._registry_metadata({"light.a"})
+        self.assertEqual(brain._load_registry_metadata.await_count, 2)
+
+    async def test_action_announces_name_only_after_access_check(self):
+        brain = Brain({"allowed_entities": ["light.hall"], "allow_domains": ["light"]}, None, None)
+        announcements = []
+        async def ha(method, path, data=None):
+            if method == "POST":
+                self.assertEqual(announcements, ["Выключаю «Свет в прихожей»."])
+            return {"entity_id": "light.hall", "state": "on", "attributes": {"friendly_name": "Свет в прихожей"}}
+        brain._ha = ha
+        await brain._tool("call_ha_service", {"entity_id": "light.den", "service": "turn_off"}, on_progress=announcements.append)
+        self.assertEqual(announcements, [])
+        await brain._tool("call_ha_service", {"entity_id": "light.hall", "service": "turn_off"}, on_progress=announcements.append)
+
+    async def test_caller_profile_limits_phone_and_family_access(self):
+        brain = Brain({"allowed_number": "+12025550101", "deepseek_api_key": "private"},
+                      None, None, profile_name="Участник", caller_number="+12025550102", owner=False)
+        plain = await brain._tool("get_my_profile", {}, phrase="Как меня зовут?")
+        self.assertEqual(plain["name"], "Участник")
+        self.assertNotIn("phone_number", plain)
+        number = await brain._tool("get_my_profile", {}, phrase="Какой у меня номер телефона?")
+        self.assertEqual(number["phone_number"], "+12025550102")
+        self.assertIsInstance(await brain._tool("list_family", {}, phrase="Какие номера телефонов?"), str)
+        settings = await brain._tool("get_assistant_settings", {})
+        self.assertNotIn("private", str(settings))
+        self.assertNotIn("llm", settings)

@@ -92,6 +92,7 @@ class Server:
         self.gates = frozenset(member["gate"] for member in self.family.values() if member["gate"])
         self.family_brains = {}
         self.reminder_task = None
+        self.registry_task = None
         self.reminder_call = None
         owner = self.o.get("allowed_number") or ""
         self.owner_key = profile_key("Владелец", owner) if owner else None
@@ -107,6 +108,7 @@ class Server:
         self.http = ClientSession()
         self.brain = Brain(self.o, self.http, self.capture_camera, self.listen_room, self.share_photo,
                            personal=self.personal, profile=self.owner_key or "local",
+                           profile_name=self.o.get("owner_name") or "Владелец",
                            restricted_entities=self.gates)
         if self.brain.hass_token:
             try:
@@ -115,6 +117,7 @@ class Server:
             except (RuntimeError, OSError, ValueError, KeyError, TimeoutError, ZoneInfoNotFoundError, ClientError):
                 LOG.warning("Home Assistant time zone unavailable")
         self.reminder_task = asyncio.create_task(self.deliver_reminders())
+        self.registry_task = asyncio.create_task(self.brain.watch_registry())
         if self.o.get("yandex_api_key"):
             self.speech = SpeechKit(
                 self.o["yandex_api_key"],
@@ -127,6 +130,9 @@ class Server:
         self.sms_task = asyncio.create_task(self.sync_sms())
 
     async def close(self):
+        if self.registry_task:
+            self.registry_task.cancel()
+            await asyncio.gather(self.registry_task, return_exceptions=True)
         if self.microphone_task:
             self.microphone_task.cancel()
             await asyncio.gather(self.microphone_task, return_exceptions=True)
@@ -335,7 +341,8 @@ class Server:
             self.family_brains[key] = Brain(
                 options, self.http, None, personal=self.personal, profile=key,
                 profile_name=member["name"], timezone_name=self.brain.timezone.key,
-                restricted_entities=self.gates,
+                restricted_entities=self.gates, registry_cache=self.brain.registry_cache,
+                caller_number=member["number"], owner=False,
             )
         return self.family_brains[key]
 
@@ -419,6 +426,7 @@ class Server:
                     if re.search(r"\bне\s+(?:откро|открыв|открыть|отопр)\w*", phrase, re.I):
                         return "Хорошо."
                     if not pin:
+                        on_progress("Открываю назначенную калитку.")
                         return await open_gate()
                     if not re.fullmatch(r"[0-9]+", pin) or attempts >= 3:
                         return "Открытие по телефону недоступно."

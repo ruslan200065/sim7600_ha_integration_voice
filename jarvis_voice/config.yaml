@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.4.27
+version: 0.4.28
 stage: experimental
 description: Smart GSM assistant for SIM7600 and Home Assistant
 arch:
@@ -33,6 +33,7 @@ options:
   pcm_port: /dev/ttyUSB4
   serial_baud: 115200
   allowed_number: ""
+  owner_name: ""
   api_token: ""
   max_calls_per_hour: 4
   call_playback_volume: 50
@@ -78,6 +79,7 @@ schema:
   pcm_port: str
   serial_baud: int
   allowed_number: str
+  owner_name: str
   api_token: password
   max_calls_per_hour: int(1,20)
   call_playback_volume: int(10,100)

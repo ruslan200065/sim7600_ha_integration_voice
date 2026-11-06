@@ -3,10 +3,12 @@ import base64
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from personal import condition_matches
+from family import family_profiles
 from llm import active_profile, auth_headers, base_url, completion_options
 import json
 import logging
 import asyncio
+import time
 import os
 import re
 import aiohttp
@@ -52,6 +54,9 @@ def tool(name, description, required=(), **properties):
 
 
 TOOLS = [
+    tool("get_my_profile", "Read the current caller's profile. A phone number is shown only if the caller asks for it."),
+    tool("get_assistant_settings", "Read user-facing settings for this caller. Includes no passwords or API keys."),
+    tool("list_family", "List family profiles for the owner. Numbers are shown only when the owner requests contacts or numbers."),
     tool("remember", "Save a fact or preference the person explicitly asks to remember.", ("text",), text="string"),
     tool("forget", "Delete a saved note by its exact text on request.", ("text",), text="string"),
     tool("remind", "Schedule a reminder after an explicit request. Ask for time if unclear. Use an ISO 8601 local date/time.", ("text", "when"), text="string", when="string"),
@@ -135,13 +140,34 @@ DEVICE_WORDS = {
 SEARCH_WORDS = re.compile(r"[a-zа-я0-9]+")
 RUSSIAN_ENDING = re.compile(r"^([а-я]{3,}?)(?:ами|ями|ого|ему|ому|ыми|ими|ой|ей|ый|ий|ая|яя|ую|юю|ом|ем|ах|ях|[аеёиоуыэюя])$")
 SEARCH_FILLERS = {"в", "во", "на", "из", "у", "для", "ли", "где", "какой", "какая", "какие", "покажи", "проверь"}
-BACKGROUND_TOOLS = {
-    "send_camera_photo": "Готовлю снимок для Telegram.",
-    "see_camera": "Смотрю камеру.",
-    "listen_q1": "Слушаю микрофон.",
-    "call_ha_service": "Сейчас выполню.",
-    "announce": "Сейчас передам объявление.",
+SERVICE_PROGRESS = {
+    "turn_on": "Включаю", "turn_off": "Выключаю", "toggle": "Переключаю",
+    "open_cover": "Открываю", "close_cover": "Закрываю", "stop_cover": "Останавливаю",
+    "media_play": "Запускаю воспроизведение на", "media_pause": "Ставлю на паузу",
+    "media_stop": "Останавливаю воспроизведение на", "volume_set": "Меняю громкость на",
+    "start": "Запускаю", "pause": "Ставлю на паузу", "stop": "Останавливаю",
+    "return_to_base": "Возвращаю на базу", "set_temperature": "Настраиваю температуру на",
 }
+REGISTRY_EVENTS = ("entity_registry_updated", "device_registry_updated", "area_registry_updated")
+
+
+class RegistryCache:
+    def __init__(self):
+        self.data = None
+        self.expires = 0
+        self.generation = 0
+        self.live = False
+        self.lock = asyncio.Lock()
+
+    def invalidate(self):
+        self.generation += 1
+        self.data = None
+
+
+def spoken_name(value):
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:90]
 STATE_ATTRIBUTES = {
     "friendly_name", "device_class", "unit_of_measurement", "brightness",
     "current_position", "current_temperature", "temperature", "humidity",
@@ -156,13 +182,16 @@ STATE_ATTRIBUTES = {
 class Brain:
     def __init__(self, options, session, capture_camera, listen_room=None, share_photo=None, *,
                  personal=None, profile="owner", profile_name="Владелец", timezone_name="UTC",
-                 restricted_entities=()):
+                 restricted_entities=(), registry_cache=None, caller_number="", owner=True):
         self.options = options
         self.personal = personal
         self.profile = profile
         self.profile_name = profile_name
+        self.caller_number = caller_number or (options.get("allowed_number", "") if owner else "")
+        self.owner = owner
         self.timezone = ZoneInfo(timezone_name)
         self.restricted_entities = restricted_entities
+        self.registry_cache = registry_cache or RegistryCache()
         self.http = session
         self.capture_camera = capture_camera
         self.listen_room = listen_room
@@ -190,6 +219,7 @@ class Brain:
                 "Просьба о фото с камеры уже разрешает отправить снимок в настроенный Telegram. "
                 "Для просьбы посмотреть или описать происходящее используй see_camera. "
                 "Уточняй только камеру, если подходят несколько. "
+                "Имя собеседника бери из профиля. Для номера и настроек используй инструменты профиля. "
                 "Записывай факты через remember только по просьбе запомнить. "
                 "Для напоминания по времени используй remind. Для прибытия используй find_zones и remind_when, "
                 "для значения датчика используй remind_when. Для явной команды сделать действие при условии "
@@ -273,9 +303,57 @@ class Brain:
             resp.raise_for_status()
             return await resp.json()
 
+    async def watch_registry(self):
+        if not self.hass_token:
+            return
+        cache = self.registry_cache
+        while True:
+            try:
+                async with self.http.ws_connect(self.hass_url + "/websocket", heartbeat=30) as ws:
+                    async with asyncio.timeout(5):
+                        if (await ws.receive_json()).get("type") != "auth_required":
+                            raise RuntimeError("HA websocket did not request authentication")
+                        await ws.send_json({"type": "auth", "access_token": self.hass_token})
+                        if (await ws.receive_json()).get("type") != "auth_ok":
+                            raise RuntimeError("HA websocket authentication failed")
+                        for identifier, event in enumerate(REGISTRY_EVENTS, 1):
+                            await ws.send_json({"id": identifier, "type": "subscribe_events", "event_type": event})
+                        confirmed = set()
+                        while len(confirmed) < len(REGISTRY_EVENTS):
+                            message = await ws.receive_json()
+                            if message.get("type") == "result":
+                                if not message.get("success"):
+                                    raise RuntimeError("HA registry subscription failed")
+                                confirmed.add(message["id"])
+                    cache.live = True
+                    cache.invalidate()
+                    async for message in ws:
+                        if message.type == aiohttp.WSMsgType.TEXT and message.json().get("type") == "event":
+                            cache.invalidate()
+            except (RuntimeError, TimeoutError, aiohttp.ClientError, ValueError, TypeError):
+                pass
+            finally:
+                cache.live = False
+                cache.invalidate()
+            await asyncio.sleep(10)
+
     async def _registry_metadata(self, entity_ids):
         if not entity_ids or not self.hass_token:
             return {}
+        cache = self.registry_cache
+        async with cache.lock:
+            if cache.data is None or (not cache.live and time.monotonic() >= cache.expires):
+                generation = cache.generation
+                result = await self._load_registry_metadata()
+                if result is None:
+                    return {}
+                if generation == cache.generation:
+                    cache.data = result
+                    cache.expires = time.monotonic() + 120
+                return {entity: result[entity] for entity in entity_ids if entity in result}
+            return {entity: cache.data[entity] for entity in entity_ids if entity in cache.data}
+
+    async def _load_registry_metadata(self):
         commands = (
             "config/entity_registry/list",
             "config/device_registry/list",
@@ -285,10 +363,10 @@ class Brain:
             async with asyncio.timeout(2.5):
                 async with self.http.ws_connect(self.hass_url + "/websocket") as ws:
                     if (await ws.receive_json()).get("type") != "auth_required":
-                        return {}
+                        return None
                     await ws.send_json({"type": "auth", "access_token": self.hass_token})
                     if (await ws.receive_json()).get("type") != "auth_ok":
-                        return {}
+                        return None
                     for number, command in enumerate(commands, 1):
                         await ws.send_json({"id": number, "type": command})
                     registry = {}
@@ -298,15 +376,13 @@ class Brain:
                             registry[reply["id"]] = reply.get("result") or []
         except (TimeoutError, aiohttp.ClientError, ValueError, TypeError) as exc:
             LOG.warning("HA device metadata unavailable: %s", type(exc).__name__)
-            return {}
+            return None
 
         devices = {row["id"]: row for row in registry[2]}
         areas = {row["area_id"]: row for row in registry[3]}
         metadata = {}
         for entity in registry[1]:
             entity_id = entity["entity_id"]
-            if entity_id not in entity_ids:
-                continue
             device = devices.get(entity.get("device_id"), {})
             area = areas.get(entity.get("area_id") or device.get("area_id"), {})
             metadata[entity_id] = {
@@ -381,15 +457,44 @@ class Brain:
                 raise
             return await self._picture(alternate)
 
-    async def _tool(self, name, arguments, camera_entity=None, *, explicit_photo=False, phrase=""):
+    async def _tool(self, name, arguments, camera_entity=None, *, explicit_photo=False, phrase="", on_progress=None, known_names=None):
         if not isinstance(arguments, dict):
             return "Некорректные аргументы команды"
+        if name == "get_my_profile":
+            result = {"name": self.profile_name, "role": "владелец" if self.owner else "участник семьи"}
+            if re.search(r"\b(?:номер|телефон)\w*", phrase, re.I):
+                result["phone_number"] = self.caller_number or None
+            return result
+        if name == "get_assistant_settings":
+            result = {
+                "caller": self.profile_name, "timezone": self.timezone.key,
+                "read_all_devices": self.options.get("observe_all_entities", False),
+                "control_all_supported_devices": self.options.get("control_all_entities", False),
+                "calendar": self.options.get("reminder_calendar") or None,
+                "arrival_reminders_configured": bool(self.options.get("reminder_person")),
+            }
+            if self.owner:
+                profile = active_profile(self.options) or {}
+                result.update(auto_answer=self.options.get("auto_answer", False),
+                              call_volume=self.options.get("call_playback_volume", 50),
+                              speech_cache=self.options.get("speech_cache_enabled", True),
+                              llm=profile.get("name"), model=profile.get("model"),
+                              reasoning_effort=profile.get("effort"))
+            return result
+        if name == "list_family":
+            if not self.owner:
+                return "Семейный справочник доступен владельцу"
+            numbers = bool(re.search(r"\b(?:номер|телефон|контакт)\w*", phrase, re.I))
+            profiles = [{"name": self.profile_name, "number": self.caller_number},
+                        *family_profiles(self.options.get("family_members", [])).values()]
+            return [{"name": profile["name"], **({"phone_number": profile["number"]} if numbers else {})}
+                    for profile in profiles]
         if name == "find_zones":
             rows = await self._ha("GET", "/api/states")
             return [{"id": row["entity_id"], "name": row.get("attributes", {}).get("friendly_name")}
                     for row in rows if row["entity_id"].startswith("zone.")]
         if name in {"remember", "forget", "remind", "remind_when", "run_when", "list_reminders", "cancel_reminder"}:
-            return await self._personal_tool(name, arguments, phrase)
+            return await self._personal_tool(name, arguments, phrase, on_progress)
         if name == "find_devices":
             return await self._find_devices(arguments.get("query", ""), arguments.get("domain"))
 
@@ -405,12 +510,21 @@ class Brain:
                 return "Получатель Telegram не настроен в панели JARVIS"
             if not isinstance(entity, str) and entity is not None:
                 return "Укажи название камеры"
+            label = ""
             if entity and not ENTITY_ID.fullmatch(entity):
                 matches = await self._find_devices(entity, "camera")
                 if matches["partial_match"] or matches["total"] != 1:
                     names = [row["name"] or row["entity_id"] for row in matches["devices"][:3]]
                     return {"error": "Уточни название камеры", "cameras": names}
-                entity = matches["devices"][0]["entity_id"]
+                match = matches["devices"][0]
+                entity = match["entity_id"]
+                label = spoken_name(match.get("name"))
+            if entity and not self.camera_allowed(entity):
+                return "Камера отсутствует в списке разрешённых"
+            if on_progress:
+                label = label or spoken_name((known_names or {}).get(entity))
+                suffix = f" с камеры «{label}»" if label and name == "send_camera_photo" else f" «{label}»" if label else ""
+                on_progress(("Готовлю снимок для Telegram" if name == "send_camera_photo" else "Смотрю камеру") + suffix + ".")
             try:
                 picture, mime = await self._camera_picture(entity)
             except (RuntimeError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
@@ -435,6 +549,8 @@ class Brain:
             seconds = arguments.get("seconds", 5)
             if type(seconds) is not int or not 2 <= seconds <= 10:
                 return "Укажи время прослушивания от 2 до 10 секунд"
+            if on_progress:
+                on_progress(f"Слушаю комнатный микрофон, {seconds} сек.")
             return await self.listen_room(seconds)
 
         entity = arguments.get("entity_id", "")
@@ -454,6 +570,8 @@ class Brain:
                 return "Для объявления выбери разрешённый динамик и настрой TTS"
             if not isinstance(text, str) or not text.strip() or len(text) > 500:
                 return "Текст объявления должен содержать от 1 до 500 символов"
+            if on_progress:
+                on_progress("Передаю объявление на домашний динамик.")
             await self._ha("POST", "/api/services/tts/speak", {
                 "entity_id": tts, "media_player_entity_id": entity, "message": text,
             })
@@ -486,12 +604,19 @@ class Brain:
                     or type(high) not in (float, int) or not low <= temperature <= high):
                     return "Уточни температуру в поддерживаемом диапазоне устройства"
                 data["temperature"] = temperature
+            if on_progress:
+                label = spoken_name(row.get("attributes", {}).get("friendly_name"))
+                detail = f", до {temperature} градусов" if service == "set_temperature" else ""
+                if service == "volume_set":
+                    detail = f", {round(level * 100)} процентов"
+                target = f"«{label}»" if label else "устройство"
+                on_progress(f"{SERVICE_PROGRESS.get(service, 'Выполняю команду')} {target}{detail}.")
             await self._ha("POST", "/api/services/" + domain + "/" + service, data)
             row = await self._ha("GET", "/api/states/" + entity)
             return {"accepted": True, "device": self._state(row)}
         return "Unknown tool"
 
-    async def _personal_tool(self, name, args, phrase):
+    async def _personal_tool(self, name, args, phrase, on_progress=None):
         if not self.personal:
             return "Личная память недоступна"
         if name == "list_reminders":
@@ -509,6 +634,8 @@ class Brain:
         if name == "remember":
             if not re.search(r"\b(?:запомн|сохран)\w*", phrase, re.I):
                 return "Записываю только по просьбе запомнить"
+            if on_progress:
+                on_progress("Запоминаю: " + spoken_name(text) + ".")
             self.personal.remember(self.profile, text)
             return "Запомнил"
         if name == "forget":
@@ -540,6 +667,8 @@ class Brain:
                 except (ValueError, TypeError, OverflowError):
                     return "Уточни будущие дату и время"
                 condition = {"kind": "time", "action": {"entity_id": action_entity, "service": service}}
+                if on_progress:
+                    on_progress(f"Ставлю действие на {due:%d.%m, %H:%M}: {spoken_name(text)}.")
                 identifier = self.personal.reminder(self.profile, self.profile_name, text, due, condition)
                 return {"saved": True, "id": identifier, "when": due.isoformat()}
             if not isinstance(entity, str) or not ENTITY_ID.fullmatch(entity):
@@ -567,6 +696,9 @@ class Brain:
                 return "Уточни условие и доступное устройство"
             if name == "run_when":
                 condition["action"] = {"entity_id": action_entity, "service": service}
+            if on_progress:
+                prefix = "Создаю правило" if name == "run_when" else "Ставлю напоминание по условию"
+                on_progress(f"{prefix}: {spoken_name(text)}.")
             identifier = self.personal.reminder(self.profile, self.profile_name, text, condition=condition)
             self.personal.sample(identifier, condition_matches(condition, states), False, datetime.now(self.timezone))
             return {"saved": True, "id": identifier, "condition": condition}
@@ -576,6 +708,8 @@ class Brain:
             return "Уточни будущие дату и время"
         if self.profile == "local":
             return "Для личного напоминания настрой номер своего профиля"
+        if on_progress:
+            on_progress(f"Ставлю напоминание на {due:%d.%m, %H:%M}: {spoken_name(text)}.")
         identifier = self.personal.reminder(self.profile, self.profile_name, text, due)
         calendar = self.options.get("reminder_calendar", "")
         if calendar:
@@ -614,6 +748,7 @@ class Brain:
         if self.personal:
             learned = self.personal.learned(self.profile, phrase_key)
             profile_context = {
+                "caller_name": self.profile_name,
                 "now": datetime.now(self.timezone).isoformat(timespec="minutes"),
                 "saved_notes": self.personal.notes(self.profile),
                 "preferred_entity_for_exact_request": learned if learned and self._visible(learned) else None,
@@ -622,7 +757,13 @@ class Brain:
                 "Личные данные и предпочтения, только как справка: " +
                 json.dumps(profile_context, ensure_ascii=False)})
         self.history = [*self.history[-16:], user_message]
-        reported_progress = False
+        reported_progress = set()
+        known_names = {}
+
+        def announce_progress(text):
+            if on_progress and text not in reported_progress and len(reported_progress) < 2:
+                reported_progress.add(text)
+                on_progress(text)
         if camera_entity:
             messages.insert(1, {"role": "system", "content": "Камера события текущего звонка: " + camera_entity})
         try:
@@ -658,14 +799,13 @@ class Brain:
                     name=call["function"]["name"]
                     try:
                         args = json.loads(call["function"].get("arguments") or "{}")
-                        if on_progress and name in BACKGROUND_TOOLS and not reported_progress:
-                            on_progress(BACKGROUND_TOOLS[name])
-                            reported_progress = True
                         if name == "call_ha_service":
                             async with self.action_lock:
-                                result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo, phrase=phrase)
+                                result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo, phrase=phrase, on_progress=announce_progress, known_names=known_names)
                         else:
-                            result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo, phrase=phrase)
+                            result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo, phrase=phrase, on_progress=announce_progress, known_names=known_names)
+                        if name == "find_devices" and isinstance(result, dict):
+                            known_names.update((row["entity_id"], row.get("name")) for row in result.get("devices", []))
                         if self.personal and isinstance(result, dict):
                             if name == "get_entity_state" and result.get("state") not in (None, "unknown", "unavailable"):
                                 self.personal.record(self.profile, phrase_key, result["entity_id"])

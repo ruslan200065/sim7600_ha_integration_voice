@@ -1,3 +1,9 @@
+## 0.4.28 (experimental)
+
+- Cache Home Assistant registry metadata and invalidate it on registry updates.
+- Announce the validated operation and target before executing supported voice actions.
+- Give JARVIS caller-specific names, requested contact details and safe settings access.
+
 ## 0.4.27 (experimental)
 
 - Add independent OpenAI-compatible LLM profiles, model discovery and configurable reasoning effort.

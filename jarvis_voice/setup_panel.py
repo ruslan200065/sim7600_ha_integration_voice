@@ -34,6 +34,7 @@ TEXT_FIELDS = {
     "q1_mic_device": 128,
     "q1_speaker_device": 128,
     "allowed_number": 17,
+    "owner_name": 60,
     "deepseek_model": 256,
     "deepseek_effort": 16,
     "llm_active": 64,
