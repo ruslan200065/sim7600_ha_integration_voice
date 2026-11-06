@@ -14,7 +14,7 @@ This project adds an **independent Home Assistant App** to the HACS integration,
 ## Critical limitations / hardware verification
 - This release is **not confirmed end-to-end** on the user's SIM7600E firmware, SIM network, or Yandex Q1. A verified SIM7600G-H can expose raw 16k PCM on ttyUSB4; SIM7600E firmware may differ.
 - The audio driver assumes /dev/ttyUSB4 delivers unframed, little-endian 16-bit 16kHz mono PCM. A positive AT command response does **not** prove usable audio. Confirm with hardware first.
-- Voice interaction currently uses VAD turns (half-duplex), not interruption/barge-in. STT uses real streaming gRPC transport but buffers one VAD utterance before sending to Yandex. Future refinement: send samples during capture for lower latency.
+- Voice interaction currently uses VAD turns (half-duplex), not interruption/barge-in. STT now streams PCM chunks to SpeechKit while the user is speaking, after local voice detection. The phone call is still half-duplex (no barge-in).
 - Phone-call audio and Q1 microphone/speaker are **not the same device**. USB UVC video does not imply UAC audio. Q1 audio output/input not wired up yet. Camera via HA camera entity works separately.
 - Home Assistant service calling is restricted to explicitly allowlisted entity IDs and light/switch/cover safe operations; no locks, alarms or arbitrary shell execution. Other operations need intentional code changes.
 - SpeechKit/DeepSeek API calls are billable. No credentials are committed to GitHub.
@@ -36,11 +36,13 @@ Header for all endpoints except /health: Authorization: Bearer <api_token>
 
 - GET /health → no secrets, modem state
 - GET /status → state, signal, errors
-- POST /dial {"number":"+7999..."} → calls only allowlisted number
+- POST /dial {"number":"+7999...","prompt":"Сэр, возле машины движение. Включить прожектор?"} → calls only allowlisted number and speaks prompt when answered
 - POST /hangup {} → disconnect
 - POST /answer {} → accept only allowlisted incoming number
 - POST /chat {"text":"Включи свет"} → test DeepSeek+HA without placing a call
 - POST /speak {"text":"Привет"} → speak into currently active phone call
+- POST /q1/listen {"seconds":4} → transcribe from configured ALSA mic, ask DeepSeek, optionally speak via ALSA
+- POST /q1/speak {"text":"Привет"} → speak via configured ALSA output
 
 Example from a trusted machine after mapping the HTTP port:
 \`\`\`bash
@@ -69,7 +71,7 @@ Uses SpeechKit API v3 via gRPC and generates official protobuf bindings during t
 
 ## Camera integration
 Connect the Q1 UVC camera to HA through a compatible camera provider (e.g. go2rtc/FFmpeg, if your installation exposes UVC to it). Set \`camera_entity: camera.yandex_q1\` (actual entity ID may differ).
-The LLM only fetches a single snapshot when it calls \`see_camera\`, not constant video. Avoid putting private camera sources on a public URL.
+Alternatively set `q1_video_device: /dev/video0` for direct UVC capture if accessible. For audio, configure `q1_mic_device` and `q1_speaker_device` with valid ALSA devices; these require Q1 hardware to expose actual audio interfaces. The LLM only fetches a single snapshot when it calls \`see_camera\`, not constant video. Avoid putting private camera sources on a public URL.
 
 ## Diagnostics
 - /health says offline: check SIM7600 USB mode and App device permissions.

@@ -1,5 +1,8 @@
 """Yandex SpeechKit v3 gRPC: streaming STT and bidirectional LiveTTS."""
 import grpc
+import time
+from collections import deque
+from audio import rms
 import yandex.cloud.ai.stt.v3.stt_pb2 as stt
 import yandex.cloud.ai.stt.v3.stt_service_pb2_grpc as stt_grpc
 import yandex.cloud.ai.tts.v3.tts_pb2 as tts
@@ -41,6 +44,54 @@ class SpeechKit:
             if kind == "final" and response.final.alternatives:
                 final.append(response.final.alternatives[0].text)
             if kind == "final_refinement" and response.final_refinement.normalized_text.alternatives:
+                refined.append(response.final_refinement.normalized_text.alternatives[0].text)
+        return " ".join(refined or final).strip()
+
+
+    async def recognize_live(self, source, threshold=700):
+        """SpeechKit receives real-time PCM while user talks; local VAD ends turn."""
+        preroll=deque(maxlen=5)
+        # Don't open a paid SpeechKit stream during a long silent call.
+        while True:
+            chunk=await source.get()
+            preroll.append(chunk)
+            if rms(chunk)>=threshold:
+                break
+
+        async def requests():
+            options = stt.StreamingOptions(
+                recognition_model=stt.RecognitionModelOptions(
+                    audio_format=stt.AudioFormatOptions(raw_audio=stt.RawAudio(
+                        audio_encoding=stt.RawAudio.LINEAR16_PCM,
+                        sample_rate_hertz=16000,
+                        audio_channel_count=1)),
+                    language_restriction=stt.LanguageRestrictionOptions(
+                        restriction_type=stt.LanguageRestrictionOptions.WHITELIST,
+                        language_code=["ru-RU"]),
+                    audio_processing_type=stt.RecognitionModelOptions.REAL_TIME))
+            yield stt.StreamingRequest(session_options=options)
+            for frame in preroll:
+                yield stt.StreamingRequest(chunk=stt.AudioChunk(data=frame))
+            last_voice = started = time.monotonic()
+            while time.monotonic()-started<20:
+                try:
+                    frame=await __import__("asyncio").wait_for(source.get(),timeout=3)
+                except __import__("asyncio").TimeoutError:
+                    break
+                now=time.monotonic()
+                if rms(frame)>=threshold:
+                    last_voice=now
+                yield stt.StreamingRequest(chunk=stt.AudioChunk(data=frame))
+                if now-last_voice>0.8:
+                    break
+
+        final=[]
+        refined=[]
+        async for response in self.stt_stub.RecognizeStreaming(requests(),metadata=self.auth,timeout=35):
+            kind=response.WhichOneof("Event")
+            if kind=="final" and response.final.alternatives:
+                final.append(response.final.alternatives[0].text)
+            if kind=="final_refinement" and response.final_refinement.normalized_text.alternatives:
                 refined.append(response.final_refinement.normalized_text.alternatives[0].text)
         return " ".join(refined or final).strip()
 

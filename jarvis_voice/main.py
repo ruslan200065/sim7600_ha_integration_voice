@@ -8,7 +8,7 @@ from pathlib import Path
 from aiohttp import web, ClientSession
 
 from modem import Modem
-from audio import PCMTransport, read_utterances
+from audio import PCMTransport
 from speech import SpeechKit
 from brain import Brain
 from q1_audio import capture_pcm, play_pcm
@@ -118,19 +118,17 @@ class Server:
             while self.modem.call_state=="connected":
                 while not self.audio.queue.empty():
                     self.audio.queue.get_nowait()
-                async for utterance in read_utterances(self.audio.queue):
-                    phrase=await self.speech.recognize(utterance)
-                    if not phrase:
-                        continue
-                    LOG.info("STT recognized %d chars",len(phrase))
-                    if phrase.lower().strip(" .!") in ("пока","до свидания","заверши звонок"):
-                        await self._say("До связи.")
-                        await self.modem.hangup()
-                        return
-                    answer=await self.brain.reply(phrase)
-                    LOG.info("LLM answer length=%d",len(answer))
-                    await self._say(answer)
-                    break
+                phrase=await self.speech.recognize_live(self.audio.queue)
+                if not phrase:
+                    continue
+                LOG.info("Live STT recognized %d chars",len(phrase))
+                if phrase.lower().strip(" .!") in ("пока","до свидания","заверши звонок"):
+                    await self._say("До связи.")
+                    await self.modem.hangup()
+                    return
+                answer=await self.brain.reply(phrase)
+                LOG.info("LLM answer length=%d",len(answer))
+                await self._say(answer)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
