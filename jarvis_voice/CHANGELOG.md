@@ -1,3 +1,7 @@
+## 0.4.32 (experimental)
+
+- Reset USB PCM at call startup and verify incoming frames and a silent write before playing the greeting.
+
 ## 0.4.31 (experimental)
 
 - Retry failed phone audio and speech playback during the same call, reopening the modem audio route when needed.

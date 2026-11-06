@@ -387,6 +387,14 @@ class Modem:
         if result[-1] != "OK":
             raise RuntimeError("Modem rejected the DTMF sequence")
 
+    async def reset_pcm(self, call_id):
+        call = (call_id, "connected")
+        result = await self.command("AT+CPCMREG=0,1", timeout=2, expected_call=call)
+        if not result or result[-1] != "OK":
+            result = await self.command("AT+CPCMREG=0", timeout=2, expected_call=call)
+        if not result or result[-1] != "OK":
+            LOG.warning("Modem did not confirm USB PCM reset")
+
     async def enable_pcm(self):
         # These commands generally fail when no voice call is active.
         if self.call_state != "connected":

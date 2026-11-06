@@ -40,15 +40,30 @@ class PCMTransport:
         self.rx_task = None
         self.queue = asyncio.Queue(maxsize=40)
         self.running = False
+        self.first_frame = asyncio.Event()
 
     async def start(self):
         if self.running:
             return
-        self.serial = serial.Serial(self.port, baudrate=115200, timeout=0.1, write_timeout=2)
+        self.serial = serial.Serial(self.port, baudrate=115200, timeout=0.1, write_timeout=0.75)
+        self.first_frame.clear()
         while not self.queue.empty():
             self.queue.get_nowait()
         self.running = True
         self.rx_task = asyncio.create_task(self._reader())
+
+    async def wait_ready(self):
+        async with asyncio.timeout(1.5):
+            await self.first_frame.wait()
+        port = self.serial
+        if not self.running or port is None:
+            raise PCMPlaybackError("USB PCM closed during startup")
+        try:
+            written = await asyncio.to_thread(port.write, bytes(PLAYBACK_FRAME))
+        except OSError as exc:
+            raise PCMPlaybackError("USB PCM startup write failed") from exc
+        if written != PLAYBACK_FRAME:
+            raise PCMPlaybackError("Incomplete USB PCM startup write")
 
     async def stop(self):
         self.running = False
@@ -76,6 +91,7 @@ class PCMTransport:
             if self.queue.full():
                 self.queue.get_nowait()
             self.queue.put_nowait(bytes(pending))
+            self.first_frame.set()
             pending.clear()
 
     async def write_stream(self, chunks):
@@ -121,7 +137,7 @@ class PCMTransport:
                 try:
                     written = await asyncio.shield(write)
                 except OSError as exc:
-                    raise PCMPlaybackError("USB PCM write failed") from exc
+                    raise PCMPlaybackError("USB PCM write failed: " + type(exc).__name__) from exc
                 except asyncio.CancelledError:
                     # A cancelled await cannot stop the serial write in its thread.
                     await asyncio.gather(write, return_exceptions=True)

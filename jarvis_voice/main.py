@@ -356,8 +356,11 @@ class Server:
             if (self.modem.call_id, self.modem.call_state) != (call_id, "connected"):
                 raise RuntimeError("Call already ended")
             try:
-                await self.modem.enable_pcm()
+                await self.modem.reset_pcm(call_id)
                 await self.audio.start()
+                await self.modem.enable_pcm()
+                await self.audio.wait_ready()
+                LOG.info("Call USB PCM verified in both directions")
                 return
             except (RuntimeError, OSError, TimeoutError) as exc:
                 LOG.warning("Call audio setup attempt %d: %s", attempt + 1, type(exc).__name__)
@@ -383,7 +386,8 @@ class Server:
                     while any(isinstance(error, ExceptionGroup) for error in failures):
                         failures = [nested for error in failures for nested in
                                     (error.exceptions if isinstance(error, ExceptionGroup) else [error])]
-                    kinds = [type(error).__name__ for error in failures]
+                    kinds = [str(error) if isinstance(error, PCMPlaybackError) else type(error).__name__
+                             for error in failures]
                     LOG.warning("Call playback attempt %d: %s", attempt + 1, ", ".join(kinds))
                     if attempt or (self.modem.call_id, self.modem.call_state) != (call_id, "connected"):
                         raise

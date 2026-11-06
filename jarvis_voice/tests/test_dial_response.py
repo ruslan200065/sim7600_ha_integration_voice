@@ -54,7 +54,9 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
                 service.modem.active_number = "+12025550102"
                 service.modem.call_state = "connected"
                 service.modem.enable_pcm = AsyncMock()
+                service.modem.reset_pcm = AsyncMock()
                 service.audio.start = AsyncMock()
+                service.audio.wait_ready = AsyncMock()
                 service.audio.stop = AsyncMock()
                 service.brain = SimpleNamespace(_ha=AsyncMock())
                 service.caller_brain = lambda member: None
@@ -103,3 +105,17 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     service.audio.stop.assert_not_awaited()
                     service.start_call_audio.assert_not_awaited()
+
+    async def test_call_restarts_pcm_if_first_route_has_no_frames(self):
+        service = Server({"api_token": "test"})
+        service.modem.call_state = "connected"
+        service.modem.call_id = 12
+        service.modem.reset_pcm = AsyncMock()
+        service.modem.enable_pcm = AsyncMock()
+        service.audio.start = AsyncMock()
+        service.audio.stop = AsyncMock()
+        service.audio.wait_ready = AsyncMock(side_effect=[TimeoutError(), None])
+        await service.start_call_audio(12)
+        self.assertEqual(service.modem.reset_pcm.await_count, 2)
+        self.assertEqual(service.modem.enable_pcm.await_count, 2)
+        service.audio.stop.assert_awaited_once()
