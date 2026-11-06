@@ -170,10 +170,13 @@ class Modem:
             ("CREG", "AT+CREG?", "+CREG:"),
             ("CEREG", "AT+CEREG?", "+CEREG:"),
             ("CPSI", "AT+CPSI?", "+CPSI:"),
+            ("COPS", "AT+COPS?", "+COPS:"),
             ("CNMP", "AT+CNMP?", "+CNMP:"),
             ("CRC", "AT+CRC?", "+CRC:"),
             ("CEER", "AT+CEER", "+CEER:"),
+            ("IMS", "AT+CIREG?", "+CIREG:"),
             ("VoLTE", "AT+VOLTESETTING?", "+VOLTESETTING:"),
+            ("VoLTE modes", "AT+VOLTESETTING=?", "+VOLTESETTING:"),
         ):
             response = await self.command(command, timeout=3)
             value = next(
@@ -184,6 +187,8 @@ class Modem:
                 if name in {"CREG", "CEREG", "CPSI"}:
                     value = ",".join(value.split(",")[:2])
                 fields[name] = value
+            elif name in {"IMS", "VoLTE", "VoLTE modes"} and response:
+                fields[name] = response[-1]
         return fields
 
     async def command(self, cmd, timeout=6, *, expected_call=None):

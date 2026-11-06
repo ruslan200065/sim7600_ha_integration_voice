@@ -5,7 +5,7 @@ import pathlib
 import queue
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import serial
 
@@ -96,6 +96,22 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.modem.call_state, "connected")
         await self.modem._urc("VOICE CALL:END")
         self.assertEqual(self.modem.call_state, "idle")
+
+    async def test_phone_diagnostics_expose_ims_support_without_cell_identifiers(self):
+        async def command(cmd, **_kwargs):
+            return {
+                "AT+CPSI?": ["+CPSI: LTE,Online,250-01,0x1234", "OK"],
+                "AT+COPS?": ['+COPS: 0,0,"Operator",7', "OK"],
+                "AT+CIREG?": ["+CIREG: 0,1", "OK"],
+                "AT+VOLTESETTING?": ["ERROR"],
+            }.get(cmd, ["OK"])
+
+        self.modem.command = AsyncMock(side_effect=command)
+        diagnostics = await self.modem.phone_diagnostics()
+        self.assertEqual(diagnostics["CPSI"], "LTE,Online")
+        self.assertEqual(diagnostics["COPS"], '0,0,"Operator",7')
+        self.assertEqual(diagnostics["IMS"], "0,1")
+        self.assertEqual(diagnostics["VoLTE"], "ERROR")
 
     async def test_read_failure_reopens_port(self):
         ports = [FakePort(), FakePort()]

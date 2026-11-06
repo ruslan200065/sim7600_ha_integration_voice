@@ -1,3 +1,6 @@
+## 0.4.5 (experimental)
+- Include the operator, IMS registration and firmware responses to VoLTE queries in read-only cellular diagnostics.
+
 ## 0.4.4 (experimental)
 - Buffer streaming synthesis briefly and deliver evenly paced, sample-aligned 20 ms PCM frames to the modem. Log the USB audio rate reported by the modem.
 
