@@ -233,7 +233,6 @@ class Server:
                 self.modem.call_id, self.modem.call_state
             ) != (pending_prompt[0], "dialing"):
                 self.next_prompt = None
-            raise
 
     async def hangup(self, request):
         try:

@@ -1,3 +1,6 @@
+## 0.4.3 (experimental)
+- Return the correct HTTP result after dialing and preserve the modem's error response when the call is rejected.
+
 ## 0.4.2 (experimental)
 - Add outgoing call, answer, hangup, and read-only SIM/network checks to the phone settings panel.
 - Accept extended voice ringing indications and international caller IDs from the modem.
