@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import hmac
+import io
 import json
 import logging
 import math
@@ -10,6 +11,7 @@ import os
 import re
 import secrets
 import struct
+import wave
 from pathlib import Path
 
 from aiohttp import ClientError, ClientTimeout, web
@@ -409,16 +411,25 @@ class SetupPanel:
                 status = result["modem_gps_status"]
                 fix = "координаты получены" if result["fix"] else "координат пока нет"
                 return web.json_response({"message": f"{status} · {fix}"})
-            if check == "microphone":
+            if check in {"microphone", "microphone_sample"}:
                 if service.mic_lock.locked():
                     raise RuntimeError("Микрофон сейчас занят.")
                 device = service.o.get("q1_mic_device")
                 if not device:
                     raise RuntimeError("Выберите и примените устройство микрофона.")
                 async with service.mic_lock:
-                    pcm = await capture_pcm(device, seconds=1)
+                    pcm = await capture_pcm(device, seconds=5 if check == "microphone_sample" else 1)
                 if not pcm:
                     raise RuntimeError("Устройство не передало PCM.")
+                if check == "microphone_sample":
+                    buffer = io.BytesIO()
+                    with wave.open(buffer, "wb") as recording:
+                        recording.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                        recording.writeframes(pcm)
+                    return web.Response(
+                        body=buffer.getvalue(), content_type="audio/wav",
+                        headers={"Cache-Control": "no-store"},
+                    )
                 return web.json_response(
                     {"message": f"Получено {len(pcm)} байт PCM · уровень {rms(pcm)}"}
                 )

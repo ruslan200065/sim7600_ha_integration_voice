@@ -77,7 +77,7 @@ class Q1Media:
             feed = asyncio.create_task(self._download(session, url, allowed_hosts, source.stdin))
             sink, env = audio_route(sink, "playback")
             dest = await asyncio.create_subprocess_exec(
-                "aplay","-q","-D",sink,"-f","S16_LE","-r","16000","-c","1",
+                "aplay","-q","-D",sink,"-t","raw","-f","S16_LE","-r","16000","-c","1",
                 stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env)
             while chunk := await source.stdout.read(8192):
                 dest.stdin.write(chunk)

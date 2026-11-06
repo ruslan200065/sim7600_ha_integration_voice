@@ -1,3 +1,6 @@
+## 0.4.13 (experimental)
+- Play a five-second local microphone sample in the private settings panel.
+
 ## 0.4.12 (experimental)
 - Discover explicitly visible HA devices by name and report their current state.
 - Separate observation from control, and support permitted media players, fans and scenes.

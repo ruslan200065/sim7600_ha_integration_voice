@@ -48,7 +48,7 @@ async def play_pcm(device, pcm):
         raise RuntimeError("q1_speaker_device not set")
     device, env = audio_route(device, "playback")
     proc=await asyncio.create_subprocess_exec(
-        "aplay","-q","-D",device,"-f","S16_LE","-r","16000","-c","1",
+        "aplay","-q","-D",device,"-t","raw","-f","S16_LE","-r","16000","-c","1",
         stdin=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,env=env)
     try:
         _,err=await asyncio.wait_for(proc.communicate(pcm), timeout=8)
@@ -70,7 +70,7 @@ async def play_stream(device, stream):
         raise RuntimeError("q1_speaker_device not set")
     device, env = audio_route(device, "playback")
     proc=await asyncio.create_subprocess_exec(
-        "aplay","-q","-D",device,"-f","S16_LE","-r","16000","-c","1",
+        "aplay","-q","-D",device,"-t","raw","-f","S16_LE","-r","16000","-c","1",
         stdin=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,env=env)
     try:
         async for frame in stream:

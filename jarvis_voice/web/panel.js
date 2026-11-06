@@ -180,6 +180,9 @@ restart.addEventListener("click", async () => {
   }
 });
 
+const microphoneSample = document.querySelector("#microphone-sample");
+let microphoneSampleUrl;
+
 for (const button of document.querySelectorAll("[data-check]")) {
   button.addEventListener("click", async () => {
     const output = button.nextElementSibling;
@@ -197,6 +200,12 @@ for (const button of document.querySelectorAll("[data-check]")) {
         snapshot.src = snapshotUrl;
         snapshot.hidden = false;
         output.textContent = "Снимок получен.";
+      } else if (button.dataset.check === "microphone_sample") {
+        if (microphoneSampleUrl) URL.revokeObjectURL(microphoneSampleUrl);
+        microphoneSampleUrl = URL.createObjectURL(await response.blob());
+        microphoneSample.src = microphoneSampleUrl;
+        microphoneSample.hidden = false;
+        output.textContent = "Запись готова. Нажмите воспроизведение.";
       } else {
         output.textContent = (await response.json()).message;
       }
