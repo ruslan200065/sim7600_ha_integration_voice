@@ -54,3 +54,42 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
 
         brain.reply.assert_awaited_once_with("Какая погода сегодня?")
         hangup.assert_awaited_once()
+
+    async def test_tool_survives_interruption_and_reports_after_new_reply(self):
+        progress_played = asyncio.Event()
+        new_answer_played = asyncio.Event()
+        completion_played = asyncio.Event()
+
+        async def play(text):
+            if text == "Готовлю снимок":
+                progress_played.set()
+                await asyncio.Future()
+            elif text == "Свет включён":
+                new_answer_played.set()
+            elif text == "Фото отправлено":
+                completion_played.set()
+
+        async def brain(phrase, *, on_progress):
+            if phrase == "Отправь фото":
+                on_progress("Готовлю снимок")
+                await new_answer_played.wait()
+                return "Фото отправлено"
+            return "Свет включён"
+
+        class Speech:
+            turn = 0
+
+            async def recognize_live(self, source, *, threshold, on_voice_start, on_partial):
+                self.turn += 1
+                if self.turn == 1:
+                    return "Отправь фото"
+                if self.turn == 2:
+                    await progress_played.wait()
+                    on_partial("А свет")
+                    return "А свет включён?"
+                await completion_played.wait()
+                return "До свидания"
+
+        async with asyncio.timeout(2):
+            await run_dialog(Speech(), brain, asyncio.Queue(), play, AsyncMock(), "Привет",
+                             background_tools=True)

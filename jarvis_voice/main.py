@@ -199,7 +199,7 @@ class Server:
             self.mode="talking"
             await run_dialog(
                 self.speech, partial(self.brain.reply, camera_entity=camera), self.audio.queue, self._say, self.modem.hangup,
-                prompt or "Здравствуйте. Это Джарвис. Слушаю вас.",
+                prompt or "Здравствуйте. Это Джарвис. Слушаю вас.", background_tools=True,
             )
         except asyncio.CancelledError:
             raise
@@ -332,10 +332,13 @@ class Server:
         ticket = secrets.token_urlsafe(32)
         self.shared_photos[ticket] = (picture, mime)
         try:
-            await self.brain._ha("POST", "/api/services/telegram_bot/send_photo", {
+            result = await self.brain._ha("POST", "/api/services/telegram_bot/send_photo?return_response", {
                 "entity_id": target,
                 "url": f"http://{socket.gethostname()}:8099/q1/shared-photo/{ticket}",
             }, timeout=25)
+            chats = result.get("service_response", {}).get("chats", [])
+            if not any(chat.get("message_id") for chat in chats):
+                raise RuntimeError("Telegram did not return a message ID")
         finally:
             self.shared_photos.pop(ticket, None)
 

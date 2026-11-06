@@ -67,7 +67,14 @@ DEVICE_WORDS = {
 }
 SEARCH_WORDS = re.compile(r"[a-zа-я0-9]+")
 RUSSIAN_ENDING = re.compile(r"^([а-я]{3,}?)(?:ами|ями|ого|ему|ому|ыми|ими|ой|ей|ый|ий|ая|яя|ую|юю|ом|ем|ах|ях|[аеёиоуыэюя])$")
-SEARCH_FILLERS = {"в", "во", "на", "из", "у", "для"}
+SEARCH_FILLERS = {"в", "во", "на", "из", "у", "для", "ли", "где", "какой", "какая", "какие", "покажи", "проверь"}
+BACKGROUND_TOOLS = {
+    "send_camera_photo": "Готовлю снимок для Telegram.",
+    "see_camera": "Смотрю камеру.",
+    "listen_q1": "Слушаю микрофон.",
+    "call_ha_service": "Сейчас выполню.",
+    "announce": "Сейчас передам объявление.",
+}
 STATE_ATTRIBUTES = {
     "friendly_name", "device_class", "unit_of_measurement", "brightness",
     "current_position", "current_temperature", "temperature", "humidity",
@@ -95,7 +102,9 @@ class Brain:
                 "из разговора. Если подходит несколько устройств, спроси, какое, назвав "
                 "два подходящих варианта. Не выбирай устройство по порядку выдачи. "
                 "Для чтения состояния и управления используй только найденные ID. "
-                "Учитывай can_control и control_actions. Для свежего состояния "
+                "Если поиск вернул только часть результатов, уточни комнату, имя или тип "
+                "дополнительным поиском. При совпадении только части слов уточни устройство "
+                "у человека перед действием. Учитывай can_control и control_actions. Для свежего состояния "
                 "используй get_entity_state. Говори обычными словами без технических ID, "
                 "различай закрыто, выключено, недоступно и неизвестно. "
                 "Подтверждай действие по фактическому состоянию из ответа инструмента. "
@@ -105,6 +114,7 @@ class Brain:
         }
         self.history = []
         self.lock = asyncio.Lock()
+        self.action_lock = asyncio.Lock()
 
     def _control_actions(self, entity):
         if not isinstance(entity, str) or not ENTITY_ID.fullmatch(entity):
@@ -241,21 +251,38 @@ class Brain:
                 " ".join(value for value in fields if value).lower().replace("ё", "е")
             ))
             stems = {search_stem(word) for word in index}
-            if query != entity_id and not all(
-                word in index or search_stem(word) in stems for word in words
-            ):
+            matched = {word for word in words if search_stem(word) in stems or word in index}
+            if words and not matched and query != entity_id:
                 continue
             actions = self._control_actions(entity_id)
-            matches.append({
-                **row, "domain": domain, "area": details.get("area"),
-                "aliases": aliases, "device_name": details.get("device_name"),
-                "can_control": bool(actions), "control_actions": sorted(actions),
-            })
-        if ENTITY_ID.fullmatch(query):
-            exact = [row for row in matches if row["entity_id"] == query]
-            if exact:
-                matches = exact
-        return {"devices": matches[:16], "total": len(matches)}
+            priority = (query == entity_id, len(matched), len(words & index))
+            matches.append((priority, {
+                "entity_id": entity_id, "state": row["state"], "domain": domain,
+                "name": row.get("friendly_name"), "area": details.get("area"),
+                "device_class": row.get("device_class"), "can_control": bool(actions),
+                "control_actions": sorted(actions),
+            }))
+        matches.sort(key=lambda item: item[0], reverse=True)
+        full = [row for score, row in matches if score[0] or score[1] == len(words)]
+        exact = [row for row in full if row["entity_id"] == query]
+        selected = exact or full or [row for _, row in matches[:8]]
+        return {
+            "devices": selected[:8], "total": len(exact or full) if exact or full else len(matches),
+            "partial_match": bool(selected and not full),
+        }
+
+    async def _camera_picture(self, entity):
+        try:
+            return await self._picture(entity)
+        except (RuntimeError, ValueError, TimeoutError, aiohttp.ClientError):
+            if not entity and self.camera_allowed("camera.jarvis_signal_q1_camera"):
+                return await self._picture("camera.jarvis_signal_q1_camera")
+            if not entity or not entity.endswith("_main_stream"):
+                raise
+            alternate = entity.removesuffix("_main_stream") + "_sub_stream"
+            if not self.camera_allowed(alternate):
+                raise
+            return await self._picture(alternate)
 
     async def _tool(self, name, arguments, camera_entity=None, *, explicit_photo=False):
         if not isinstance(arguments, dict):
@@ -274,16 +301,22 @@ class Brain:
             ):
                 return "Получатель Telegram не настроен в панели JARVIS"
             try:
-                picture, mime = await self._picture(entity)
-                if name == "send_camera_photo":
-                    await self.share_photo(target, picture, mime)
-                    return "Home Assistant подтвердил отправку фото в Telegram"
-                question = str(arguments.get("question", "Что на камере?"))[:400]
-                image_url = "data:" + mime + ";base64," + base64.b64encode(picture).decode()
-                return {"image": image_url, "question": question}
+                picture, mime = await self._camera_picture(entity)
             except (RuntimeError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
-                LOG.warning("Camera tool %s failed: %s", name, type(exc).__name__)
-                return "Не удалось получить кадр или отправить его"
+                LOG.warning("Camera capture failed (%s): %s status=%s",
+                            entity or "Q1 USB", type(exc).__name__, getattr(exc, "status", "-"))
+                return "Не удалось получить кадр с выбранной камеры"
+            if name == "send_camera_photo":
+                try:
+                    await self.share_photo(target, picture, mime)
+                except (RuntimeError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
+                    LOG.warning("Telegram photo delivery failed: %s status=%s",
+                                type(exc).__name__, getattr(exc, "status", "-"))
+                    return "Кадр получен, но Telegram не подтвердил доставку"
+                return "Telegram подтвердил отправку фото"
+            question = str(arguments.get("question", "Что на камере?"))[:400]
+            image_url = "data:" + mime + ";base64," + base64.b64encode(picture).decode()
+            return {"image": image_url, "question": question}
 
         if name == "listen_q1":
             if not self.listen_room:
@@ -339,24 +372,28 @@ class Brain:
             return {"accepted": True, "device": self._state(row)}
         return "Unknown tool"
 
-    async def reply(self, phrase, camera_entity=None):
+    async def reply(self, phrase, camera_entity=None, *, on_progress=None):
+        if on_progress is not None:
+            return await self._reply(phrase, camera_entity, on_progress)
         async with self.lock:
-            return await self._reply(phrase, camera_entity)
+            return await self._reply(phrase, camera_entity, None)
 
-    async def _reply(self, phrase, camera_entity):
+    async def _reply(self, phrase, camera_entity, on_progress):
         key = self.options.get("deepseek_api_key", "")
         if not key:
             return "Ключ DeepSeek не настроен."
         user_message = {"role": "user", "content": phrase}
         explicit_photo = bool(
-            re.search(r"\b(?:пришл|отправ|скин|пошл|перешл|пересыл)\w*", phrase, re.I)
+            re.search(r"\b(?:пришл|пришлите|присл|отправ|скин|сброс|пошл|посл|перешл|пересыл)\w*", phrase, re.I)
             and re.search(r"\b(?:фото|сним|кадр|телег)\w*", phrase, re.I)
         )
         messages = [self.system_message, *self.history, user_message]
+        self.history = [*self.history[-16:], user_message]
+        reported_progress = False
         if camera_entity:
             messages.insert(1, {"role": "system", "content": "Камера события текущего звонка: " + camera_entity})
         try:
-            for _ in range(4):
+            for _ in range(6):
                 payload={"model":self.options.get("deepseek_model","deepseek-flash"),
                          "messages":messages,"tools":TOOLS,"tool_choice":"auto",
                          "thinking":{"type":"disabled"},
@@ -371,16 +408,24 @@ class Brain:
                 calls=msg.get("tool_calls") or []
                 if not calls:
                     answer=msg.get("content") or "Не удалось сформировать ответ."
-                    self.history = [
-                        *self.history[-16:], user_message, {"role": "assistant", "content": answer}
-                    ]
+                    for index, entry in enumerate(self.history):
+                        if entry is user_message:
+                            self.history.insert(index + 1, {"role": "assistant", "content": answer})
+                            break
                     return answer[:1500]
                 images = []
                 for call in calls:
                     name=call["function"]["name"]
-                    args=json.loads(call["function"].get("arguments") or "{}")
                     try:
-                        result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo)
+                        args = json.loads(call["function"].get("arguments") or "{}")
+                        if on_progress and name in BACKGROUND_TOOLS and not reported_progress:
+                            on_progress(BACKGROUND_TOOLS[name])
+                            reported_progress = True
+                        if name == "call_ha_service":
+                            async with self.action_lock:
+                                result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo)
+                        else:
+                            result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo)
                     except (RuntimeError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
                         LOG.warning("Tool %s failed: %s", name, type(exc).__name__)
                         result = "Home Assistant не подтвердил результат операции"
@@ -390,7 +435,7 @@ class Brain:
                         images.append({"role":"user","content":[{"type":"text","text":result["question"]},
                             {"type":"image_url","image_url":{"url":result["image"],"detail":"low"}}]})
                     else:
-                        messages.append({"role":"tool","tool_call_id":call["id"],"content":json.dumps(result,ensure_ascii=False,default=str)[:3000]})
+                        messages.append({"role":"tool","tool_call_id":call["id"],"content":json.dumps(result,ensure_ascii=False,default=str)})
                 messages.extend(images)
             return "Не удалось завершить команду, повторите запрос."
         except Exception:

@@ -1,3 +1,9 @@
+## 0.4.17 (experimental)
+
+- Keep call recognition and playback independent of tool execution.
+- Rank entity matches and return complete tool results for large Home Assistant installations.
+- Confirm Telegram delivery using the service response and try the same camera substream if its main stream is unavailable.
+
 ## 0.4.16 (experimental)
 
 - Add separate opt-in settings for reading all Home Assistant entities and controlling all supported entities.
