@@ -225,6 +225,7 @@ class Server:
                 next_sample = clock() + 15
                 try:
                     await self.sample_reminder_conditions()
+                    await self.run_due_actions()
                 except Exception as exc:
                     LOG.warning("Reminder condition check failed: %s", type(exc).__name__)
             if self.modem.call_state == "idle":
@@ -243,6 +244,33 @@ class Server:
                 except Exception as exc:
                     LOG.warning("Reminder dispatch failed: %s", type(exc).__name__)
             await asyncio.sleep(5)
+
+    async def run_due_actions(self):
+        profiles = {member["key"]: member for member in self.family.values()}
+        for identifier, profile, condition in self.personal.due_actions(datetime.now(timezone.utc)):
+            if not self.personal.claim_action(identifier):
+                continue
+            self.personal.action_status(identifier, "started")
+            if profile not in self.reminder_numbers:
+                self.personal.action_status(identifier, "profile_removed")
+                continue
+            brain = self.caller_brain(profiles.get(profile))
+            condition_allowed = (
+                condition["kind"] == "time"
+                or (condition["kind"] == "zone" and condition["entity"] == brain.options.get("reminder_person"))
+                or (condition["kind"] == "state" and brain._visible(condition["entity"]))
+            )
+            if not condition_allowed:
+                self.personal.action_status(identifier, "blocked")
+                continue
+            try:
+                async with brain.action_lock:
+                    result = await brain._tool("call_ha_service", condition["action"])
+            except (ClientError, TimeoutError, RuntimeError, ValueError):
+                self.personal.action_status(identifier, "unconfirmed")
+                continue
+            accepted = isinstance(result, dict) and result.get("accepted")
+            self.personal.action_status(identifier, "accepted" if accepted else "blocked")
 
     async def sample_reminder_conditions(self):
         watches = self.personal.watches()

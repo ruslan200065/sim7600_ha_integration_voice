@@ -24,6 +24,8 @@ class Personal:
                 CREATE TABLE IF NOT EXISTS reminders (
                     id TEXT PRIMARY KEY, profile TEXT, name TEXT, text TEXT,
                     due REAL, delivered INTEGER DEFAULT 0, retry_at REAL DEFAULT 0, condition TEXT, armed INTEGER DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS action_runs (
+                    id TEXT PRIMARY KEY, status TEXT NOT NULL);
             """)
             self.path.chmod(0o600)
             return db.execute(sql, values).fetchall()
@@ -74,7 +76,26 @@ class Personal:
         placeholders = ",".join("?" for _ in profiles)
         return self.query(f"""SELECT id,profile,text FROM reminders
             WHERE delivered=0 AND due<=? AND retry_at<=? AND profile IN ({placeholders})
+            AND json_type(condition, '$.action') IS NULL
             ORDER BY due LIMIT 20""", (now.timestamp(), now.timestamp(), *profiles))
+
+    def due_actions(self, now):
+        return [(i, p, json.loads(c)) for i,p,c in self.query(
+            """SELECT id,profile,condition FROM reminders WHERE delivered=0 AND due<=?
+            AND json_type(condition, '$.action') IS NOT NULL ORDER BY due LIMIT 20""",
+            (now.timestamp(),))]
+
+    def claim_action(self, identifier):
+        return bool(self.query(
+            "UPDATE reminders SET delivered=1 WHERE id=? AND delivered=0 RETURNING id", (identifier,)))
+
+    def action_status(self, identifier, status):
+        self.query("INSERT OR REPLACE INTO action_runs VALUES (?, ?)", (identifier, status))
+
+    def action_history(self, profile):
+        return [{"id": i, "text": text, "status": status} for i,text,status in self.query(
+            """SELECT reminders.id,text,status FROM action_runs JOIN reminders USING(id)
+            WHERE profile=? ORDER BY reminders.due DESC LIMIT 10""", (profile,))]
 
     def watches(self):
         return [(i, p, json.loads(c), armed) for i, p, c, armed in self.query(

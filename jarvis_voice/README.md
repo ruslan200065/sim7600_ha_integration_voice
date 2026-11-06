@@ -173,6 +173,9 @@ For a one-shot arrival reminder, assign the correct `person.*` to the profile an
 `zone.*` in Home Assistant. Ask JARVIS to remind you when you arrive there. You can also ask
 for a one-shot reminder on a readable device state or a numeric threshold. The condition
 must become true after it has been observed false. Location coordinates are evaluated locally.
+The same trigger can run a single permitted device action. Ask, for example, to turn on a light
+when a door sensor opens. Ask JARVIS to list or cancel pending rules. The gate PIN flow is
+separate and cannot be scheduled by a rule.
 
 Use `jarvis_q1.call` with the optional `member` field to route an automation call to the named
 profile. Restart Home Assistant Core once after installing the updated companion integration

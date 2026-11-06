@@ -56,6 +56,7 @@ TOOLS = [
     tool("remind", "Schedule a reminder after an explicit request. Ask for time if unclear. Use an ISO 8601 local date/time.", ("text", "when"), text="string", when="string"),
     tool("find_zones", "List configured Home Assistant zones by name and ID for an arrival reminder."),
     tool("remind_when", "One-shot private reminder when a permitted device reaches a state (equals, above, below), or when the caller enters a configured zone (operator enter). Use zone ID for enter.", ("text", "entity_id", "operator"), text="string", entity_id="string", operator="string", value="string"),
+    tool("run_when", "Create a one-shot device action after an explicit request like «когда стемнеет, включи свет». Condition operators: equals, above, below, enter, at. For at use when (ISO local time) and no entity_id. action_entity and service must be currently permitted.", ("text", "operator", "action_entity", "service"), text="string", entity_id="string", operator="string", value="string", when="string", action_entity="string", service="string"),
     tool("list_reminders", "List pending reminders for this profile."),
     tool("cancel_reminder", "Cancel a pending reminder by ID.", ("id",), id="string"),
     tool("find_devices", "Find permitted HA devices by name, alias, room, device type or entity ID. Pass only the relevant search words, e.g. свет гостиная. An empty query lists devices. Use before guessing any entity ID. Pass domain=camera for camera queries.", query="string", domain="string"),
@@ -162,7 +163,8 @@ class Brain:
                 "Уточняй только камеру, если подходят несколько. "
                 "Записывай факты через remember только по просьбе запомнить. "
                 "Для напоминания по времени используй remind. Для прибытия используй find_zones и remind_when, "
-                "для значения датчика используй remind_when. Уточняй недостающее условие. "
+                "для значения датчика используй remind_when. Для явной команды сделать действие при условии "
+                "используй run_when один раз. При неоднозначной команде уточни условие или действие. "
                 "При числовом запросе к датчику используй get_entity_state и озвучивай единицу измерения. "
                 "Если для той же фразы есть выученный выбор и он найден в текущем поиске, используй его без повторного уточнения. Новые детали запроса важнее выученного выбора."
             ),
@@ -357,7 +359,7 @@ class Brain:
             rows = await self._ha("GET", "/api/states")
             return [{"id": row["entity_id"], "name": row.get("attributes", {}).get("friendly_name")}
                     for row in rows if row["entity_id"].startswith("zone.")]
-        if name in {"remember", "forget", "remind", "remind_when", "list_reminders", "cancel_reminder"}:
+        if name in {"remember", "forget", "remind", "remind_when", "run_when", "list_reminders", "cancel_reminder"}:
             return await self._personal_tool(name, arguments, phrase)
         if name == "find_devices":
             return await self._find_devices(arguments.get("query", ""), arguments.get("domain"))
@@ -456,7 +458,8 @@ class Brain:
         if not self.personal:
             return "Личная память недоступна"
         if name == "list_reminders":
-            return self.personal.pending(self.profile)
+            return {"pending": self.personal.pending(self.profile),
+                    "recent_actions": self.personal.action_history(self.profile)}
         if name == "cancel_reminder":
             if not re.search(r"\b(?:отмен|удал|убер)\w*", phrase, re.I):
                 return "Уточни, нужно ли отменить напоминание"
@@ -475,14 +478,33 @@ class Brain:
             if not re.search(r"\b(?:забуд|удал|сотри)\w*", phrase, re.I):
                 return "Уточни, нужно ли удалить запись"
             return "Запись удалена" if self.personal.forget(self.profile, text) else "Запись не найдена"
-        if re.search(r"\bне\s+(?:надо\s+|нужно\s+)?(?:напомн|напомин|постав)\w*", phrase, re.I) or not re.search(
+        if name == "run_when":
+            at_time = args.get("operator") == "at"
+            trigger_pattern = r"\b(?:через|завтра|сегодня|послезавтра|часов|утром|вечером|днем|днём)\b|\d{1,2}:\d{2}" if at_time else r"\b(?:когда|если|как только|после того как)\b"
+            has_trigger = re.search(trigger_pattern, phrase, re.I)
+            has_action = re.search(r"\b(?:включ|выключ|откро|закро|откры|закры|запуст|останов|постав|погаси|выруби)\w*", phrase, re.I)
+            if not (has_trigger and has_action) or re.search(r"\bне\s+(?:надо\s+)?(?:включ|выключ|откр|закр|запуст|останов)\w*", phrase, re.I):
+                return "Уточни условие и действие для одного запуска"
+            action_entity, service = args.get("action_entity"), args.get("service")
+            if (not isinstance(service, str) or service == "volume_set"
+                or service not in self._control_actions(action_entity)):
+                return "Это действие недоступно для одноразового правила"
+        elif re.search(r"\bне\s+(?:надо\s+|нужно\s+)?(?:напомн|напомин|постав)\w*", phrase, re.I) or not re.search(
             r"\b(?:напомн|напомин|постав)\w*", phrase, re.I
         ):
             return "Уточни, нужно ли поставить напоминание"
-        if name == "remind_when":
+        if name in {"remind_when", "run_when"}:
             if self.profile == "local":
                 return "Сначала настрой номер своего профиля"
             entity, operator, value = args.get("entity_id"), args.get("operator"), args.get("value")
+            if name == "run_when" and operator == "at":
+                try:
+                    due = self.future_time(args.get("when"))
+                except (ValueError, TypeError, OverflowError):
+                    return "Уточни будущие дату и время"
+                condition = {"kind": "time", "action": {"entity_id": action_entity, "service": service}}
+                identifier = self.personal.reminder(self.profile, self.profile_name, text, due, condition)
+                return {"saved": True, "id": identifier, "when": due.isoformat()}
             if not isinstance(entity, str) or not ENTITY_ID.fullmatch(entity):
                 return "Уточни зону или устройство"
             if operator == "enter":
@@ -506,14 +528,13 @@ class Brain:
                 states = {entity: await self._ha("GET", "/api/states/" + entity)}
             else:
                 return "Уточни условие и доступное устройство"
+            if name == "run_when":
+                condition["action"] = {"entity_id": action_entity, "service": service}
             identifier = self.personal.reminder(self.profile, self.profile_name, text, condition=condition)
             self.personal.sample(identifier, condition_matches(condition, states), False, datetime.now(self.timezone))
             return {"saved": True, "id": identifier, "condition": condition}
         try:
-            due = datetime.fromisoformat(args.get("when", ""))
-            due = due.replace(tzinfo=self.timezone) if due.tzinfo is None else due.astimezone(self.timezone)
-            if due <= datetime.now(self.timezone):
-                raise ValueError
+            due = self.future_time(args.get("when"))
         except (TypeError, ValueError, OverflowError):
             return "Уточни будущие дату и время"
         if self.profile == "local":
@@ -531,6 +552,13 @@ class Brain:
             except (RuntimeError, TimeoutError, aiohttp.ClientError):
                 return "Напоминание сохранено, но Home Assistant не принял событие календаря"
         return {"saved": True, "when": due.isoformat(), "text": text, "calendar": bool(calendar)}
+
+    def future_time(self, value):
+        due = datetime.fromisoformat(value)
+        due = due.replace(tzinfo=self.timezone) if due.tzinfo is None else due.astimezone(self.timezone)
+        if due <= datetime.now(self.timezone):
+            raise ValueError("Time must be in the future")
+        return due
 
     async def reply(self, phrase, camera_entity=None, *, on_progress=None):
         if on_progress is not None:

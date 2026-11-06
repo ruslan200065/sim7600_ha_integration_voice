@@ -1,3 +1,7 @@
+## 0.4.23 (experimental)
+
+- Run a permitted device action once when a zone or device condition becomes true.
+
 ## 0.4.22 (experimental)
 
 - Keep the reminder confirmation word out of the spoken prompt so echo filtering accepts the caller’s answer.

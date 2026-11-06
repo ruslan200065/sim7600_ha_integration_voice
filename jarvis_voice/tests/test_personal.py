@@ -41,6 +41,18 @@ class PersonalTests(unittest.TestCase):
             store.delivered(reminder)
             self.assertEqual(store.due(now + timedelta(hours=1), [first]), [])
 
+    def test_action_can_only_be_claimed_once_and_never_dials(self):
+        with TemporaryDirectory() as directory:
+            store = Personal(Path(directory) / "data.sqlite3")
+            now = datetime.now(timezone.utc)
+            condition = {"kind": "time", "action": {"entity_id": "light.test", "service": "turn_on"}}
+            identifier = store.reminder("first", "First", "Action", now, condition)
+            self.assertEqual(store.due(now, ["first"]), [])
+            self.assertEqual(store.due_actions(now), [(identifier, "first", condition)])
+            self.assertTrue(store.claim_action(identifier))
+            self.assertFalse(store.claim_action(identifier))
+            self.assertEqual(store.due_actions(now), [])
+
 
 class SpeechCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_cache_reuses_complete_pcm(self):
