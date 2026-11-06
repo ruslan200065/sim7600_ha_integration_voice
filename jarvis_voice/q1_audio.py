@@ -32,3 +32,25 @@ async def play_pcm(device, pcm):
     _,err=await proc.communicate(pcm)
     if proc.returncode:
         raise RuntimeError("aplay failed: "+err.decode(errors="replace")[:200])
+
+
+async def play_stream(device, stream):
+    """Start output on the first SpeechKit chunk rather than buffering the full TTS."""
+    if not device:
+        raise RuntimeError("q1_speaker_device not set")
+    proc=await asyncio.create_subprocess_exec(
+        "aplay","-q","-D",device,"-f","S16_LE","-r","16000","-c","1",
+        stdin=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+    try:
+        async for frame in stream:
+            proc.stdin.write(frame)
+            await proc.stdin.drain()
+        proc.stdin.close()
+        await proc.wait()
+        if proc.returncode:
+            raise RuntimeError("aplay failed")
+    except Exception:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        raise

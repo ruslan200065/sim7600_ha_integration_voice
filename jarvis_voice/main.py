@@ -11,7 +11,7 @@ from modem import Modem
 from audio import PCMTransport
 from speech import SpeechKit
 from brain import Brain
-from q1_audio import capture_pcm, play_pcm
+from q1_audio import capture_pcm, play_stream
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOG = logging.getLogger(__name__)
@@ -215,10 +215,7 @@ class Server:
             return web.json_response({"recognized":"","response":""})
         answer=await self.brain.reply(phrase)
         if self.o.get("q1_speaker_device"):
-            frames=bytearray()
-            async for chunk in self.speech.synthesize(answer):
-                frames.extend(chunk)
-            await play_pcm(self.o["q1_speaker_device"],bytes(frames))
+            await play_stream(self.o["q1_speaker_device"],self.speech.synthesize(answer))
         return web.json_response({"recognized":phrase,"response":answer})
 
     async def q1_speak(self, request):
@@ -230,10 +227,7 @@ class Server:
         text=str(data.get("text","")).strip()
         if not text or len(text)>2000:
             raise web.HTTPBadRequest(text="text must be 1..2000 chars")
-        frames=bytearray()
-        async for chunk in self.speech.synthesize(text):
-            frames.extend(chunk)
-        await play_pcm(self.o["q1_speaker_device"],bytes(frames))
+        await play_stream(self.o["q1_speaker_device"],self.speech.synthesize(text))
         return web.json_response({"ok":True})
 
     def app(self):

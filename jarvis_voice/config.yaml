@@ -17,9 +17,6 @@ video: true
 devices:
   - /dev/ttyUSB2
   - /dev/ttyUSB4
-map:
-  - type: addon_config
-    read_only: false
 options:
   at_port: /dev/ttyUSB2
   pcm_port: /dev/ttyUSB4
