@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 import socket
+from contextlib import aclosing
 from pathlib import Path
 from aiohttp import web, ClientSession
 
@@ -145,9 +146,8 @@ class Server:
     async def _say(self, text):
         if not self.speech:
             raise RuntimeError("Yandex SpeechKit API key is missing")
-        async with self.speaking:
-            async for pcm in self.speech.synthesize(text):
-                await self.audio.write(pcm)
+        async with self.speaking, aclosing(self.speech.synthesize(text)) as chunks:
+            await self.audio.write_stream(chunks)
 
     async def _dialog(self, prompt):
         try:

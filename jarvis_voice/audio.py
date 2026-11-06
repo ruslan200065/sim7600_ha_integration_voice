@@ -1,7 +1,6 @@
 """SIM7600 raw S16LE, 16kHz/mono transport. Modem firmware must expose USB PCM."""
 import asyncio
 import logging
-import os
 import struct
 import time
 import serial
@@ -9,6 +8,23 @@ import serial
 LOG = logging.getLogger(__name__)
 RATE = 16000
 FRAME = 3200  # 100ms, 16kHz 16-bit mono
+PLAYBACK_FRAME = 640  # 20ms, 16kHz 16-bit mono
+PLAYBACK_PREFILL = 6  # 120ms of audio before writing to the modem
+
+
+async def playback_frames(chunks):
+    """Frame a byte stream across SpeechKit message boundaries."""
+    pending = bytearray()
+    async for chunk in chunks:
+        pending.extend(chunk)
+        complete = len(pending) // PLAYBACK_FRAME * PLAYBACK_FRAME
+        for offset in range(0, complete, PLAYBACK_FRAME):
+            yield bytes(pending[offset : offset + PLAYBACK_FRAME])
+        del pending[:complete]
+    if len(pending) % 2:
+        raise ValueError("Incomplete 16-bit PCM sample")
+    if pending:
+        yield bytes(pending).ljust(PLAYBACK_FRAME, b"\x00")
 
 
 class PCMTransport:
@@ -40,26 +56,56 @@ class PCMTransport:
             self.serial = None
 
     async def _reader(self):
+        pending = bytearray()
         while self.running:
-            # ttyUSB4 is raw byte stream at the negotiated 16kHz PCM format.
-            chunk = await asyncio.to_thread(self.serial.read, FRAME)
+            chunk = await asyncio.to_thread(self.serial.read, FRAME - len(pending))
             if not chunk:
                 continue
+            pending.extend(chunk)
+            if len(pending) < FRAME:
+                continue
             if self.queue.full():
-                try:
-                    self.queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-            self.queue.put_nowait(chunk)
+                self.queue.get_nowait()
+            self.queue.put_nowait(bytes(pending))
+            pending.clear()
 
-    async def write(self, pcm):
-        if not self.running:
+    async def write_stream(self, chunks):
+        port = self.serial
+        if not self.running or port is None:
             raise RuntimeError("PCM audio unavailable")
-        # Write at the sample rate so the modem's audio buffer cannot overflow.
-        for offset in range(0, len(pcm), FRAME):
-            data = pcm[offset:offset + FRAME]
-            await asyncio.to_thread(self.serial.write, data)
-            await asyncio.sleep(len(data) / (RATE * 2))
+        frames = asyncio.Queue(maxsize=24)
+        ready = asyncio.Event()
+        interval = PLAYBACK_FRAME / (RATE * 2)
+        clock = asyncio.get_running_loop().time
+
+        async def fill():
+            try:
+                async for frame in playback_frames(chunks):
+                    await frames.put(frame)
+                    if frames.qsize() == PLAYBACK_PREFILL:
+                        ready.set()
+                await frames.put(None)
+            finally:
+                ready.set()
+
+        async with asyncio.TaskGroup() as group:
+            group.create_task(fill())
+            await ready.wait()
+            deadline = clock()
+            while (frame := await frames.get()) is not None:
+                now = clock()
+                if now - deadline >= interval:
+                    # Restart the schedule after an underrun instead of sending a burst.
+                    deadline = now
+                if deadline > now:
+                    await asyncio.sleep(deadline - now)
+                if not self.running or self.serial is not port:
+                    raise RuntimeError("PCM audio unavailable")
+                written = await asyncio.to_thread(port.write, frame)
+                if written != len(frame):
+                    raise RuntimeError("Incomplete PCM write")
+                deadline += interval
+            await asyncio.sleep(max(0, deadline - clock()))
 
 
 def rms(chunk):

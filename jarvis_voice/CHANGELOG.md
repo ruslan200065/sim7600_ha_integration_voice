@@ -1,3 +1,6 @@
+## 0.4.4 (experimental)
+- Buffer streaming synthesis briefly and deliver evenly paced, sample-aligned 20 ms PCM frames to the modem. Log the USB audio rate reported by the modem.
+
 ## 0.4.3 (experimental)
 - Return the correct HTTP result after dialing and preserve the modem's error response when the call is rejected.
 

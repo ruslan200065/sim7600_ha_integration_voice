@@ -271,3 +271,8 @@ class Modem:
             result = await self.command(cmd, expected_call=call)
             if not result or result[-1] != "OK":
                 raise RuntimeError(cmd + " unsupported by firmware: " + str(result))
+        reported = await self.command("AT+CPCMFRM?", expected_call=call)
+        if "+CPCMFRM: 1" in reported:
+            LOG.info("Modem reports 16 kHz USB call audio")
+        else:
+            LOG.warning("Could not confirm 16 kHz USB call audio: %s", reported)
