@@ -1,3 +1,7 @@
+## 0.4.16 (experimental)
+
+- Add separate opt-in settings for reading all Home Assistant entities and controlling all supported entities.
+
 ## 0.4.15 (experimental)
 
 - Find Home Assistant devices by room, registry alias and device type. Show the assistant which devices it can control and keep follow-up commands conversational.

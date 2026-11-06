@@ -75,6 +75,21 @@
             <p class="hint">Для автозвонка добавьте действие <code>jarvis_q1.call</code> в автоматизацию Home Assistant. Передача звука через SIM7600 зависит от прошивки.</p>
           </details>
           <details class="card">
+            <summary>Доступ к устройствам Home Assistant</summary>
+            <div class="fields advanced">
+              <label class="check"><input type="checkbox" name="observe_all_entities"> Читать состояния всех устройств и видеть все камеры</label>
+              <label class="check"><input type="checkbox" name="control_all_entities"> Управлять всеми устройствами поддерживаемых типов</label>
+              <p class="hint">При общем доступе JARVIS может передавать в DeepSeek сведения об устройствах. Общий режим управления включает свет, выключатели, приводы, вентиляторы, сцены и медиаплееры.</p>
+              <label>Устройства для чтения состояния и камеры<textarea name="observed_entities" rows="2" placeholder="binary_sensor.motion&#10;camera.front_door"></textarea></label>
+              <label>Домены управления<textarea name="allow_domains" rows="2" placeholder="light&#10;media_player"></textarea></label>
+              <label>Камера Home Assistant для ассистента<input name="camera_entity" placeholder="camera.front_door"></label>
+              <label>Разрешённые сущности для ассистента
+                <textarea name="allowed_entities" rows="2" placeholder="light.hall&#10;switch.garage"></textarea>
+                <span class="hint">По одной сущности на строку.</span>
+              </label>
+            </div>
+          </details>
+          <details class="card">
             <summary>Дополнительные настройки</summary>
             <div class="fields advanced">
               <label>Скорость AT-порта<input name="serial_baud" type="number" min="1200" max="921600"></label>
@@ -85,13 +100,6 @@
               <label>Динамик ALSA вручную<input name="q1_speaker_device" placeholder="pulse или имя ALSA"></label>
               <label>Синтез речи в доме<input name="home_tts_entity" placeholder="tts.yandex_speechkit"></label>
               <label>Получатель фото в Telegram<input name="telegram_photo_target" placeholder="notify.telegram_bot_..."></label>
-              <label>Устройства для чтения состояния и камеры<textarea name="observed_entities" rows="2" placeholder="binary_sensor.motion&#10;camera.front_door"></textarea></label>
-              <label>Домены управления<textarea name="allow_domains" rows="2" placeholder="light&#10;media_player"></textarea></label>
-              <label>Камера Home Assistant для ассистента<input name="camera_entity" placeholder="camera.front_door"></label>
-              <label>Разрешённые сущности для ассистента
-                <textarea name="allowed_entities" rows="2" placeholder="light.hall&#10;switch.garage"></textarea>
-                <span class="hint">По одной сущности на строку.</span>
-              </label>
             </div>
           </details>
           <div class="actions">

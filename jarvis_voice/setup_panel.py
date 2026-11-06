@@ -44,11 +44,12 @@ INTEGER_FIELDS = {
     "max_calls_per_hour": (1, 20),
     "call_playback_volume": (10, 100),
 }
+BOOLEAN_FIELDS = {"auto_answer", "observe_all_entities", "control_all_entities"}
 OPTION_FIELDS = (
     set(TEXT_FIELDS)
     | set(INTEGER_FIELDS)
+    | BOOLEAN_FIELDS
     | {
-        "auto_answer",
         "allowed_entities",
         "observed_entities",
         "allow_domains",
@@ -77,8 +78,8 @@ def validate_changes(changes, current):
             lo, hi = INTEGER_FIELDS[key]
             if type(value) is not int or not lo <= value <= hi:
                 raise ValueError(f"{key}: допустимо от {lo} до {hi}.")
-        elif key == "auto_answer" and not isinstance(value, bool):
-            raise ValueError("Неверное значение автоответа.")
+        elif key in BOOLEAN_FIELDS and not isinstance(value, bool):
+            raise ValueError(f"Неверное значение поля {key}.")
         elif key in {"allowed_entities", "observed_entities"}:
             if (
                 not isinstance(value, list)

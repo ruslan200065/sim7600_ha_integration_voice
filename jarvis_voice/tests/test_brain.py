@@ -47,6 +47,29 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
             self.assertIn("turn_off", result["devices"][0]["control_actions"])
         self.assertEqual((await brain._tool("find_devices", {"query": "люстра"}))["total"], 2)
 
+    async def test_global_read_and_control_are_separate(self):
+        sensor = {"entity_id": "sensor.temp", "state": "20"}
+        light = {"entity_id": "light.hall", "state": "on"}
+        brain = Brain({"observe_all_entities": True}, None, None)
+        brain._ha = AsyncMock(return_value=sensor)
+        self.assertEqual(await brain._tool("get_entity_state", {"entity_id": "sensor.temp"}), sensor)
+        self.assertTrue(brain.camera_allowed("camera.hall"))
+        brain._ha.reset_mock()
+        await brain._tool("call_ha_service", {"entity_id": "light.hall", "service": "turn_on"})
+        brain._ha.assert_not_awaited()
+
+        brain.options = {"control_all_entities": True}
+        brain._ha.return_value = light
+        self.assertFalse(brain.camera_allowed("camera.hall"))
+        self.assertFalse(brain._visible("sensor.temp"))
+        self.assertTrue(brain._visible("light.hall"))
+        result = await brain._tool("call_ha_service", {"entity_id": "light.hall", "service": "turn_on"})
+        self.assertTrue(result["accepted"])
+        brain._ha.assert_any_await("POST", "/api/services/light/turn_on", {"entity_id": "light.hall"})
+        brain._ha.reset_mock()
+        await brain._tool("call_ha_service", {"entity_id": "lock.front", "service": "unlock"})
+        brain._ha.assert_not_awaited()
+
     async def test_snapshot_uses_event_camera_and_configured_photo_recipient(self):
         photo = AsyncMock()
         brain = Brain({

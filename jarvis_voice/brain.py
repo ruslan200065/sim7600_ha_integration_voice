@@ -32,10 +32,10 @@ def tool(name, description, required=(), **properties):
 TOOLS = [
     tool("find_devices", "Find permitted HA devices by name, alias, room, device type or entity ID. Pass only the relevant search words, e.g. свет гостиная. An empty query lists devices. Use before guessing any entity ID.", query="string"),
     tool("get_entity_state", "Read actual HA state and selected attributes.", ("entity_id",), entity_id="string"),
-    tool("call_ha_service", "Control an explicitly permitted device. Use a domain action such as turn_on, open_cover, media_pause or volume_set. For volume_set, supply a level between 0 and 1.", ("service", "entity_id"), domain="string", service="string", entity_id="string", volume_level="number"),
+    tool("call_ha_service", "Control a device with can_control enabled. Use a domain action such as turn_on, open_cover, media_pause or volume_set. For volume_set, supply a level between 0 and 1.", ("service", "entity_id"), domain="string", service="string", entity_id="string", volume_level="number"),
     tool("see_camera", "Inspect an allowed camera snapshot. Omit camera to use this call's camera or the configured Q1 camera.", camera="string", question="string"),
     tool("listen_q1", "On explicit request, sample the room microphone briefly, reporting sound level and recognized speech.", seconds="integer"),
-    tool("announce", "Speak text on an explicitly permitted Home Assistant media player.", ("entity_id", "text"), entity_id="string", text="string"),
+    tool("announce", "Speak text on a controllable Home Assistant media player.", ("entity_id", "text"), entity_id="string", text="string"),
     tool("send_camera_photo", "On explicit request, send a fresh snapshot to the single configured Telegram recipient. Omit camera to use this call's camera.", camera="string"),
 ]
 SAFE_SERVICES = {
@@ -106,16 +106,26 @@ class Brain:
         self.history = []
         self.lock = asyncio.Lock()
 
-    def _allowed(self, entity):
-        return (
-            isinstance(entity, str) and ENTITY_ID.fullmatch(entity) is not None
-            and entity in self.options.get("allowed_entities", [])
-        )
+    def _control_actions(self, entity):
+        if not isinstance(entity, str) or not ENTITY_ID.fullmatch(entity):
+            return set()
+        domain = entity.split(".", 1)[0]
+        if self.options.get("control_all_entities") is True or (
+            entity in self.options.get("allowed_entities", [])
+            and domain in self.options.get("allow_domains", [])
+        ):
+            return SAFE_SERVICES.get(domain, set())
+        return set()
 
     def _visible(self, entity):
-        return self._allowed(entity) or (
+        return (
             isinstance(entity, str) and ENTITY_ID.fullmatch(entity) is not None
-            and entity in self.options.get("observed_entities", [])
+            and (
+                self.options.get("observe_all_entities") is True
+                or entity in self.options.get("allowed_entities", [])
+                or entity in self.options.get("observed_entities", [])
+                or bool(self._control_actions(entity))
+            )
         )
 
     def camera_allowed(self, entity):
@@ -235,9 +245,7 @@ class Brain:
                 word in index or search_stem(word) in stems for word in words
             ):
                 continue
-            actions = SAFE_SERVICES.get(domain, set()) if (
-                self._allowed(entity_id) and domain in self.options.get("allow_domains", [])
-            ) else set()
+            actions = self._control_actions(entity_id)
             matches.append({
                 **row, "domain": domain, "area": details.get("area"),
                 "aliases": aliases, "device_name": details.get("device_name"),
@@ -290,9 +298,12 @@ class Brain:
             if not self._visible(entity):
                 return "Устройство отсутствует в списке наблюдения"
             return self._state(await self._ha("GET", "/api/states/" + entity))
-        if not self._allowed(entity):
-            return "Устройство отсутствует в списке управления"
         if name == "announce":
+            if not isinstance(entity, str) or not ENTITY_ID.fullmatch(entity) or not (
+                self.options.get("control_all_entities") is True
+                or entity in self.options.get("allowed_entities", [])
+            ):
+                return "Объявление на этом устройстве недоступно"
             tts = self.options.get("home_tts_entity", "")
             text = arguments.get("text", "")
             if not entity.startswith("media_player.") or not tts.startswith("tts.") or not ENTITY_ID.fullmatch(tts):
@@ -304,12 +315,14 @@ class Brain:
             })
             return "Home Assistant принял объявление для динамика"
         if name == "call_ha_service":
+            actions = self._control_actions(entity)
+            if not actions:
+                return "Управление этим устройством недоступно"
             domain = entity.split(".", 1)[0]
             service = arguments.get("service", "")
             if (
                 arguments.get("domain", domain) != domain
-                or domain not in self.options.get("allow_domains", [])
-                or not isinstance(service, str) or service not in SAFE_SERVICES.get(domain, set())
+                or not isinstance(service, str) or service not in actions
             ):
                 return "Действие с этим устройством не разрешено"
             data = {"entity_id": entity}

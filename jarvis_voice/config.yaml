@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.4.15
+version: 0.4.16
 stage: experimental
 description: SIM7600 voice + Yandex SpeechKit LiveTTS / STT + DeepSeek + HA and Q1
 arch:
@@ -52,6 +52,8 @@ options:
     - homeassistant
     - supervisor
     - homeassistant.local
+  observe_all_entities: false
+  control_all_entities: false
   observed_entities: []
   allowed_entities: []
   allow_domains:
@@ -85,6 +87,8 @@ schema:
   q1_speaker_device: str
   media_allowed_hosts:
     - str
+  observe_all_entities: bool
+  control_all_entities: bool
   observed_entities:
     - str
   allowed_entities:
