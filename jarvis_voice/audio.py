@@ -10,6 +10,7 @@ RATE = 16000
 FRAME = 3200  # 100ms, 16kHz 16-bit mono
 PLAYBACK_FRAME = 640  # 20ms, 16kHz 16-bit mono
 PLAYBACK_PREFILL = 6  # 120ms of audio before writing to the modem
+PLAYBACK_SAMPLES = struct.Struct(f"<{PLAYBACK_FRAME // 2}h")
 
 
 async def playback_frames(chunks):
@@ -28,8 +29,9 @@ async def playback_frames(chunks):
 
 
 class PCMTransport:
-    def __init__(self, port):
+    def __init__(self, port, playback_volume=100):
         self.port = port
+        self.playback_gain = playback_volume / 100
         self.serial = None
         self.rx_task = None
         self.queue = asyncio.Queue(maxsize=40)
@@ -81,6 +83,11 @@ class PCMTransport:
         async def fill():
             try:
                 async for frame in playback_frames(chunks):
+                    if self.playback_gain != 1:
+                        samples = PLAYBACK_SAMPLES.unpack(frame)
+                        frame = PLAYBACK_SAMPLES.pack(
+                            *(int(sample * self.playback_gain) for sample in samples)
+                        )
                     await frames.put(frame)
                     if frames.qsize() == PLAYBACK_PREFILL:
                         ready.set()

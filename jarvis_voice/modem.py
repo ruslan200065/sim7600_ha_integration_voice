@@ -368,8 +368,12 @@ class Modem:
         call = (self.call_id, "connected")
         for cmd in ("AT+CPCMFRM=1", "AT+CPCMREG=1"):
             result = await self.command(cmd, expected_call=call)
+            if cmd == "AT+CPCMREG=1" and result and result[-1] != "OK":
+                # An active call can be reported before the USB audio route is ready.
+                await asyncio.sleep(0.2)
+                result = await self.command(cmd, expected_call=call)
             if not result or result[-1] != "OK":
-                raise RuntimeError(cmd + " unsupported by firmware: " + str(result))
+                raise RuntimeError(cmd + " failed: " + str(result))
         reported = await self.command("AT+CPCMFRM?", expected_call=call)
         if "+CPCMFRM: 1" in reported:
             LOG.info("Modem reports 16 kHz USB call audio")

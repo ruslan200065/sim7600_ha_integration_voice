@@ -38,7 +38,10 @@ class Server:
         self.modem = Modem(options.get("at_port","/dev/ttyUSB2"),
                            options.get("serial_baud",115200), self.event,
                            options.get("max_calls_per_hour",4))
-        self.audio = PCMTransport(options.get("pcm_port","/dev/ttyUSB4"))
+        self.audio = PCMTransport(
+            options.get("pcm_port", "/dev/ttyUSB4"),
+            playback_volume=options.get("call_playback_volume", 50),
+        )
         self.speech = None
         self.brain = None
         self.session = None

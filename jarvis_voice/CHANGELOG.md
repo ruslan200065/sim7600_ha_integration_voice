@@ -1,3 +1,7 @@
+## 0.4.9 (experimental)
+- Add a call playback volume control with a 50% default for JARVIS speech.
+- Retry USB audio registration once when the modem initially rejects it during an active call.
+
 ## 0.4.8 (experimental)
 - Include SIM detection errors in the network check.
 

@@ -118,6 +118,19 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
             ["incoming_call", "caller_id", "call_connected"],
         )
 
+    async def test_audio_registration_can_follow_call_connection(self):
+        self.modem.call_state = "connected"
+        self.modem.command = AsyncMock(side_effect=[["OK"], ["ERROR"], ["OK"], ["+CPCMFRM: 1", "OK"]])
+        await self.modem.enable_pcm()
+        self.assertEqual(
+            [entry.args[0] for entry in self.modem.command.call_args_list],
+            ["AT+CPCMFRM=1", "AT+CPCMREG=1", "AT+CPCMREG=1", "AT+CPCMFRM?"],
+        )
+        self.assertTrue(all(
+            entry.kwargs["expected_call"] == (self.modem.call_id, "connected")
+            for entry in self.modem.command.call_args_list
+        ))
+
     async def test_phone_diagnostics_expose_ims_support_without_cell_identifiers(self):
         async def command(cmd, **_kwargs):
             return {

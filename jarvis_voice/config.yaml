@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.4.8
+version: 0.4.9
 stage: experimental
 description: SIM7600 voice + Yandex SpeechKit LiveTTS / STT + DeepSeek + HA and Q1
 arch:
@@ -35,6 +35,7 @@ options:
   allowed_number: ""
   api_token: ""
   max_calls_per_hour: 4
+  call_playback_volume: 50
   auto_answer: false
   yandex_api_key: ""
   yandex_voice: "denis"
@@ -63,6 +64,7 @@ schema:
   allowed_number: str
   api_token: password
   max_calls_per_hour: int(1,20)
+  call_playback_volume: int(10,100)
   auto_answer: bool
   yandex_api_key: password
   yandex_voice: str

@@ -34,7 +34,11 @@ TEXT_FIELDS = {
     "yandex_role": 80,
     "camera_entity": 256,
 }
-INTEGER_FIELDS = {"serial_baud": (1200, 921600), "max_calls_per_hour": (1, 20)}
+INTEGER_FIELDS = {
+    "serial_baud": (1200, 921600),
+    "max_calls_per_hour": (1, 20),
+    "call_playback_volume": (10, 100),
+}
 OPTION_FIELDS = (
     set(TEXT_FIELDS)
     | set(INTEGER_FIELDS)
