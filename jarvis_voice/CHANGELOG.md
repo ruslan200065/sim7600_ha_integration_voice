@@ -1,3 +1,7 @@
+## 0.4.15 (experimental)
+
+- Find Home Assistant devices by room, registry alias and device type. Show the assistant which devices it can control and keep follow-up commands conversational.
+
 ## 0.4.14 (experimental)
 - Fix HA action selectors so call camera and DTMF fields are visible in the action editor.
 

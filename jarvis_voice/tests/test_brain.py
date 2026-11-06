@@ -18,12 +18,34 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
              "attributes": {"friendly_name": "Лампа", "access_token": "private"}},
             {"entity_id": "switch.hidden", "state": "off"},
         ])
+        brain._registry_metadata = AsyncMock(return_value={})
         result = await brain._tool("find_devices", {"query": "лампа"})
-        self.assertEqual(result["devices"], [
-            {"entity_id": "switch.readable", "state": "on", "friendly_name": "Лампа"},
-        ])
+        self.assertEqual([row["entity_id"] for row in result["devices"]], ["switch.readable"])
+        self.assertFalse(result["devices"][0]["can_control"])
+        self.assertNotIn("access_token", result["devices"][0])
+        brain._registry_metadata.assert_awaited_once_with({"switch.readable"})
         await brain._tool("call_ha_service", {"entity_id": "switch.readable", "service": "turn_off"})
         brain._ha.assert_awaited_once_with("GET", "/api/states")
+
+    async def test_room_alias_and_inflected_name(self):
+        brain = Brain({
+            "allowed_entities": ["light.main", "light.bed"],
+            "allow_domains": ["light"],
+        }, None, None)
+        brain._ha = AsyncMock(return_value=[
+            {"entity_id": "light." + name, "state": "on", "attributes": {"friendly_name": "Люстра"}}
+            for name in ("main", "bed")
+        ])
+        brain._registry_metadata = AsyncMock(return_value={
+            "light.main": {"area": "Гостиная", "area_aliases": ["Зал"], "aliases": ["Верхний"]},
+            "light.bed": {"area": "Спальня"},
+        })
+        for query in ("свет в гостиной", "верхний в зале", "light.main"):
+            result = await brain._tool("find_devices", {"query": query})
+            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["devices"][0]["entity_id"], "light.main")
+            self.assertIn("turn_off", result["devices"][0]["control_actions"])
+        self.assertEqual((await brain._tool("find_devices", {"query": "люстра"}))["total"], 2)
 
     async def test_snapshot_uses_event_camera_and_configured_photo_recipient(self):
         photo = AsyncMock()
