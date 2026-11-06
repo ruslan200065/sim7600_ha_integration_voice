@@ -6,15 +6,16 @@ import os
 import secrets
 import socket
 from contextlib import aclosing
+from functools import partial
 from pathlib import Path
 from aiohttp import web, ClientSession
 
 from modem import Modem
-from audio import PCMTransport
+from audio import PCMTransport, rms
 from voice_dialog import run_dialog
 from speech import SpeechKit
 from brain import Brain
-from q1_audio import recognize_microphone_live, play_stream
+from q1_audio import audio_route, capture_pcm, recognize_microphone_live, play_stream
 from q1_protocol import gps_status, gps_start, led_set
 from q1_hardware import diagnostics, snapshot, apply_original_camera_controls
 from q1_media import Q1Media
@@ -68,6 +69,7 @@ class Server:
         self.camera_frame=None
         self.speaking = asyncio.Lock()
         self.next_prompt = None
+        self.shared_photos = {}
         self.history = History(Path(os.environ.get("OPTIONS_PATH", "/data/options.json")).with_name("history.sqlite3"))
         self.sms_task = None
         self.sms_wake = asyncio.Event()
@@ -76,7 +78,7 @@ class Server:
     async def setup(self):
         await self.history.start()
         self.http = ClientSession()
-        self.brain = Brain(self.o,self.http, self.capture_camera)
+        self.brain = Brain(self.o, self.http, self.capture_camera, self.listen_room, self.share_photo)
         if self.o.get("yandex_api_key"):
             self.speech = SpeechKit(
                 self.o["yandex_api_key"],
@@ -124,11 +126,11 @@ class Server:
             )
         if name == "call_connected" and self.speech:
             call_id = self.modem.call_id
-            prompt = ""
+            prompt, camera = "", None
             if self.next_prompt and self.next_prompt[0] == call_id:
-                _, prompt = self.next_prompt
+                _, prompt, camera = self.next_prompt
             self.next_prompt = None
-            self.session = asyncio.create_task(self._start_session(call_id, prompt))
+            self.session = asyncio.create_task(self._start_session(call_id, prompt, camera))
         if name in ("call_ended","modem_offline"):
             self.next_prompt = None
             if self.session and self.session is not asyncio.current_task() and not self.session.cancelling():
@@ -178,10 +180,10 @@ class Server:
         caller = self.modem.active_number
         return bool(allowed and caller) and allowed.removeprefix("+") == caller.removeprefix("+")
 
-    async def _start_session(self, call_id, prompt):
+    async def _start_session(self, call_id, prompt, camera):
         async with self.session_lock:
             if (self.modem.call_id, self.modem.call_state) == (call_id, "connected"):
-                await self._dialog(prompt)
+                await self._dialog(prompt, camera)
 
     async def _say(self, text):
         if not self.speech:
@@ -189,14 +191,14 @@ class Server:
         async with self.speaking, aclosing(self.speech.synthesize(text)) as chunks:
             await self.audio.write_stream(chunks)
 
-    async def _dialog(self, prompt):
+    async def _dialog(self, prompt, camera):
         try:
             self.mode="starting_audio"
             await self.modem.enable_pcm()
             await self.audio.start()
             self.mode="talking"
             await run_dialog(
-                self.speech, self.brain, self.audio.queue, self._say, self.modem.hangup,
+                self.speech, partial(self.brain.reply, camera_entity=camera), self.audio.queue, self._say, self.modem.hangup,
                 prompt or "Здравствуйте. Это Джарвис. Слушаю вас.",
             )
         except asyncio.CancelledError:
@@ -211,7 +213,7 @@ class Server:
 
     @web.middleware
     async def auth(self, request, handler):
-        if request.path in ("/health",):
+        if request.path == "/health" or request.path.startswith("/q1/shared-photo/"):
             return await handler(request)
         token=request.headers.get("Authorization","").removeprefix("Bearer ").strip()
         if not self.api_token or not secrets.compare_digest(token,self.api_token):
@@ -239,18 +241,22 @@ class Server:
         data=await request.json()
         if not isinstance(data, dict):
             raise web.HTTPBadRequest(text="Expected a JSON object")
-        return await self.dial_number(data.get("number"), data.get("prompt", ""))
+        return await self.dial_number(
+            data.get("number"), data.get("prompt", ""), data.get("camera_entity"),
+        )
 
-    async def dial_number(self, number=None, prompt=""):
+    async def dial_number(self, number=None, prompt="", camera=None):
         number=number or self.o.get("allowed_number","")
         if not self.o.get("allowed_number") or number != self.o["allowed_number"]:
             raise web.HTTPForbidden(text="Number not allowlisted")
         prompt=str(prompt).strip()
         if len(prompt)>1200:
             raise web.HTTPBadRequest(text="prompt too long")
+        if camera and not self.brain.camera_allowed(camera):
+            raise web.HTTPForbidden(text="Camera is not allowlisted")
         if self.modem.call_state != "idle":
             raise web.HTTPConflict(text="Modem is busy or offline")
-        pending_prompt = self.next_prompt = (self.modem.call_id + 1, prompt)
+        pending_prompt = self.next_prompt = (self.modem.call_id + 1, prompt, camera)
         try:
             await self.modem.dial(number)
             return web.json_response({"ok":True,"state":self.modem.call_state})
@@ -268,6 +274,18 @@ class Server:
         except (RuntimeError, OSError) as exc:
             raise web.HTTPConflict(text=str(exc)) from exc
         return web.json_response({"ok":True})
+
+    async def send_dtmf(self, request):
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise web.HTTPBadRequest(text="Expected a JSON object")
+        try:
+            await self.modem.send_dtmf(data.get("digits"))
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        except (RuntimeError, OSError) as exc:
+            raise web.HTTPConflict(text=str(exc)) from exc
+        return web.json_response({"ok": True})
 
     async def answer(self, request):
         # Explicit answer still requires caller ID.
@@ -297,6 +315,36 @@ class Server:
         await self._say(text)
         return web.json_response({"ok":True})
 
+
+    async def listen_room(self, seconds):
+        device = self.o.get("q1_mic_device")
+        if not device or not self.speech:
+            return {"error": "Микрофон Q1 или SpeechKit не настроен"}
+        async with self.mic_lock:
+            pcm = await capture_pcm(device, seconds)
+        level = rms(pcm)
+        if not pcm or level == 0:
+            return {"seconds": seconds, "rms": level, "error": "Микрофон не передал звуковой сигнал"}
+        phrase = await self.speech.recognize(pcm)
+        return {"seconds": seconds, "rms": level, "speech": phrase}
+
+    async def share_photo(self, target, picture, mime):
+        ticket = secrets.token_urlsafe(32)
+        self.shared_photos[ticket] = (picture, mime)
+        try:
+            await self.brain._ha("POST", "/api/services/telegram_bot/send_photo", {
+                "entity_id": target,
+                "url": f"http://{socket.gethostname()}:8099/q1/shared-photo/{ticket}",
+            }, timeout=25)
+        finally:
+            self.shared_photos.pop(ticket, None)
+
+    async def shared_photo(self, request):
+        shared = self.shared_photos.pop(request.match_info["ticket"], None)
+        if shared is None:
+            raise web.HTTPNotFound()
+        picture, mime = shared
+        return web.Response(body=picture, content_type=mime, headers={"Cache-Control": "no-store"})
 
     async def q1_listen(self, request):
         if not self.speech:
@@ -416,10 +464,11 @@ class Server:
         if self.mic_lock.locked():
             raise web.HTTPConflict(text="Microphone already in use")
         async with self.mic_lock:
+            device, env = audio_route(device, "capture")
             proc=await asyncio.create_subprocess_exec(
                 "arecord","-q","-D",device,"-f","S16_LE","-r","16000","-c","1","-t","raw",
                 "-d",str(seconds),
-                stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
+                stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,env=env)
             response=web.StreamResponse(status=200,headers={
                 "Content-Type":"application/octet-stream",
                 "X-Audio-Format":"s16le;rate=16000;channels=1",
@@ -491,10 +540,12 @@ class Server:
             ("GET","/health",self.health),("GET","/status",self.status),
             ("POST","/dial",self.dial),("POST","/hangup",self.hangup),
             ("POST","/answer",self.answer),("POST","/chat",self.chat),
+            ("POST","/dtmf",self.send_dtmf),
             ("POST","/speak",self.speak),
             ("POST","/q1/listen",self.q1_listen),("POST","/q1/speak",self.q1_speak),
             ("GET","/q1/probe",self.q1_probe),
             ("GET","/q1/snapshot",self.q1_snapshot),
+            ("GET","/q1/shared-photo/{ticket}",self.shared_photo),
             ("POST","/q1/camera/apply_original",self.q1_camera_setup),
             ("GET","/q1/gps",self.q1_gps),
             ("POST","/q1/gps/start",self.q1_gps_start),

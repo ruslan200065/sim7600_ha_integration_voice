@@ -15,6 +15,7 @@ from pathlib import Path
 from aiohttp import ClientError, ClientTimeout, web
 from audio import rms
 from modem import NUMBER
+from brain import SAFE_SERVICES
 from q1_audio import capture_pcm, play_pcm
 from q1_hardware import VIDEO_LINK, VIDEO_PATH, list_serial, list_video, probe_audio
 from q1_protocol import gps_status
@@ -33,6 +34,8 @@ TEXT_FIELDS = {
     "yandex_voice": 80,
     "yandex_role": 80,
     "camera_entity": 256,
+    "home_tts_entity": 256,
+    "telegram_photo_target": 256,
 }
 INTEGER_FIELDS = {
     "serial_baud": (1200, 921600),
@@ -45,6 +48,8 @@ OPTION_FIELDS = (
     | {
         "auto_answer",
         "allowed_entities",
+        "observed_entities",
+        "allow_domains",
     }
 )
 AUDIO_FIELDS = ("audio_input", "audio_output")
@@ -72,7 +77,7 @@ def validate_changes(changes, current):
                 raise ValueError(f"{key}: допустимо от {lo} до {hi}.")
         elif key == "auto_answer" and not isinstance(value, bool):
             raise ValueError("Неверное значение автоответа.")
-        elif key == "allowed_entities":
+        elif key in {"allowed_entities", "observed_entities"}:
             if (
                 not isinstance(value, list)
                 or len(value) > 100
@@ -82,6 +87,12 @@ def validate_changes(changes, current):
                 )
             ):
                 raise ValueError("Укажите до 100 идентификаторов вида light.room.")
+            value = list(dict.fromkeys(value))
+        elif key == "allow_domains":
+            if not isinstance(value, list) or any(
+                not isinstance(item, str) or item not in SAFE_SERVICES for item in value
+            ):
+                raise ValueError("Передан неизвестный домен управления.")
             value = list(dict.fromkeys(value))
         options[key] = value
 
@@ -108,6 +119,10 @@ def validate_changes(changes, current):
         )
     if options.get("auto_answer") and not number:
         raise ValueError("Укажите разрешённый номер для автоответа.")
+    for key, domain in (("home_tts_entity", "tts"), ("telegram_photo_target", "notify")):
+        entity = changes.get(key, "").strip()
+        if entity and (not ENTITY_ID.fullmatch(entity) or not entity.startswith(domain + ".")):
+            raise ValueError(f"{key}: укажите сущность {domain}.*.")
     camera = changes.get("camera_entity", "").strip()
     if camera and not (camera.startswith("camera.") and ENTITY_ID.fullmatch(camera)):
         raise ValueError("Укажите идентификатор камеры вида camera.front_door.")

@@ -370,6 +370,17 @@ class Modem:
         if self.call_id == call[0]:
             await self._urc("NO CARRIER")
 
+    async def send_dtmf(self, digits):
+        if not isinstance(digits, str) or not re.fullmatch(r"[0-9*#A-D]{1,16}", digits):
+            raise ValueError("Invalid DTMF sequence")
+        if self.call_state != "connected":
+            raise RuntimeError("No connected call")
+        call = (self.call_id, "connected")
+        sequence = ",".join(digits)
+        result = await self.command(f'AT+VTS="{sequence}"', timeout=12, expected_call=call)
+        if result[-1] != "OK":
+            raise RuntimeError("Modem rejected the DTMF sequence")
+
     async def enable_pcm(self):
         # These commands generally fail when no voice call is active.
         if self.call_state != "connected":

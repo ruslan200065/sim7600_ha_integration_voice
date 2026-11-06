@@ -26,7 +26,7 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
         service.modem.dial = AsyncMock(side_effect=dial)
         response = await service.dial_number(prompt="test prompt")
         self.assertEqual(json.loads(response.text), {"ok": True, "state": "dialing"})
-        self.assertEqual(service.next_prompt, (1, "test prompt"))
+        self.assertEqual(service.next_prompt, (1, "test prompt", None))
 
     async def test_dial_reports_modem_rejection_and_clears_prompt(self):
         service = Server({"api_token": "test", "allowed_number": "+79991234567"})

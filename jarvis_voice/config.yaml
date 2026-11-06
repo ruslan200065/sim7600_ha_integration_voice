@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.4.11
+version: 0.4.12
 stage: experimental
 description: SIM7600 voice + Yandex SpeechKit LiveTTS / STT + DeepSeek + HA and Q1
 arch:
@@ -43,6 +43,8 @@ options:
   deepseek_api_key: ""
   deepseek_model: "deepseek-flash"
   camera_entity: ""
+  home_tts_entity: ""
+  telegram_photo_target: ""
   q1_video_device: ""
   q1_mic_device: ""
   q1_speaker_device: ""
@@ -50,11 +52,15 @@ options:
     - homeassistant
     - supervisor
     - homeassistant.local
+  observed_entities: []
   allowed_entities: []
   allow_domains:
     - light
     - switch
     - cover
+    - fan
+    - scene
+    - media_player
   system_prompt: "Ты Джарвис, краткий русскоязычный голосовой ассистент. Задавай уточняющие вопросы. Не утверждай, что действие выполнено, до успешного ответа инструмента."
 schema:
   auto_install_integration: bool
@@ -72,10 +78,14 @@ schema:
   deepseek_api_key: password
   deepseek_model: str
   camera_entity: str
+  home_tts_entity: str
+  telegram_photo_target: str
   q1_video_device: str
   q1_mic_device: str
   q1_speaker_device: str
   media_allowed_hosts:
+    - str
+  observed_entities:
     - str
   allowed_entities:
     - str

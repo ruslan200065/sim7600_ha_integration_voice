@@ -29,7 +29,7 @@ def echoes_playback(phrase, outputs):
     return False
 
 
-async def run_dialog(speech, brain, source, play, hangup, prompt):
+async def run_dialog(speech, reply_to, source, play, hangup, prompt):
     """Listen throughout a reply and interrupt once the caller is recognized."""
     clock = asyncio.get_running_loop().time
     last_spoken = []
@@ -46,7 +46,7 @@ async def run_dialog(speech, brain, source, play, hangup, prompt):
             echo_until = clock() + 2.0
 
     async def answer(phrase):
-        text = await brain.reply(phrase)
+        text = await reply_to(phrase)
         LOG.info("LLM answer length=%d", len(text))
         await speak(text)
 

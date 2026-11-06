@@ -32,7 +32,7 @@ async def async_unload_entry(hass, entry):
     if ok:
         hass.data[DOMAIN].pop(entry.entry_id,None)
         if not hass.data[DOMAIN]:
-            for name in ("speak","listen","transcribe","call","hangup","set_led","gps_start","probe"):
+            for name in ("speak","listen","transcribe","call","hangup","send_dtmf","set_led","gps_start","probe"):
                 hass.services.async_remove(DOMAIN,name)
     return ok
 
@@ -61,7 +61,12 @@ def _register_services(hass):
 
     async def handle_call(call):
         await _get_coordinator(hass,call.data.get("entry_id")).client.post(
-            "/dial",{"prompt":call.data.get("prompt","")},timeout=25)
+            "/dial", {"prompt": call.data.get("prompt", ""), "camera_entity": call.data.get("camera_entity")}, timeout=25)
+
+    async def handle_dtmf(call):
+        await _get_coordinator(hass, call.data.get("entry_id")).client.post(
+            "/dtmf", {"digits": call.data["digits"]}, timeout=70,
+        )
 
     async def handle_hangup(call):
         await _get_coordinator(hass,call.data.get("entry_id")).client.post("/hangup")
@@ -89,9 +94,13 @@ def _register_services(hass):
         **common,vol.Optional("seconds",default=12):vol.All(vol.Coerce(int),vol.Range(min=3,max=30))
     }),supports_response=SupportsResponse.OPTIONAL)
     hass.services.async_register(DOMAIN,"call",handle_call,schema=vol.Schema({
-        **common,vol.Optional("prompt",default=""):vol.All(str,vol.Length(max=1200))
+        **common,vol.Optional("prompt",default=""):vol.All(str,vol.Length(max=1200)),
+        vol.Optional("camera_entity"):cv.entity_id,
     }))
     hass.services.async_register(DOMAIN,"hangup",handle_hangup,schema=vol.Schema(common))
+    hass.services.async_register(DOMAIN, "send_dtmf", handle_dtmf, schema=vol.Schema({
+        **common, vol.Required("digits"): vol.All(str, vol.Match(r"^[0-9*#A-D]{1,16}$")),
+    }))
     hass.services.async_register(DOMAIN,"set_led",handle_led,schema=vol.Schema({
         **common,vol.Required("color"):vol.In(["red","green","blue","white","pink","yellow","cyan","off"])
     }))

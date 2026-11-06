@@ -67,7 +67,7 @@ function setRoute(route, state) {
 }
 
 function fieldValue(key, element) {
-  if (key === "allowed_entities") {
+  if (["allowed_entities", "observed_entities", "allow_domains"].includes(key)) {
     return element.value.split(/\s+/).filter(Boolean);
   }
   if (element.type === "checkbox") return element.checked;

@@ -50,7 +50,7 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
         brain.reply = AsyncMock(return_value="Проверяю погоду")
         hangup = AsyncMock()
         async with asyncio.timeout(2):
-            await run_dialog(Speech(), brain, asyncio.Queue(), play, hangup, greeting)
+            await run_dialog(Speech(), brain.reply, asyncio.Queue(), play, hangup, greeting)
 
         brain.reply.assert_awaited_once_with("Какая погода сегодня?")
         hangup.assert_awaited_once()

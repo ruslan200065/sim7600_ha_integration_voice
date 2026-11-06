@@ -83,6 +83,10 @@
               <label>Амплуа SpeechKit<input name="yandex_role" placeholder="neutral"></label>
               <label>Микрофон ALSA вручную<input name="q1_mic_device" placeholder="pulse или имя ALSA"></label>
               <label>Динамик ALSA вручную<input name="q1_speaker_device" placeholder="pulse или имя ALSA"></label>
+              <label>Синтез речи в доме<input name="home_tts_entity" placeholder="tts.yandex_speechkit"></label>
+              <label>Получатель фото в Telegram<input name="telegram_photo_target" placeholder="notify.telegram_bot_..."></label>
+              <label>Устройства для чтения состояния и камеры<textarea name="observed_entities" rows="2" placeholder="binary_sensor.motion&#10;camera.front_door"></textarea></label>
+              <label>Домены управления<textarea name="allow_domains" rows="2" placeholder="light&#10;media_player"></textarea></label>
               <label>Камера Home Assistant для ассистента<input name="camera_entity" placeholder="camera.front_door"></label>
               <label>Разрешённые сущности для ассистента
                 <textarea name="allowed_entities" rows="2" placeholder="light.hall&#10;switch.garage"></textarea>

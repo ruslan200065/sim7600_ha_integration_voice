@@ -42,6 +42,23 @@ call:
       name: Question
       selector:
         text:
+    camera_entity:
+      name: Event camera
+      description: Optional permitted camera carried into the conversation.
+      selector:
+        entity:
+          filter:
+            - domain: camera
+send_dtmf:
+  name: Send phone keypad tones
+  description: Transmit DTMF in the current connected call.
+  fields:
+    digits:
+      name: Digits
+      required: true
+      example: "12#"
+      selector:
+        text:
 hangup:
   name: End phone call
   description: Hang up the current cellular call.

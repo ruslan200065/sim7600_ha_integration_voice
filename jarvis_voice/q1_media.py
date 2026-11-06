@@ -7,6 +7,7 @@ import asyncio
 import logging
 from aiohttp import ClientTimeout
 from yarl import URL
+from q1_audio import audio_route
 
 LOG = logging.getLogger(__name__)
 
@@ -74,9 +75,10 @@ class Q1Media:
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL)
             feed = asyncio.create_task(self._download(session, url, allowed_hosts, source.stdin))
+            sink, env = audio_route(sink, "playback")
             dest = await asyncio.create_subprocess_exec(
                 "aplay","-q","-D",sink,"-f","S16_LE","-r","16000","-c","1",
-                stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env)
             while chunk := await source.stdout.read(8192):
                 dest.stdin.write(chunk)
                 await dest.stdin.drain()

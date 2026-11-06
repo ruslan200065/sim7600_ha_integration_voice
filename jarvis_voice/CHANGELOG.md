@@ -1,3 +1,10 @@
+## 0.4.12 (experimental)
+- Discover explicitly visible HA devices by name and report their current state.
+- Separate observation from control, and support permitted media players, fans and scenes.
+- Carry an event camera into a phone call, inspect camera snapshots, sample the Q1 microphone and send photos to a configured Telegram recipient.
+- Announce messages through a configured HA TTS engine and allowed speakers.
+- Send validated DTMF tones in an active call through the companion action.
+
 ## 0.4.11 (experimental)
 - Listen during phone playback and stop a reply when the caller interrupts.
 - Keep speech pre-roll between phone turns and filter transcripts that match recent assistant speech.

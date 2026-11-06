@@ -22,7 +22,7 @@ This project adds an **independent Home Assistant App** to the HACS integration,
 - The audio driver assumes /dev/ttyUSB4 delivers unframed, little-endian 16-bit 16kHz mono PCM. A positive AT command response does **not** prove usable audio. Confirm with hardware first.
 - Phone recognition runs during JARVIS playback. Recognized caller speech can interrupt the current reply. Transcripts matching recent JARVIS playback are filtered to reduce echo-triggered interruptions.
 - Phone-call PCM and local Q1 audio use separate devices. Check the playback and capture devices listed by `/q1/probe` before setting the optional ALSA devices.
-- Home Assistant service calling is restricted to explicitly allowlisted entity IDs and light/switch/cover safe operations; no locks, alarms or arbitrary shell execution. Other operations need intentional code changes.
+- `observed_entities` allows reading state and camera frames. `allowed_entities` additionally enables the listed control actions for devices in `allow_domains`. The model cannot run arbitrary services or unlock locks.
 - SpeechKit/DeepSeek API calls are billable. No credentials are committed to GitHub.
 - Incoming caller ID may differ by operator and firmware. Auto-answer defaults to false. Don't enable until tested.
 
@@ -78,6 +78,34 @@ Uses SpeechKit API v3 via gRPC and generates official protobuf bindings during t
 ## Camera integration
 Connect the Q1 UVC camera to HA through a compatible camera provider (e.g. go2rtc/FFmpeg, if your installation exposes UVC to it). Set \`camera_entity: camera.yandex_q1\` (actual entity ID may differ).
 Alternatively set `q1_video_device` to the camera's `/dev/v4l/by-id/…-video-index0` path or the corresponding `/dev/videoN` node for direct UVC capture. Use `/q1/probe` to check that the selected node exposes video formats. Configure `q1_mic_device` and `q1_speaker_device` using the capture and playback lists, respectively. DeepSeek can request a single snapshot using `see_camera`.
+
+## Calls from Home Assistant events
+
+Use an HA automation to call `jarvis_q1.call` with a reason and an optional
+`camera_entity`. An allowed camera becomes the default for camera requests
+in that call. Add a cooldown and keep the hourly call limit.
+
+```yaml
+alias: JARVIS — motion at the gate
+mode: single
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.gate_motion
+    from: "off"
+    to: "on"
+actions:
+  - action: jarvis_q1.call
+    data:
+      prompt: "На камере у калитки замечено движение. Что сделать?"
+      camera_entity: camera.gate
+  - delay: "00:05:00"
+```
+
+Set `home_tts_entity` to a working HA TTS entity and allow the desired
+`media_player` for announcements. Set `telegram_photo_target` to the
+intended Telegram notify entity. Home Assistant fetches the requested snapshot
+through a one-use internal link. Room listening uses the configured Q1
+microphone and SpeechKit. `jarvis_q1.send_dtmf` sends tones in a connected call.
 
 ## Diagnostics
 - /health says offline: check SIM7600 USB mode and App device permissions.
