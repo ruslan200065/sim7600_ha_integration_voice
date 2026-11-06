@@ -1,0 +1,66 @@
+configuration:
+  at_port:
+    name: AT-порт модема
+    description: Порт управления SIM7600. Если доступен путь /dev/serial/by-id, выберите его в веб-панели.
+  pcm_port:
+    name: Порт звука телефонного звонка
+    description: Экспериментальный PCM-порт SIM7600. Оставьте пустым, если голосовой канал модема не используется.
+  serial_baud:
+    name: Скорость AT-порта
+    description: Используйте скорость, на которой модем отвечает. Обычно 115200.
+  allowed_number:
+    name: Разрешённый телефонный номер
+    description: Единственный номер для звонков и автоответа, в международном формате.
+  auto_answer:
+    name: Автоответ
+    description: Автоматически ответить при совпадении номера звонящего с разрешённым.
+  max_calls_per_hour:
+    name: Лимит исходящих звонков
+    description: Максимальное количество исходящих звонков за час.
+  yandex_api_key:
+    name: Ключ Yandex SpeechKit
+    description: Нужен для распознавания и синтеза речи. Для проверки устройств ключ не требуется.
+  yandex_voice:
+    name: Голос SpeechKit
+    description: Имя голоса для потокового синтеза. По умолчанию denis.
+  yandex_role:
+    name: Амплуа SpeechKit
+    description: Манера речи выбранного голоса. По умолчанию neutral.
+  deepseek_api_key:
+    name: Ключ DeepSeek
+    description: Нужен для ответов ассистента и управления разрешёнными сущностями.
+  deepseek_model:
+    name: Модель DeepSeek
+    description: Идентификатор модели, доступной для указанного ключа.
+  q1_video_device:
+    name: USB-камера Q1
+    description: Веб-панель подскажет доступные видеоустройства.
+  q1_mic_device:
+    name: Устройство захвата звука
+    description: На Home Assistant OS обычно pulse. Вход Sonix можно выбрать в веб-панели.
+  q1_speaker_device:
+    name: Устройство воспроизведения
+    description: На Home Assistant OS обычно pulse. Выход Microchip можно выбрать в веб-панели.
+  camera_entity:
+    name: Камера Home Assistant для ассистента
+    description: Необязательный идентификатор camera.*. Если пусто, ассистент использует USB-камеру Q1.
+  allowed_entities:
+    name: Разрешённые сущности
+    description: Сущности, которые ассистент может читать или которыми может управлять.
+  allow_domains:
+    name: Разрешённые типы команд
+    description: Дополнительное ограничение на управление светом, выключателями и приводами.
+  system_prompt:
+    name: Инструкция ассистента
+    description: Правила диалога, отправляемые в DeepSeek.
+  api_token:
+    name: Токен локального REST API
+    description: Оставьте пустым для автоматической генерации. Веб-панель использует вход в Home Assistant.
+  media_allowed_hosts:
+    name: Разрешённые источники аудио
+    description: Имена хостов, с которых динамик может загружать звук по HTTP или HTTPS.
+  auto_install_integration:
+    name: Установить интеграцию JARVIS Q1
+    description: Аддон обновляет интеграцию в папке Home Assistant. После обновления её кода перезапустите Core.
+network:
+  8099/tcp: Локальный REST API. Для веб-панели порт открывать не нужно.

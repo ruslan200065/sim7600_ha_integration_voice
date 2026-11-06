@@ -94,22 +94,29 @@ def list_serial():
     return sorted(set(x for x in known + glob.glob("/dev/ttyUSB*") + glob.glob("/dev/serial/by-id/*") if os.path.exists(x)))
 
 
+def list_video():
+    return sorted(glob.glob("/dev/video*") + glob.glob("/dev/v4l/by-id/*"))
+
+
 async def probe_audio():
     """ALSA / Pulse diagnostics. No assumption that a Q1 microphone exists."""
-    results = {}
-    for name, argv in {
+    commands = {
         "playback": ("aplay", "-l"),
         "capture": ("arecord", "-l"),
         "pulseaudio_sinks": ("pactl", "list", "short", "sinks"),
         "pulseaudio_sources": ("pactl", "list", "short", "sources"),
         "pulseaudio_default_sink": ("pactl", "get-default-sink"),
         "pulseaudio_default_source": ("pactl", "get-default-source"),
-    }.items():
+    }
+
+    async def probe(argv):
         try:
             out = (await _run(*argv, timeout=5)).decode(errors="replace")
-            results[name] = out[:3000]
+            return out[:3000]
         except (FileNotFoundError, RuntimeError) as exc:
-            results[name] = "unavailable: " + str(exc)[:120]
+            return "unavailable: " + str(exc)[:120]
+
+    results = dict(zip(commands, await asyncio.gather(*(probe(argv) for argv in commands.values())), strict=True))
     try:
         results["alsa_cards"] = Path("/proc/asound/cards").read_text(errors="replace")[:2000]
     except OSError:
@@ -136,12 +143,14 @@ async def snapshot(device):
                 "-f", "video4linux2", *preset, "-i", device,
                 "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1")
         try:
-            image = await _run(*args, timeout=12)
+            image = await _run(*args, timeout=4)
             if image.startswith(b"\xff\xd8") and image.endswith(b"\xff\xd9") and len(image) <= 4_000_000:
                 return image
             errors.append("Output was not a valid JPEG")
         except (FileNotFoundError, RuntimeError) as exc:
             errors.append(str(exc))
+            if "resource busy" in str(exc).lower():
+                break
     raise RuntimeError("Q1 UVC capture failed: " + " | ".join(errors)[-400:])
 
 
@@ -160,7 +169,7 @@ async def apply_original_camera_controls(device):
 
 async def diagnostics(camera=""):
     result = {"usb_devices": list_usb(), "serial_ports": list_serial(),
-              "video_nodes": sorted(glob.glob("/dev/video*") + glob.glob("/dev/v4l/by-id/*")),
+              "video_nodes": list_video(),
               "audio": await probe_audio()}
     if camera:
         try:

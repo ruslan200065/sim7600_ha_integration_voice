@@ -1,4 +1,5 @@
 """Generic Q1 speaker that plays HA TTS and media-source files, not just JARVIS speech."""
+from inspect import signature
 from typing import Any
 from homeassistant.components import media_source
 from homeassistant.components.media_player import (
@@ -6,6 +7,12 @@ from homeassistant.components.media_player import (
 )
 from homeassistant.components.media_player.browse_media import async_process_play_media_url
 from .entity import JarvisEntity
+
+MEDIA_URL_OPTIONS = (
+    {"for_supervisor_network": True}
+    if "for_supervisor_network" in signature(async_process_play_media_url).parameters
+    else {}
+)
 
 async def async_setup_entry(hass,entry,async_add_entities):
     c=hass.data["jarvis_q1"][entry.entry_id]
@@ -29,7 +36,7 @@ class Q1Speaker(JarvisEntity,MediaPlayerEntity):
         if media_source.is_media_source_id(media_id):
             item=await media_source.async_resolve_media(self.hass,media_id,self.entity_id)
             media_id=item.url
-        url=async_process_play_media_url(self.hass,media_id)
+        url=async_process_play_media_url(self.hass,media_id,**MEDIA_URL_OPTIONS)
         await self.coordinator.client.post("/q1/play_media",{"url":url})
         await self.coordinator.async_request_refresh()
 

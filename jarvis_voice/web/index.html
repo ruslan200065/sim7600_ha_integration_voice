@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Настройки JARVIS Q1</title>
+  <link rel="stylesheet" href="assets/panel.css">
+  <script src="assets/panel.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Home Assistant · Signal Q1</p>
+        <h1>Настройки JARVIS Q1</h1>
+        <p class="muted">Устройства, голосовые сервисы и проверка оборудования.</p>
+      </div>
+      <span id="version" class="badge">Подключение…</span>
+    </header>
+    <p id="notice" class="notice" role="status">Загрузка настроек…</p>
+    <div class="layout">
+      <form id="settings" autocomplete="off">
+        <fieldset id="controls" disabled>
+          <section class="card">
+            <h2>Оборудование</h2>
+            <div class="fields">
+              <label>AT-порт модема<input name="at_port" list="serial-ports" required></label>
+              <label>Камера Q1<input name="q1_video_device" list="video-nodes" placeholder="Отключена"></label>
+              <label>Микрофон<select id="input-route"></select></label>
+              <label>Динамик<select id="output-route"></select></label>
+            </div>
+            <p class="hint">Для USB-портов выбирайте стабильные пути <code>by-id</code>, если они доступны.</p>
+            <datalist id="serial-ports"></datalist>
+            <datalist id="video-nodes"></datalist>
+          </section>
+          <section class="card">
+            <h2>Голос и ассистент</h2>
+            <div class="fields">
+              <label>Ключ Yandex SpeechKit
+                <input type="password" name="yandex_api_key" autocomplete="new-password">
+                <span id="speech-key-hint" class="hint">Распознавание и синтез речи.</span>
+              </label>
+              <label>Ключ DeepSeek
+                <input type="password" name="deepseek_api_key" autocomplete="new-password">
+                <span id="deepseek-key-hint" class="hint">Ответы ассистента и команды Home Assistant.</span>
+              </label>
+            </div>
+            <div class="fields key-clear">
+              <label class="check"><input type="checkbox" id="clear-speech"> Удалить ключ SpeechKit</label>
+              <label class="check"><input type="checkbox" id="clear-deepseek"> Удалить ключ DeepSeek</label>
+            </div>
+          </section>
+          <details class="card">
+            <summary>Телефонные звонки</summary>
+            <p class="hint">Звонки доступны только для указанного номера. Передача звука через SIM7600 зависит от прошивки.</p>
+            <div class="fields">
+              <label>Разрешённый номер<input name="allowed_number" type="tel" placeholder="+79991234567"></label>
+              <label>Лимит звонков в час<input name="max_calls_per_hour" type="number" min="1" max="20"></label>
+              <label>Порт звука звонка<input name="pcm_port" list="serial-ports" placeholder="Отключён"></label>
+              <label class="check"><input name="auto_answer" type="checkbox"> Автоответ разрешённому номеру</label>
+            </div>
+          </details>
+          <details class="card">
+            <summary>Дополнительные настройки</summary>
+            <div class="fields advanced">
+              <label>Скорость AT-порта<input name="serial_baud" type="number" min="1200" max="921600"></label>
+              <label>Модель DeepSeek<input name="deepseek_model" placeholder="deepseek-flash"></label>
+              <label>Голос SpeechKit<input name="yandex_voice" placeholder="denis"></label>
+              <label>Амплуа SpeechKit<input name="yandex_role" placeholder="neutral"></label>
+              <label>Микрофон ALSA вручную<input name="q1_mic_device" placeholder="pulse или имя ALSA"></label>
+              <label>Динамик ALSA вручную<input name="q1_speaker_device" placeholder="pulse или имя ALSA"></label>
+              <label>Камера Home Assistant для ассистента<input name="camera_entity" placeholder="camera.front_door"></label>
+              <label>Разрешённые сущности для ассистента
+                <textarea name="allowed_entities" rows="2" placeholder="light.hall&#10;switch.garage"></textarea>
+                <span class="hint">По одной сущности на строку.</span>
+              </label>
+            </div>
+          </details>
+          <div class="actions">
+            <button type="submit" class="primary">Сохранить настройки</button>
+            <button type="button" id="restart">Перезапустить аддон</button>
+          </div>
+          <p class="hint">Новые настройки применяются при перезапуске аддона.</p>
+        </fieldset>
+      </form>
+      <aside class="card" aria-labelledby="checks-title">
+        <h2 id="checks-title">Диагностика</h2>
+        <p class="muted">Проверки используют применённые настройки.</p>
+        <ul class="checks">
+          <li><button data-check="modem">Модем и сигнал</button><output></output></li>
+          <li><button data-check="gps">Статус GPS</button><output></output></li>
+          <li><button data-check="camera">Снимок с камеры</button><output></output></li>
+          <li><button data-check="microphone">Проверить микрофон</button><output></output></li>
+          <li><button data-check="speaker">Подать сигнал на динамик</button><output></output></li>
+          <li><button data-check="speech">Проверить синтез SpeechKit</button><output></output></li>
+          <li><button data-check="deepseek">Проверить ключ DeepSeek</button><output></output></li>
+        </ul>
+        <img id="snapshot" alt="Снимок с камеры Q1" hidden>
+        <p class="hint">Проверка микрофона длится одну секунду. Звук используется для измерения уровня. Проверка SpeechKit отправляет короткую тестовую фразу на синтез.</p>
+      </aside>
+    </div>
+  </main>
+</body>
+</html>

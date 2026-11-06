@@ -13,6 +13,20 @@ class Q1Button(JarvisEntity,ButtonEntity):
         super().__init__(coordinator,key,name)
         self.key=key
 
+    @property
+    def available(self):
+        if not super().available:
+            return False
+        data = self.coordinator.data or {}
+        if self.key == "listen":
+            capabilities = data.get("capabilities", {})
+            return capabilities.get("microphone_configured", False) and capabilities.get(
+                "speech_configured", True
+            )
+        if self.key == "hangup":
+            return data.get("call_state") in {"ringing", "answering", "dialing", "connected"}
+        return data.get("call_state") != "offline"
+
     async def async_press(self):
         if self.key=="listen":
             await self.coordinator.listen()

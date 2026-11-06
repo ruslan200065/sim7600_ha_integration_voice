@@ -16,6 +16,7 @@ from q1_audio import recognize_microphone_live, play_stream
 from q1_protocol import gps_status, gps_start, led_set
 from q1_hardware import diagnostics, snapshot, apply_original_camera_controls
 from q1_media import Q1Media
+from setup_panel import SetupPanel
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOG = logging.getLogger(__name__)
@@ -57,12 +58,14 @@ class Server:
         self.media=Q1Media()
         self.mic_lock=asyncio.Lock()
         self.speaker_lock=asyncio.Lock()
+        self.camera_lock=asyncio.Lock()
+        self.camera_frame=None
         self.speaking = asyncio.Lock()
         self.next_prompt = None
 
     async def setup(self):
         self.http = ClientSession()
-        self.brain = Brain(self.o,self.http)
+        self.brain = Brain(self.o,self.http, self.capture_camera)
         if self.o.get("yandex_api_key"):
             self.speech = SpeechKit(
                 self.o["yandex_api_key"],
@@ -194,7 +197,9 @@ class Server:
             "capabilities":{
                 "camera_configured":bool(self.o.get("q1_video_device")),
                 "microphone_configured":bool(self.o.get("q1_mic_device")),
-                "speaker_configured":bool(self.o.get("q1_speaker_device"))
+                "speaker_configured":bool(self.o.get("q1_speaker_device")),
+                "speech_configured":self.speech is not None,
+                "assistant_configured":bool(self.o.get("deepseek_api_key")),
             }})
 
     async def dial(self, request):
@@ -296,21 +301,33 @@ class Server:
                          "configured_at_port":self.modem.port}
         return web.json_response(result)
 
-    async def q1_snapshot(self,request):
+    async def capture_camera(self):
         device=self.o.get("q1_video_device","")
         if not device:
-            raise web.HTTPConflict(text="Configure q1_video_device")
+            raise RuntimeError("Configure q1_video_device")
+        async with self.camera_lock:
+            now = asyncio.get_running_loop().time
+            if self.camera_frame and now() - self.camera_frame[0] < 1:
+                return self.camera_frame[1]
+            content = await snapshot(device)
+            self.camera_frame = (now(), content)
+            return content
+
+    async def q1_snapshot(self,request):
         try:
-            content=await snapshot(device)
+            content=await self.capture_camera()
         except (ValueError,RuntimeError) as exc:
-            raise web.HTTPConflict(text=str(exc)[:250])
+            raise web.HTTPConflict(text=str(exc)[:250]) from exc
         return web.Response(body=content,content_type="image/jpeg",
                             headers={"Cache-Control":"no-store"})
 
     async def q1_camera_setup(self,request):
         if not self.o.get("q1_video_device"):
             raise web.HTTPConflict(text="Configure q1_video_device")
-        return web.json_response(await apply_original_camera_controls(self.o["q1_video_device"]))
+        async with self.camera_lock:
+            result = await apply_original_camera_controls(self.o["q1_video_device"])
+            self.camera_frame = None
+        return web.json_response(result)
 
     async def q1_gps(self,request):
         try:
@@ -457,14 +474,17 @@ async def main():
     service=Server(o)
     await service.setup()
     runner=web.AppRunner(service.app())
-    await runner.setup()
-    site=web.TCPSite(runner,host="0.0.0.0",port=8099)
-    await site.start()
-    await service.discover_companion()
-    LOG.info("JARVIS API listening on port 8099; HTTP auth=%s",bool(service.api_token))
+    panel = web.AppRunner(SetupPanel(service).app())
     try:
+        await runner.setup()
+        await web.TCPSite(runner, host="0.0.0.0", port=8099).start()
+        await panel.setup()
+        await web.TCPSite(panel, host="0.0.0.0", port=8098).start()
+        await service.discover_companion()
+        LOG.info("JARVIS API listening on 8099 and HA ingress on 8098")
         await asyncio.Event().wait()
     finally:
+        await panel.cleanup()
         await runner.cleanup()
         await service.close()
 

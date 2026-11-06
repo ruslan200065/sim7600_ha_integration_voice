@@ -1,5 +1,9 @@
 # JARVIS SIM7600 Voice Bridge (experimental alpha)
 
+In Home Assistant, open **Settings → Apps → JARVIS SIM7600 Voice Bridge → Open Web UI**. The setup panel groups hardware, API keys and phone options, saves them to the same Supervisor configuration as the Configuration tab, and can restart this app to apply changes. Only Home Assistant administrators can open the panel. No external port mapping is required.
+
+Use the diagnostics column to check each device independently. A microphone check measures local PCM level and does not send the recording to SpeechKit. The separate SpeechKit check synthesizes a short test phrase. The GPS check reads status without changing the modem configuration.
+
 This project adds an **independent Home Assistant App** to the HACS integration, without stealing its serial port. The App owns the AT and PCM ports. **Do not run the original HACS SIM7600 integration on the same AT port at the same time**.
 
 ## Supported now

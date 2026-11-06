@@ -5,7 +5,6 @@ import logging
 import asyncio
 import os
 import aiohttp
-from q1_hardware import snapshot as q1_snapshot
 
 LOG = logging.getLogger(__name__)
 
@@ -17,9 +16,10 @@ TOOLS = [
 SAFE_SERVICES = {"light":{"turn_on","turn_off","toggle"}, "switch":{"turn_on","turn_off","toggle"}, "cover":{"open_cover","close_cover","stop_cover"}}
 
 class Brain:
-    def __init__(self, options, session):
+    def __init__(self, options, session, capture_camera):
         self.options = options
         self.http = session
+        self.capture_camera = capture_camera
         self.hass_url = "http://supervisor/core"
         self.hass_token = os.environ.get("SUPERVISOR_TOKEN", "")
         prompt = options.get("system_prompt") or "Ты Джарвис, русскоязычный голосовой ассистент."
@@ -55,7 +55,7 @@ class Brain:
                         picture = await resp.read()
                         mime = resp.headers.get("Content-Type","image/jpeg").split(";")[0]
                 elif device:
-                    picture = await q1_snapshot(device)
+                    picture = await self.capture_camera()
                     mime = "image/jpeg"
                 else:
                     return "Камера не настроена"

@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.3.2
+version: 0.4.0
 stage: experimental
 description: SIM7600 voice + Yandex SpeechKit LiveTTS / STT + DeepSeek + HA and Q1
 arch:
@@ -9,6 +9,11 @@ arch:
 startup: application
 boot: auto
 init: false
+ingress: true
+ingress_port: 8098
+panel_admin: true
+panel_icon: mdi:robot-outline
+panel_title: JARVIS Q1
 hassio_api: true
 homeassistant_api: true
 discovery:

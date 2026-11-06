@@ -29,7 +29,16 @@ async def play_pcm(device, pcm):
     proc=await asyncio.create_subprocess_exec(
         "aplay","-q","-D",device,"-f","S16_LE","-r","16000","-c","1",
         stdin=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
-    _,err=await proc.communicate(pcm)
+    try:
+        _,err=await asyncio.wait_for(proc.communicate(pcm), timeout=8)
+    except (TimeoutError, asyncio.CancelledError):
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        await proc.communicate()
+        raise
     if proc.returncode:
         raise RuntimeError("aplay failed: "+err.decode(errors="replace")[:200])
 

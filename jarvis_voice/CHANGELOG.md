@@ -1,3 +1,8 @@
+## 0.4.0 (experimental)
+- Add a Russian-language setup panel for Home Assistant administrators. It uses the existing Supervisor options and includes camera, modem, GPS, audio and cloud key checks.
+- Add labels and explanations to the standard add-on configuration.
+- Share camera captures across simultaneous requests and hide call or speech actions when their prerequisites are missing.
+
 ## 0.3.2 (experimental)
 - Return a clear error when the microphone produces no PCM, and document how to select the Q1 PulseAudio devices on Home Assistant OS.
 - Report the default PulseAudio routes and fix parsing of allowlisted media URLs.
