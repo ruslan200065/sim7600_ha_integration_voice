@@ -102,6 +102,8 @@ async def probe_audio():
         "capture": ("arecord", "-l"),
         "pulseaudio_sinks": ("pactl", "list", "short", "sinks"),
         "pulseaudio_sources": ("pactl", "list", "short", "sources"),
+        "pulseaudio_default_sink": ("pactl", "get-default-sink"),
+        "pulseaudio_default_source": ("pactl", "get-default-source"),
     }.items():
         try:
             out = (await _run(*argv, timeout=5)).decode(errors="replace")

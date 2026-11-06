@@ -49,6 +49,8 @@ curl -X POST -H "Authorization: Bearer $JARVIS_TOKEN" \
 
 ## GPS and audio safety
 
+On Home Assistant OS, the Audio plugin can expose the Sonix and Microchip devices through PulseAudio while the app has no direct ALSA card nodes. If `/q1/probe` lists the appropriate Pulse source and sink, select them in the app's Audio settings and use `pulse` for the matching `q1_mic_device` or `q1_speaker_device`. A source ending in `.monitor` records speaker playback. For microphone capture, use an input source such as the Sonix `alsa_input.usb-…` entry.
+
 Original GPS bootstrap included setting operator-specific APN "internet", Google SUPL server, and modifying NVRAM via CNVW. These are **not enabled automatically**: they can break a different SIM/provider or alter module configuration. Current GPS uses the original CGPSAUTO/CGPS protocol without the APN/NVRAM side effects.
 
 The Q1 original software **plays WAV files through the USB ALSA sound card** but has **no microphone capture test**. The Q1 USB audio card and SIM7600 phone PCM are distinct audio paths. Check /q1/probe, confirm a real input in HA's App Audio settings, then configure q1_mic_device/q1_speaker_device as pulse or a known ALSA device. Raw modem USB PCM audio on /dev/ttyUSB4 remains firmware-dependent and unverified for this Q1 SIM7600E.

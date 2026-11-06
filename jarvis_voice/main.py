@@ -70,7 +70,6 @@ class Server:
                 self.o.get("yandex_role", "neutral"),
             )
         await self.modem.start()
-        self.mode = "ready"
 
     async def close(self):
         if self.auto_answer_task:
@@ -364,29 +363,39 @@ class Server:
         async with self.mic_lock:
             proc=await asyncio.create_subprocess_exec(
                 "arecord","-q","-D",device,"-f","S16_LE","-r","16000","-c","1","-t","raw",
+                "-d",str(seconds),
                 stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
             response=web.StreamResponse(status=200,headers={
                 "Content-Type":"application/octet-stream",
                 "X-Audio-Format":"s16le;rate=16000;channels=1",
                 "Cache-Control":"no-store"})
             try:
+                try:
+                    frame = await asyncio.wait_for(proc.stdout.read(3200), timeout=4)
+                except TimeoutError as exc:
+                    raise web.HTTPBadGateway(text="Microphone did not produce PCM") from exc
+                if not frame:
+                    raise web.HTTPBadGateway(
+                        text="Microphone did not produce PCM. Check /q1/probe and q1_mic_device."
+                    )
                 await response.prepare(request)
-                end=asyncio.get_running_loop().time()+seconds
-                while asyncio.get_running_loop().time()<end:
-                    frame=await asyncio.wait_for(proc.stdout.read(3200),timeout=4)
-                    if not frame:
-                        break
+                while frame:
                     await response.write(frame)
-            except (ConnectionResetError,asyncio.TimeoutError):
+                    frame = await asyncio.wait_for(proc.stdout.read(3200), timeout=4)
+            except (ConnectionResetError, TimeoutError):
                 pass
             finally:
                 if proc.returncode is None:
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
                 await proc.communicate()
-                try:
-                    await response.write_eof()
-                except ConnectionResetError:
-                    pass
+                if response.prepared:
+                    try:
+                        await response.write_eof()
+                    except ConnectionResetError:
+                        pass
             return response
 
 

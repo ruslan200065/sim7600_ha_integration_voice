@@ -18,7 +18,7 @@ class Q1Media:
     def validate(self, url, allowed_hosts):
         try:
             parts = URL(url)
-            host = parts.hostname or ""
+            host = parts.host or ""
             if parts.scheme not in ("http", "https") or not host:
                 raise ValueError("Only HTTP(S) audio URLs are allowed")
             if parts.user is not None or host.lower() not in {x.lower() for x in allowed_hosts}:
@@ -100,5 +100,5 @@ class Q1Media:
                         proc.kill()
                     except ProcessLookupError:
                         pass
-                    await proc.wait()
+                    await proc.communicate()
             self.playing = False

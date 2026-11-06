@@ -1,3 +1,7 @@
+## 0.3.2 (experimental)
+- Return a clear error when the microphone produces no PCM, and document how to select the Q1 PulseAudio devices on Home Assistant OS.
+- Report the default PulseAudio routes and fix parsing of allowlisted media URLs.
+
 ## 0.3.1 (experimental)
 - Fix the startup crash under s6 by installing SpeechKit gRPC modules into the Python virtual environment and restoring the add-on environment at launch.
 - Recover from AT-port read errors and timeouts, distinguish call failures from other AT replies, and bind prompts and caller authorization to the current call.
