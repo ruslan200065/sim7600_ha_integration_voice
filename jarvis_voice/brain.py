@@ -4,6 +4,7 @@ import json
 import logging
 import asyncio
 import aiohttp
+from q1_hardware import snapshot as q1_snapshot
 
 LOG = logging.getLogger(__name__)
 
@@ -47,22 +48,7 @@ class Brain:
                         picture = await resp.read()
                         mime = resp.headers.get("Content-Type","image/jpeg").split(";")[0]
                 elif device:
-                    # Only configured /dev/videoN, never an arbitrary caller-provided path.
-                    if not __import__("re").fullmatch(r"/dev/video[0-9]+",device):
-                        return "Некорректное имя UVC-устройства"
-                    proc=await asyncio.create_subprocess_exec(
-                        "ffmpeg","-hide_banner","-loglevel","error",
-                        "-f","video4linux2","-i",device,
-                        "-frames:v","1","-f","image2pipe","-vcodec","mjpeg","pipe:1",
-                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                    try:
-                        picture,err=await asyncio.wait_for(proc.communicate(),timeout=12)
-                    except asyncio.TimeoutError:
-                        proc.kill()
-                        await proc.communicate()
-                        return "Таймаут захвата UVC"
-                    if proc.returncode:
-                        return "Ошибка UVC: "+err.decode(errors="replace")[:100]
+                    picture = await q1_snapshot(device)
                     mime = "image/jpeg"
                 else:
                     return "Камера не настроена"

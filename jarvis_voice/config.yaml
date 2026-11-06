@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.1.0
+version: 0.2.0
 stage: experimental
 description: SIM7600 voice + Yandex SpeechKit LiveTTS / STT + DeepSeek + HA and Q1
 arch:
@@ -13,11 +13,10 @@ hassio_api: true
 homeassistant_api: true
 auth_api: true
 uart: true
+usb: true
+udev: true
 audio: true
 video: true
-devices:
-  - /dev/ttyUSB2
-  - /dev/ttyUSB4
 options:
   at_port: /dev/ttyUSB2
   pcm_port: /dev/ttyUSB4
@@ -27,7 +26,8 @@ options:
   max_calls_per_hour: 4
   auto_answer: false
   yandex_api_key: ""
-  yandex_voice: "jane"
+  yandex_voice: "denis"
+  yandex_role: "neutral"
   deepseek_api_key: ""
   deepseek_model: "deepseek-flash"
   camera_entity: ""
@@ -50,6 +50,7 @@ schema:
   auto_answer: bool
   yandex_api_key: password
   yandex_voice: str
+  yandex_role: str
   deepseek_api_key: password
   deepseek_model: str
   camera_entity: str

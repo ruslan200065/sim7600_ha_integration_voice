@@ -14,7 +14,7 @@ This project adds an **independent Home Assistant App** to the HACS integration,
 ## Critical limitations / hardware verification
 - This release is **not confirmed end-to-end** on the user's SIM7600E firmware, SIM network, or Yandex Q1. A verified SIM7600G-H can expose raw 16k PCM on ttyUSB4; SIM7600E firmware may differ.
 - The audio driver assumes /dev/ttyUSB4 delivers unframed, little-endian 16-bit 16kHz mono PCM. A positive AT command response does **not** prove usable audio. Confirm with hardware first.
-- Voice interaction currently uses VAD turns (half-duplex), not interruption/barge-in. STT now streams PCM chunks to SpeechKit while the user is speaking, after local voice detection. The phone call is still half-duplex (no barge-in).
+- Voice interaction currently uses VAD turns (half-duplex), not interruption/barge-in. STT on phone and optionally Q1 microphone streams PCM chunks to SpeechKit while the user is speaking, after local voice detection. The phone call is still half-duplex (no barge-in).
 - Phone-call audio and Q1 microphone/speaker are **not the same device**. USB UVC video does not imply UAC audio. Q1 audio output/input not wired up yet. Camera via HA camera entity works separately.
 - Home Assistant service calling is restricted to explicitly allowlisted entity IDs and light/switch/cover safe operations; no locks, alarms or arbitrary shell execution. Other operations need intentional code changes.
 - SpeechKit/DeepSeek API calls are billable. No credentials are committed to GitHub.
@@ -83,3 +83,21 @@ Alternatively set `q1_video_device: /dev/video0` for direct UVC capture if acces
 
 ### Security
 Never hardcode actual phone numbers or cloud tokens in GitHub. Restrict inbound API to trusted LAN, supply a random bearer token, allowlist HA entities and phone number, and keep max_calls_per_hour low.
+
+
+## Q1 stock archive support (v0.2.0)
+
+The original hardware source map is in [docs/Q1_HARDWARE.md](../docs/Q1_HARDWARE.md). New authenticated REST endpoints:
+
+- GET /q1/probe: USB IDs, V4L2 formats, serial nodes, ALSA/Pulse sources and sinks.
+- GET /q1/snapshot: Q1 UVC JPEG at stock YUYV 640x480/30 when possible.
+- GET /q1/gps: GNSS state/fix returned in decimal coordinates.
+- POST /q1/gps/start {"assisted":true}: start GPS using stock commands, no NVRAM/APN changes.
+- POST /q1/led {"color":"red"}: modem RGB channels from the stock firmware.
+- POST /q1/camera/apply_original {}: explicit original camera V4L2 controls.
+- POST /q1/listen {"seconds":12}: start ALSA microphone and stream PCM to SpeechKit STT; requires a real audio input.
+- POST /q1/speak {"text":"Hello"}: stream LiveTTS to configured Q1 speaker.
+
+The App's audio/video/serial mapping no longer assumes both /dev/ttyUSB2 and /dev/ttyUSB4 must always exist. Configure actual device paths. Default LiveTTS is denis / neutral with model livetts; earlier voice jane is incompatible.
+
+The stock archive **proves USB speaker playback** but does not prove an accessible microphone or USB modem call audio. Hardware tests are necessary.

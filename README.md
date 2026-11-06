@@ -48,3 +48,19 @@ This custom integration allows you to connect a SIM7600 4G & GPS module to Home 
 
 ---
 *Built with ❤️ for Home Assistant.*
+
+
+## JARVIS SIM7600 Voice Bridge / Yandex Signal Q1 (experimental)
+
+This fork also contains an independent **Home Assistant App**, located in the jarvis_voice folder.
+
+- SIM7600 call control, optional experimental raw PCM voice channel, Yandex streaming STT + LiveTTS, DeepSeek and allowlisted HA tools.
+- Original Yandex Signal Q1 protocols: UVC camera (0c45:6366), GPS, modem RGB LEDs, Microchip USB speaker.
+- Self-diagnostics, UVC snapshots, optional ALSA/Pulse microphone and playback.
+
+Install the repository in the Home Assistant App store as a custom repository:
+https://github.com/ruslan200065/sim7600_ha_integration_voice
+
+See [docs/Q1_HARDWARE.md](docs/Q1_HARDWARE.md) and [jarvis_voice/README.md](jarvis_voice/README.md).
+
+**Experimental hardware:** The stock Q1 archive does not demonstrate microphone input or phone-call PCM transfer on this SIM7600E firmware. Do not run both this App and the original HACS integration against the same AT port.

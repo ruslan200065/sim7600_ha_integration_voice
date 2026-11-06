@@ -11,7 +11,7 @@ from modem import Modem
 from audio import PCMTransport
 from speech import SpeechKit
 from brain import Brain
-from q1_audio import capture_pcm, play_stream
+from q1_audio import recognize_microphone_live, play_stream
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOG = logging.getLogger(__name__)
@@ -208,9 +208,8 @@ class Server:
         if not self.o.get("q1_mic_device"):
             raise web.HTTPConflict(text="No Q1 microphone ALSA device configured")
         data=await request.json()
-        seconds=min(15,max(1,int(data.get("seconds",4))))
-        pcm=await capture_pcm(self.o["q1_mic_device"],seconds)
-        phrase=await self.speech.recognize(pcm)
+        seconds=min(30,max(3,int(data.get("seconds",12))))
+        phrase=await recognize_microphone_live(self.speech,self.o["q1_mic_device"],seconds)
         if not phrase:
             return web.json_response({"recognized":"","response":""})
         answer=await self.brain.reply(phrase)

@@ -10,9 +10,10 @@ import yandex.cloud.ai.tts.v3.tts_service_pb2_grpc as tts_grpc
 
 
 class SpeechKit:
-    def __init__(self, api_key, voice="jane"):
+    def __init__(self, api_key, voice="denis", role="neutral"):
         self.auth = (("authorization", "Api-Key " + api_key),)
         self.voice = voice
+        self.role = role
         self.stt_channel = grpc.aio.secure_channel("stt.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
         self.tts_channel = grpc.aio.secure_channel("tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
         self.stt_stub = stt_grpc.RecognizerStub(self.stt_channel)
@@ -97,7 +98,7 @@ class SpeechKit:
 
     async def synthesize(self, text):
         options = tts.SynthesisOptions(
-            voice=self.voice,
+            model="livetts", voice=self.voice, role=self.role,
             output_audio_spec=tts.AudioFormatOptions(raw_audio=tts.RawAudio(
                 audio_encoding=tts.RawAudio.LINEAR16_PCM, sample_rate_hertz=16000)))
         async def requests():
