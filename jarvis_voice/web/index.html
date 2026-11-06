@@ -94,18 +94,53 @@
             <section class="view" data-view="voice" hidden>
               <div class="section-heading"><div><p class="eyebrow">Речь и сервисы</p><h2>Голос и интеграции</h2></div></div>
               <section class="card">
+                <h3>Языковая модель</h3>
+                <div class="fields">
+                  <label>Активный профиль<select name="llm_active"><option value="deepseek">DeepSeek</option></select></label>
+                </div>
+                <details id="llm-deepseek" open><summary>DeepSeek</summary>
+                  <div class="fields">
+                    <label>Ключ DeepSeek<input type="password" name="deepseek_api_key" autocomplete="new-password"></label>
+                    <label>Модель<input name="deepseek_model" list="deepseek-models" placeholder="deepseek-flash"><datalist id="deepseek-models"></datalist></label>
+                    <label>Рассуждение<select name="deepseek_effort">
+                      <option value="off">Выключено · быстрее</option><option value="low">Низкое</option>
+                      <option value="high">Высокое</option><option value="max">Максимальное</option>
+                    </select></label>
+                    <label class="check"><input type="checkbox" id="clear-deepseek"> Удалить ключ DeepSeek</label>
+                  </div>
+                  <div class="actions phone-actions"><button type="button" data-model-load>Обновить модели</button><output data-model-status></output></div>
+                </details>
+                <div id="llm-profiles"></div>
+                <button type="button" id="llm-add" class="phone-actions">Добавить сервер</button>
+                <template id="llm-profile">
+                  <details><summary>Новый сервер</summary>
+                    <div class="fields">
+                      <label>Название<input data-llm-name placeholder="Мой сервер"></label>
+                      <label>Базовый URL API<input data-llm-url type="url" placeholder="https://example.org/v1"></label>
+                      <label>Ключ API<input data-llm-key type="password" autocomplete="new-password"></label>
+                      <label>Модель<input data-llm-model><datalist></datalist></label>
+                      <label>Рассуждение<select data-llm-effort>
+                        <option value="default">Настройка сервера</option><option value="off">Выключено</option>
+                        <option value="minimal">Минимальное</option><option value="low">Низкое</option>
+                        <option value="medium">Среднее</option><option value="high">Высокое</option>
+                        <option value="xhigh">Очень высокое</option><option value="max">Максимальное</option>
+                      </select></label>
+                      <label class="check"><input type="checkbox" data-llm-clear> Удалить сохранённый ключ</label>
+                    </div>
+                    <div class="actions phone-actions"><button type="button" data-model-load>Обновить модели</button><button type="button" data-llm-remove>Убрать профиль</button><output data-model-status></output></div>
+                  </details>
+                </template>
+              </section>
+              <section class="card">
                 <h3>Подключения</h3>
                 <div class="fields">
                   <label>Ключ Yandex SpeechKit<input type="password" name="yandex_api_key" autocomplete="new-password"></label>
-                  <label>Ключ DeepSeek<input type="password" name="deepseek_api_key" autocomplete="new-password"></label>
                   <label class="check"><input type="checkbox" id="clear-speech"> Удалить ключ SpeechKit</label>
-                  <label class="check"><input type="checkbox" id="clear-deepseek"> Удалить ключ DeepSeek</label>
                   <div class="entity-field"><span>Получатель снимков в Telegram</span><div data-entity="notify"><input name="telegram_photo_target"></div></div>
                   <div class="entity-field"><span>Синтез речи для домашних динамиков</span><div data-entity="tts"><input name="home_tts_entity"></div></div>
                   <label class="check"><input type="checkbox" name="speech_cache_enabled"> Кэшировать озвучку</label>
                 </div>
-                <details><summary>Модель и голос</summary><div class="fields">
-                  <label>Модель DeepSeek<input name="deepseek_model" placeholder="deepseek-flash"></label>
+                <details><summary>Голос SpeechKit</summary><div class="fields">
                   <label>Голос SpeechKit<input name="yandex_voice" placeholder="denis"></label>
                   <label>Амплуа SpeechKit<input name="yandex_role" placeholder="neutral"></label>
                 </div></details>
@@ -142,7 +177,7 @@
                   <li><button type="button" data-check="microphone_sample">Записать звук</button><output></output><audio id="microphone-sample" controls hidden></audio></li>
                   <li><button type="button" data-check="speaker">Сигнал на динамик</button><output></output></li>
                   <li><button type="button" data-check="speech">Проверить SpeechKit</button><output></output></li>
-                  <li><button type="button" data-check="deepseek">Проверить DeepSeek</button><output></output></li>
+                  <li><button type="button" data-check="deepseek">Проверить активный LLM</button><output></output></li>
                 </ul>
                 <img id="snapshot" alt="Снимок с камеры Q1" hidden>
                 <details><summary>Мобильная сеть</summary><div class="phone-actions"><button type="button" id="volte" disabled>Попробовать включить VoLTE</button><output id="volte-result"></output></div></details>

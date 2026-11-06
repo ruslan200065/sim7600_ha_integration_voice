@@ -20,9 +20,9 @@ def family_profiles(lines):
         if not isinstance(line, str):
             raise ValueError("Неверная строка профиля.")
         parts = [part.strip() for part in line.split("|")]
-        if not 2 <= len(parts) <= 6:
-            raise ValueError("Формат профиля: имя | номер | устройства | калитка | календарь | person.")
-        name, number, entities, gate, calendar, person = (parts + [""] * 6)[:6]
+        if not 2 <= len(parts) <= 7:
+            raise ValueError("Формат профиля: имя | номер | устройства | калитка | календарь | person | доступ.")
+        name, number, entities, gate, calendar, person, access = (parts + [""] * 7)[:7]
         entities = entities.replace(",", " ").split()
         if (not name or len(name) > 60 or not name.isprintable() or not NUMBER.fullmatch(number)
             or any(not ENTITY.fullmatch(item) for item in entities)
@@ -32,10 +32,13 @@ def family_profiles(lines):
             raise ValueError("Укажите календарь участника вида calendar.name.")
         if person and (not ENTITY.fullmatch(person) or not person.startswith("person.")):
             raise ValueError("Укажите сущность участника вида person.name.")
+        access = access or "selected"
+        if access not in {"selected", "read_all", "owner"}:
+            raise ValueError("Неверный режим доступа участника.")
         number = number.lstrip("+")
         if number in profiles or name.casefold() in names:
             raise ValueError("Имена и номера членов семьи должны быть уникальны.")
         names.add(name.casefold())
         profiles[number] = {"name": name, "number": "+" + number, "entities": entities,
-                            "gate": gate, "calendar": calendar, "person": person, "key": profile_key(name, number)}
+                            "gate": gate, "calendar": calendar, "person": person, "access": access, "key": profile_key(name, number)}
     return profiles

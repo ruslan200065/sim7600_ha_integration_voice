@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.4.26
+version: 0.4.27
 stage: experimental
 description: Smart GSM assistant for SIM7600 and Home Assistant
 arch:
@@ -42,6 +42,9 @@ options:
   yandex_role: "neutral"
   deepseek_api_key: ""
   deepseek_model: "deepseek-flash"
+  deepseek_effort: "off"
+  llm_active: "deepseek"
+  llm_profiles: []
   camera_entity: ""
   home_tts_entity: ""
   telegram_photo_target: ""
@@ -84,6 +87,15 @@ schema:
   yandex_role: str
   deepseek_api_key: password
   deepseek_model: str
+  deepseek_effort: str
+  llm_active: str
+  llm_profiles:
+    - id: str
+      name: str
+      base_url: str
+      model: str
+      effort: str
+      api_key: password
   camera_entity: str
   home_tts_entity: str
   telegram_photo_target: str

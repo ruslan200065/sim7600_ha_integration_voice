@@ -3,6 +3,7 @@ import base64
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from personal import condition_matches
+from llm import active_profile, auth_headers, base_url, completion_options
 import json
 import logging
 import asyncio
@@ -61,7 +62,7 @@ TOOLS = [
     tool("cancel_reminder", "Cancel a pending reminder by ID.", ("id",), id="string"),
     tool("find_devices", "Find permitted HA devices by name, alias, room, device type or entity ID. Pass only the relevant search words, e.g. свет гостиная. An empty query lists devices. Use before guessing any entity ID. Pass domain=camera for camera queries.", query="string", domain="string"),
     tool("get_entity_state", "Read actual HA state and selected attributes.", ("entity_id",), entity_id="string"),
-    tool("call_ha_service", "Control a device with can_control enabled. Use a domain action such as turn_on, open_cover, media_pause or volume_set. For volume_set, supply a level between 0 and 1.", ("service", "entity_id"), domain="string", service="string", entity_id="string", volume_level="number"),
+    tool("call_ha_service", "Control a device with can_control enabled. Use a domain action such as turn_on, open_cover, media_pause or volume_set. For volume_set supply a level between 0 and 1. For set_temperature supply temperature in the device's native unit.", ("service", "entity_id"), domain="string", service="string", entity_id="string", volume_level="number", temperature="number"),
     tool("see_camera", "Inspect an allowed camera snapshot. Omit camera to use this call's camera or the configured Q1 camera.", camera="string", question="string"),
     tool("listen_q1", "On explicit request, sample the room microphone briefly, reporting sound level and recognized speech.", seconds="integer"),
     tool("announce", "Speak text on a controllable Home Assistant media player.", ("entity_id", "text"), entity_id="string", text="string"),
@@ -72,6 +73,10 @@ SAFE_SERVICES = {
     "switch": {"turn_on", "turn_off", "toggle"},
     "cover": {"open_cover", "close_cover", "stop_cover"},
     "fan": {"turn_on", "turn_off"},
+    "climate": {"turn_on", "turn_off", "set_temperature"},
+    "humidifier": {"turn_on", "turn_off"},
+    "vacuum": {"start", "pause", "stop", "return_to_base"},
+    "input_boolean": {"turn_on", "turn_off", "toggle"},
     "scene": {"turn_on"},
     "media_player": {"turn_on", "turn_off", "media_play", "media_pause", "media_stop", "volume_set"},
 }
@@ -82,13 +87,36 @@ DEVICE_WORDS = {
     "cover": "шторы жалюзи ворота рольставни",
     "camera": "камера видео",
     "media_player": "колонка динамик проигрыватель телевизор",
-    "climate": "климат термостат кондиционер",
+    "climate": "климат термостат кондиционер отопление обогрев",
+    "humidifier": "увлажнитель осушитель",
+    "input_boolean": "помощник флаг переключатель",
+    "input_number": "помощник число ползунок",
+    "input_select": "помощник список режим",
+    "input_text": "помощник текст",
+    "select": "выбор режим",
+    "number": "число параметр",
+    "button": "кнопка",
+    "event": "событие",
+    "sun": "солнце сумерки рассвет закат",
+    "weather": "погода",
+    "person": "человек местоположение",
+    "device_tracker": "местоположение трекер",
+    "water_heater": "бойлер водонагреватель",
     "fan": "вентилятор",
     "sensor": "датчик",
     "binary_sensor": "датчик",
     "lock": "замок",
     "vacuum": "пылесос",
     "motion": "движение",
+    "presence": "присутствие",
+    "occupancy": "занятость присутствие",
+    "smoke": "дым пожар",
+    "gas": "газ утечка",
+    "connectivity": "подключение связь",
+    "sound": "звук шум",
+    "opening": "открытие",
+    "aqi": "качество воздуха",
+    "water": "вода расход",
     "temperature": "температура",
     "humidity": "влажность влажно",
     "pressure": "давление",
@@ -119,6 +147,7 @@ STATE_ATTRIBUTES = {
     "current_position", "current_temperature", "temperature", "humidity",
     "current_humidity", "last_reset", "state_class", "pressure", "power", "energy",
     "co2", "pm25", "illuminance", "voltage", "current", "last_changed",
+    "min_temp", "max_temp", "hvac_action", "hvac_modes", "preset_mode", "options",
     "percentage", "volume_level", "is_volume_muted", "media_title",
     "media_artist", "source", "battery_level",
 }
@@ -449,6 +478,14 @@ class Brain:
             row = await self._ha("GET", "/api/states/" + entity)
             if row.get("state") == "unavailable":
                 return {"accepted": False, "device": self._state(row)}
+            if service == "set_temperature":
+                temperature = arguments.get("temperature")
+                limits = row.get("attributes", {})
+                low, high = limits.get("min_temp"), limits.get("max_temp")
+                if (type(temperature) not in (float, int) or type(low) not in (float, int)
+                    or type(high) not in (float, int) or not low <= temperature <= high):
+                    return "Уточни температуру в поддерживаемом диапазоне устройства"
+                data["temperature"] = temperature
             await self._ha("POST", "/api/services/" + domain + "/" + service, data)
             row = await self._ha("GET", "/api/states/" + entity)
             return {"accepted": True, "device": self._state(row)}
@@ -486,7 +523,7 @@ class Brain:
             if not (has_trigger and has_action) or re.search(r"\bне\s+(?:надо\s+)?(?:включ|выключ|откр|закр|запуст|останов)\w*", phrase, re.I):
                 return "Уточни условие и действие для одного запуска"
             action_entity, service = args.get("action_entity"), args.get("service")
-            if (not isinstance(service, str) or service == "volume_set"
+            if (not isinstance(service, str) or service in {"volume_set", "set_temperature"}
                 or service not in self._control_actions(action_entity)):
                 return "Это действие недоступно для одноразового правила"
         elif re.search(r"\bне\s+(?:надо\s+|нужно\s+)?(?:напомн|напомин|постав)\w*", phrase, re.I) or not re.search(
@@ -567,9 +604,9 @@ class Brain:
             return await self._reply(phrase, camera_entity, None)
 
     async def _reply(self, phrase, camera_entity, on_progress):
-        key = self.options.get("deepseek_api_key", "")
-        if not key:
-            return "Ключ DeepSeek не настроен."
+        profile = active_profile(self.options)
+        if not profile or not profile.get("model") or (profile["id"] == "deepseek" and not profile["api_key"]):
+            return "Настрой модель и подключение LLM в панели JARVIS."
         user_message = {"role": "user", "content": phrase}
         explicit_photo = photo_requested(phrase)
         messages = [self.system_message, *self.history, user_message]
@@ -590,15 +627,19 @@ class Brain:
             messages.insert(1, {"role": "system", "content": "Камера события текущего звонка: " + camera_entity})
         try:
             for _ in range(6):
-                payload={"model":self.options.get("deepseek_model","deepseek-flash"),
-                         "messages":messages,"tools":TOOLS,"tool_choice":"auto",
-                         "thinking":{"type":"disabled"},
-                         "max_tokens":350,"temperature":0.4}
-                async with self.http.post("https://api.deepseek.com/chat/completions",json=payload,
-                    headers={"Authorization":"Bearer "+key},
-                    timeout=aiohttp.ClientTimeout(total=35)) as response:
-                    response.raise_for_status()
-                    data=await response.json()
+                parameters = completion_options(profile)
+                payload = {"model": profile["model"], "messages": messages,
+                           "tools": TOOLS, "tool_choice": "auto", **parameters}
+                slower = profile["effort"] not in {"off", "default"}
+                async with self.http.post(
+                    base_url(profile["base_url"]) + "/chat/completions", json=payload,
+                    headers=auth_headers(profile["api_key"]), allow_redirects=False,
+                    timeout=aiohttp.ClientTimeout(total=85 if slower else 35),
+                ) as response:
+                    if response.status != 200:
+                        LOG.warning("LLM chat returned HTTP %s", response.status)
+                        return "Сервер модели не принял запрос. Проверь модель и режим рассуждения."
+                    data = await response.json()
                 msg=data["choices"][0]["message"]
                 messages.append(msg)
                 calls=msg.get("tool_calls") or []
@@ -606,7 +647,10 @@ class Brain:
                     answer=msg.get("content") or "Не удалось сформировать ответ."
                     for index, entry in enumerate(self.history):
                         if entry is user_message:
-                            self.history.insert(index + 1, {"role": "assistant", "content": answer})
+                            final = {"role": "assistant", "content": answer}
+                            if profile["id"] == "deepseek" and slower:
+                                final["reasoning_content"] = msg.get("reasoning_content") or ""
+                            self.history.insert(index + 1, final)
                             break
                     return answer[:1500]
                 images = []
@@ -639,6 +683,6 @@ class Brain:
                         messages.append({"role":"tool","tool_call_id":call["id"],"content":json.dumps(result,ensure_ascii=False,default=str)})
                 messages.extend(images)
             return "Не удалось завершить команду, повторите запрос."
-        except Exception:
-            LOG.exception("DeepSeek request failed")
+        except Exception as exc:
+            LOG.warning("LLM request failed: %s", type(exc).__name__)
             return "Не удалось связаться с интеллектом или выполнить команду."

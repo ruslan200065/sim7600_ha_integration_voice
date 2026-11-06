@@ -1,3 +1,8 @@
+## 0.4.27 (experimental)
+
+- Add independent OpenAI-compatible LLM profiles, model discovery and configurable reasoning effort.
+- Add family access presets and room selection, with more Home Assistant device types and supported controls.
+
 ## 0.4.26 (experimental)
 
 - Expose local microphone level, sound activity and a monitoring switch in Home Assistant.

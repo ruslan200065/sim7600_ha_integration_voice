@@ -19,6 +19,7 @@ from audio import rms
 from modem import NUMBER
 from brain import SAFE_SERVICES
 from family import family_profiles
+from llm import DEEPSEEK_URL, EFFORTS, active_profile, base_url, list_models, merge_profiles
 from q1_audio import capture_pcm, play_pcm
 from q1_hardware import VIDEO_LINK, VIDEO_PATH, list_serial, list_video, probe_audio
 from q1_protocol import gps_status
@@ -33,7 +34,9 @@ TEXT_FIELDS = {
     "q1_mic_device": 128,
     "q1_speaker_device": 128,
     "allowed_number": 17,
-    "deepseek_model": 128,
+    "deepseek_model": 256,
+    "deepseek_effort": 16,
+    "llm_active": 64,
     "yandex_voice": 80,
     "yandex_role": 80,
     "camera_entity": 256,
@@ -57,6 +60,7 @@ OPTION_FIELDS = (
         "observed_entities",
         "allow_domains",
         "family_members",
+        "llm_profiles",
     }
 )
 AUDIO_FIELDS = ("audio_input", "audio_output")
@@ -84,6 +88,8 @@ def validate_changes(changes, current):
                 raise ValueError(f"{key}: допустимо от {lo} до {hi}.")
         elif key in BOOLEAN_FIELDS and not isinstance(value, bool):
             raise ValueError(f"Неверное значение поля {key}.")
+        elif key == "llm_profiles":
+            value = merge_profiles(value, current.get("llm_profiles", []))
         elif key == "family_members":
             family_profiles(value)
         elif key in {"allowed_entities", "observed_entities"}:
@@ -104,6 +110,12 @@ def validate_changes(changes, current):
                 raise ValueError("Передан неизвестный домен управления.")
             value = list(dict.fromkeys(value))
         options[key] = value
+
+    if options.get("deepseek_effort", "off") not in EFFORTS:
+        raise ValueError("Неверный режим рассуждения DeepSeek.")
+    profile = active_profile(options)
+    if not profile or (profile["id"] != "deepseek" and not profile["model"]):
+        raise ValueError("Выбери модель в активном профиле LLM.")
 
     for key in ("at_port", "pcm_port"):
         if key in changes and not (key == "pcm_port" and not options[key]):
@@ -237,8 +249,13 @@ class SetupPanel:
                 "version": info.get("version"),
                 "boot": self.boot_id,
                 "options": {
-                    key: options[key] for key in OPTION_FIELDS if key in options
+                    key: options[key] for key in OPTION_FIELDS if key in options and key != "llm_profiles"
                 },
+                "llm_profiles": [
+                    {**{field: p[field] for field in ("id", "name", "base_url", "model", "effort")},
+                     "has_key": bool(p.get("api_key"))}
+                    for p in options.get("llm_profiles", [])
+                ],
                 "keys": {key: bool(options.get(key)) for key in SECRET_KEYS},
                 "audio": {key: info.get(key) for key in AUDIO_FIELDS},
                 "devices": {
@@ -315,6 +332,31 @@ class SetupPanel:
             await self.supervisor("POST", "restart", timeout=45)
         except web.HTTPException as exc:
             LOG.warning("Could not restart add-on from ingress: %s", exc.status)
+
+    async def models(self, request):
+        try:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise ValueError("Выбери профиль LLM.")
+            info = await self.supervisor("GET", "info")
+            options = info["options"]
+            identifier = data.get("id")
+            if identifier == "deepseek":
+                url = DEEPSEEK_URL
+                saved_key = options.get("deepseek_api_key", "")
+            else:
+                url = base_url(data.get("base_url"))
+                old = next((p for p in options.get("llm_profiles", []) if p["id"] == identifier), {})
+                saved_key = old.get("api_key", "") if old.get("base_url") == url else ""
+            key = data.get("api_key", saved_key)
+            if not isinstance(key, str) or len(key) > 1000 or any(ord(char) < 33 for char in key):
+                raise ValueError("Неверный ключ API.")
+            models = await list_models(self.service.http, url, key)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        except (TimeoutError, ClientError) as exc:
+            raise web.HTTPBadGateway(text="Сервер моделей недоступен.") from exc
+        return web.json_response({"models": models})
 
     async def entities(self, _request):
         brain = self.service.brain
@@ -516,25 +558,15 @@ class SetupPanel:
                     {"message": f"SpeechKit вернул {size} байт звука."}
                 )
             if check == "deepseek":
-                key = service.o.get("deepseek_api_key")
-                if not key:
-                    raise RuntimeError("Добавьте и примените ключ DeepSeek.")
-                async with service.http.get(
-                    "https://api.deepseek.com/models",
-                    headers={"Authorization": "Bearer " + key},
-                    timeout=ClientTimeout(total=8),
-                    allow_redirects=False,
-                ) as response:
-                    response.raise_for_status()
-                    models = (await response.json())["data"]
-                model = service.o.get("deepseek_model", "deepseek-flash")
-                if not any(item["id"] == model for item in models):
-                    raise RuntimeError(
-                        f"Модель {model} отсутствует в списке доступных."
-                    )
-                return web.json_response(
-                    {"message": f"Ключ принят, модель {model} доступна."}
-                )
+                profile = active_profile(service.o)
+                if not profile or (profile["id"] == "deepseek" and not profile["api_key"]):
+                    raise web.HTTPConflict(text="Настрой активный профиль LLM.")
+                models = await list_models(service.http, profile["base_url"], profile["api_key"])
+                message = f"{profile['name']} · {len(models)} моделей."
+                if profile["model"] not in models:
+                    message += " Выбранной модели нет в списке сервера."
+                return web.json_response({"message": message})
+
             raise web.HTTPNotFound()
         except (ClientError, TimeoutError) as exc:
             raise web.HTTPBadGateway(
@@ -549,6 +581,7 @@ class SetupPanel:
         app.router.add_static("/assets", ASSETS)
         app.router.add_get("/state", self.state)
         app.router.add_get("/entities", self.entities)
+        app.router.add_post("/llm/models", self.models)
         app.router.add_put("/settings", self.save)
         app.router.add_post("/restart", self.restart)
         app.router.add_get("/phone", self.phone_state)

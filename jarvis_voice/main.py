@@ -29,6 +29,7 @@ from family import GATE_ACTIONS, family_profiles, profile_key
 from personal import Personal, condition_matches
 from speech_cache import SpeechCache
 from microphone import MicrophoneMonitor
+from llm import active_profile
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOG = logging.getLogger(__name__)
@@ -323,11 +324,14 @@ class Server:
         key = member["key"]
         if key not in self.family_brains:
             entities = member["entities"]
+            access = member["access"]
             options = {
-                **self.o, "allowed_entities": entities, "observed_entities": entities,
-                "observe_all_entities": False, "control_all_entities": False, "camera_entity": "",
+                **self.o, "camera_entity": "",
                 "reminder_calendar": member["calendar"], "reminder_person": member["person"],
             }
+            if access != "owner":
+                options.update(allowed_entities=entities, observed_entities=entities,
+                               observe_all_entities=access == "read_all", control_all_entities=False)
             self.family_brains[key] = Brain(
                 options, self.http, None, personal=self.personal, profile=key,
                 profile_name=member["name"], timezone_name=self.brain.timezone.key,
@@ -470,7 +474,8 @@ class Server:
                 "microphone_configured":bool(self.o.get("q1_mic_device")),
                 "speaker_configured":bool(self.o.get("q1_speaker_device")),
                 "speech_configured":self.speech is not None,
-                "assistant_configured":bool(self.o.get("deepseek_api_key")),
+                "assistant_configured":bool((profile := active_profile(self.o)) and profile["model"] and
+                                            (profile["id"] != "deepseek" or profile["api_key"])),
             }})
 
     async def dial(self, request):

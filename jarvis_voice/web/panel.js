@@ -31,8 +31,143 @@ let catalog = [];
 let catalogError = false;
 let dirty = false;
 const domainLabels = {light:"Свет", switch:"Выключатели", cover:"Приводы", fan:"Вентиляторы",
-  scene:"Сцены", media_player:"Медиаплееры"};
+  scene:"Сцены", media_player:"Медиаплееры", climate:"Климат", humidifier:"Влажность",
+  vacuum:"Пылесосы", input_boolean:"Логические помощники"};
 let controlDomains = Object.keys(domainLabels);
+
+
+const activeLLM = form.elements.namedItem("llm_active");
+const llmProfiles = document.querySelector("#llm-profiles");
+const deepseekCard = document.querySelector("#llm-deepseek");
+const profileTemplate = document.querySelector("#llm-profile");
+let profilesDirty = false;
+
+function llmCards() {
+  return [...llmProfiles.querySelectorAll("[data-llm-id]")];
+}
+function refreshProviders(selected) {
+  activeLLM.replaceChildren(new Option("DeepSeek", "deepseek"),
+    ...llmCards().map(card => new Option(card.querySelector("[data-llm-name]").value || "Новый сервер", card.dataset.llmId)));
+  activeLLM.value = [...activeLLM.options].some(option => option.value === selected) ? selected : "deepseek";
+}
+function modelInputs(card) {
+  if (card === deepseekCard) {
+    return {id: "deepseek", model: form.elements.namedItem("deepseek_model"),
+      key: form.elements.namedItem("deepseek_api_key"), clear: document.querySelector("#clear-deepseek")};
+  }
+  return {id: card.dataset.llmId, model: card.querySelector("[data-llm-model]"),
+    key: card.querySelector("[data-llm-key]"), clear: card.querySelector("[data-llm-clear]"),
+    url: card.querySelector("[data-llm-url]")};
+}
+async function loadModels(card, force = false) {
+  const fields = modelInputs(card);
+  const endpoint = fields.url?.value.trim() || "";
+  if (fields.url && !/^https?:\/\//i.test(endpoint)) return;
+  if (card === deepseekCard && !fields.key.value.trim() && !current?.keys?.deepseek_api_key) return;
+  if (!force && card.dataset.modelsLoaded === "yes") return;
+  const ticket = String(Number(card.dataset.modelsRequest || "0") + 1);
+  card.dataset.modelsRequest = ticket;
+  const output = card.querySelector("[data-model-status]");
+  output.textContent = "Загружаем модели…";
+  output.dataset.error = "false";
+  const data = {id: fields.id};
+  if (fields.url) data.base_url = endpoint;
+  if (fields.key.value.trim() || fields.clear.checked) data.api_key = fields.key.value.trim();
+  try {
+    const result = await (await request("llm/models", "POST", data)).json();
+    if (card.dataset.modelsRequest !== ticket) return;
+    const list = card.querySelector("datalist");
+    list.replaceChildren(...result.models.map(model => new Option(model, model)));
+    if (!fields.model.value && result.models.length === 1) {
+      fields.model.value = result.models[0];
+      fields.model.dispatchEvent(new Event("input", {bubbles: true}));
+    }
+    card.dataset.modelsLoaded = "yes";
+    output.textContent = result.models.length ? "Доступно моделей: " + result.models.length : "Список пуст. Введи ID модели вручную.";
+  } catch (error) {
+    if (card.dataset.modelsRequest !== ticket) return;
+    output.textContent = error.message;
+    output.dataset.error = "true";
+  }
+}
+function wireModels(card) {
+  const fields = modelInputs(card);
+  card.querySelector("[data-model-load]").addEventListener("click", () => loadModels(card, true));
+  for (const field of [fields.url, fields.key, fields.clear].filter(Boolean)) {
+    field.addEventListener("change", () => {
+      card.dataset.modelsLoaded = "";
+      loadModels(card, true);
+    });
+  }
+}
+function loadActiveModels() {
+  const card = activeLLM.value === "deepseek" ? deepseekCard
+    : llmCards().find(card => card.dataset.llmId === activeLLM.value);
+  if (card) loadModels(card);
+}
+function addLLM(profile) {
+  const card = profileTemplate.content.firstElementChild.cloneNode(true);
+  card.dataset.llmId = profile.id;
+  const fields = modelInputs(card);
+  const name = card.querySelector("[data-llm-name]");
+  const effort = card.querySelector("[data-llm-effort]");
+  const title = card.querySelector("summary");
+  title.textContent = profile.name || "Новый сервер";
+  name.value = profile.name;
+  fields.url.value = profile.base_url;
+  fields.model.value = profile.model;
+  effort.value = profile.effort;
+  fields.key.placeholder = profile.has_key ? "Сохранён · можно заменить" : "Необязательно для локального сервера";
+  fields.clear.disabled = !profile.has_key;
+  const list = card.querySelector("datalist");
+  list.id = "llm-models-" + profile.id;
+  fields.model.setAttribute("list", list.id);
+  card.addEventListener("input", () => { profilesDirty = true; });
+  name.addEventListener("input", () => {
+    title.textContent = name.value || "Новый сервер";
+    refreshProviders(activeLLM.value);
+  });
+  card.addEventListener("toggle", () => { if (card.open) loadModels(card); });
+  card.querySelector("[data-llm-remove]").addEventListener("click", () => {
+    const selected = activeLLM.value;
+    card.remove();
+    refreshProviders(selected);
+    profilesDirty = true;
+    changed();
+  });
+  llmProfiles.append(card);
+  wireModels(card);
+  return card;
+}
+function readLLMProfiles() {
+  return llmCards().map(card => {
+    const fields = modelInputs(card);
+    const profile = {id: fields.id, name: card.querySelector("[data-llm-name]").value.trim(),
+      base_url: fields.url.value.trim(), model: fields.model.value.trim(),
+      effort: card.querySelector("[data-llm-effort]").value};
+    if (fields.key.value.trim() || fields.clear.checked) profile.api_key = fields.key.value.trim();
+    return profile;
+  });
+}
+function renderLLM(state) {
+  llmProfiles.replaceChildren();
+  for (const profile of state.llm_profiles || []) addLLM(profile);
+  refreshProviders(state.options.llm_active || "deepseek");
+  profilesDirty = false;
+  if (!document.querySelector('[data-view="voice"]').hidden) loadActiveModels();
+}
+wireModels(deepseekCard);
+activeLLM.addEventListener("change", loadActiveModels);
+document.querySelector("#llm-add").addEventListener("click", () => {
+  const id = "llm-" + [...crypto.getRandomValues(new Uint8Array(8))]
+    .map(value => value.toString(16).padStart(2, "0")).join("");
+  const card = addLLM({id, name:"", base_url:"", model:"", effort:"default"});
+  card.open = true;
+  refreshProviders(activeLLM.value);
+  card.querySelector("[data-llm-name]").focus();
+  profilesDirty = true;
+  changed();
+});
 
 function setTab(key) {
   if (!tabs.some(tab => tab.dataset.tab === key)) key = "calls";
@@ -43,6 +178,7 @@ function setTab(key) {
   for (const view of views) view.hidden = view.dataset.view !== key;
   form.hidden = key === "history";
   if (key === "calls" || key === "hardware") refreshPhone();
+  if (key === "voice" && current) loadActiveModels();
 }
 for (const tab of tabs) tab.addEventListener("click", () => {
   location.hash = tab.dataset.tab;
@@ -72,7 +208,7 @@ form.addEventListener("input", event => {
 
 const normalized = text => String(text || "").toLocaleLowerCase("ru").replaceAll("ё", "е");
 
-function makePicker(host, accessibleName) {
+function makePicker(host, accessibleName, roomSelection = false) {
   const value = host.querySelector("input, textarea");
   const multiple = host.hasAttribute("data-multiple");
   const filter = host.dataset.entity;
@@ -88,6 +224,21 @@ function makePicker(host, accessibleName) {
   results.hidden = true;
   host.classList.add("picker");
   host.append(current, search, results);
+  let rooms;
+  if (roomSelection) {
+    rooms = document.createElement("select");
+    rooms.setAttribute("aria-label", "Добавить устройства комнаты");
+    rooms.addEventListener("input", event => event.stopPropagation());
+    rooms.addEventListener("change", event => {
+      event.stopPropagation();
+      if (rooms.value) {
+        const ids = catalog.filter(row => row.area === rooms.value && matches(row)).map(row => row.id);
+        write([...new Set([...values(), ...ids])]);
+        rooms.value = "";
+      }
+    });
+    host.append(rooms);
+  }
 
   const values = () => value.value.trim().split(/\s+/).filter(Boolean);
   function matches(row) {
@@ -164,8 +315,16 @@ function makePicker(host, accessibleName) {
       results.querySelector("button")?.focus();
     }
   });
-  pickers.set(host, renderSelection);
-  renderSelection();
+  function renderPicker() {
+    renderSelection();
+    if (rooms) {
+      const labels = [...new Set(catalog.filter(matches).map(row => row.area).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, "ru"));
+      rooms.replaceChildren(new Option("Добавить всю комнату…", ""), ...labels.map(label => new Option(label, label)));
+    }
+  }
+  pickers.set(host, renderPicker);
+  renderPicker();
 }
 
 function syncFamily() {
@@ -193,6 +352,7 @@ function addFamily(line = "", expand = false) {
   const definitions = [
     ["Имя"], ["Номер телефона"], ["Доступ к устройствам", "", true],
     ["Калитка", "gate"], ["Личный календарь", "calendar"], ["Местоположение", "person"],
+    ["Права доступа"],
   ];
   for (const [index, [label, filter, multiple]] of definitions.entries()) {
     const field = document.createElement(filter === undefined ? "label" : "div");
@@ -200,9 +360,14 @@ function addFamily(line = "", expand = false) {
     const title = document.createElement("span");
     title.textContent = label;
     field.append(title);
-    const input = document.createElement("input");
+    const input = document.createElement(index === 6 ? "select" : "input");
     input.dataset.profileValue = "";
-    input.value = data[index] || "";
+    if (index === 6) input.replaceChildren(
+      new Option("Только выбранные устройства", "selected"),
+      new Option("Читать весь дом · управлять выбранными", "read_all"),
+      new Option("Доступ к устройствам как у владельца", "owner"),
+    );
+    input.value = data[index] || (index === 6 ? "selected" : "");
     if (index === 0) input.addEventListener("input", () => { heading.textContent = input.value || "Новый участник"; });
     if (index === 1) {
       input.type = "tel";
@@ -215,7 +380,7 @@ function addFamily(line = "", expand = false) {
       if (multiple) host.dataset.multiple = "";
       host.append(input);
       field.append(host);
-      makePicker(host, label + " участника");
+      makePicker(host, label + " участника", index === 2);
     } else field.append(input);
     fields.append(field);
   }
@@ -360,6 +525,7 @@ function render(state) {
     document.querySelector(secret.clear).checked = false;
     document.querySelector(secret.clear).disabled = !state.keys[secret.field];
   }
+  renderLLM(state);
   addChoices("#serial-ports", state.devices.serial);
   addChoices("#video-nodes", state.devices.video);
   routes.forEach(route => setRoute(route, state));
@@ -412,6 +578,7 @@ async function persistSettings() {
     const value = form.elements.namedItem(secret.field).value.trim();
     if (value || document.querySelector(secret.clear).checked) options[secret.field] = value;
   }
+  if (profilesDirty) options.llm_profiles = readLLMProfiles();
   const audio = {};
   for (const route of routes) {
     const choice = document.querySelector(route.select).value;
