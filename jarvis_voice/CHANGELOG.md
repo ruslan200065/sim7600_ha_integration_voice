@@ -1,3 +1,7 @@
+## 0.4.20 (experimental)
+
+- Speak only the latest conversation turn while earlier actions finish in the background.
+
 ## 0.4.19 (experimental)
 
 - Accept natural requests for camera photos without asking the caller to repeat the command.

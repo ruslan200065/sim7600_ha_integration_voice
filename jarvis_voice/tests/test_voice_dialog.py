@@ -55,24 +55,25 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
         brain.reply.assert_awaited_once_with("Какая погода сегодня?")
         hangup.assert_awaited_once()
 
-    async def test_tool_survives_interruption_and_reports_after_new_reply(self):
+    async def test_tool_survives_interruption_without_replaying_stale_reply(self):
         progress_played = asyncio.Event()
         new_answer_played = asyncio.Event()
-        completion_played = asyncio.Event()
+        tool_completed = asyncio.Event()
+        spoken = []
 
         async def play(text):
+            spoken.append(text)
             if text == "Готовлю снимок":
                 progress_played.set()
                 await asyncio.Future()
             elif text == "Свет включён":
                 new_answer_played.set()
-            elif text == "Фото отправлено":
-                completion_played.set()
 
         async def brain(phrase, *, on_progress):
             if phrase == "Отправь фото":
                 on_progress("Готовлю снимок")
                 await new_answer_played.wait()
+                tool_completed.set()
                 return "Фото отправлено"
             return "Свет включён"
 
@@ -87,9 +88,11 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
                     await progress_played.wait()
                     on_partial("А свет")
                     return "А свет включён?"
-                await completion_played.wait()
+                await tool_completed.wait()
+                await asyncio.sleep(0)
                 return "До свидания"
 
         async with asyncio.timeout(2):
             await run_dialog(Speech(), brain, asyncio.Queue(), play, AsyncMock(), "Привет",
                              background_tools=True)
+        self.assertNotIn("Фото отправлено", spoken)

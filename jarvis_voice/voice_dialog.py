@@ -55,9 +55,9 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
     async def playback():
         nonlocal playing
         while True:
-            text, turn, background = await output.get()
+            text, turn = await output.get()
             await audio_ready.wait()
-            if background or turn == generation:
+            if turn == generation:
                 playing = asyncio.create_task(speak(text))
                 try:
                     await asyncio.gather(playing, return_exceptions=True)
@@ -65,21 +65,19 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                     playing = None
 
     async def answer(phrase, turn):
-        has_tool = False
-
         def progress(text):
-            nonlocal has_tool
-            has_tool = True
-            output.put_nowait((text, turn, False))
+            if turn == generation:
+                output.put_nowait((text, turn))
 
         if background_tools:
             text = await reply_to(phrase, on_progress=progress)
         else:
             text = await reply_to(phrase)
         LOG.info("LLM answer length=%d", len(text))
-        output.put_nowait((text, turn, has_tool))
+        if turn == generation:
+            output.put_nowait((text, turn))
 
-    output.put_nowait((prompt, generation, False))
+    output.put_nowait((prompt, generation))
     async with asyncio.TaskGroup() as tasks:
         player = tasks.create_task(playback())
         try:
@@ -122,7 +120,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                     await hangup()
                     return
                 if len(pending) >= 4:
-                    output.put_nowait(("Секунду, ещё выполняю предыдущие запросы.", generation, False))
+                    output.put_nowait(("Секунду, ещё выполняю предыдущие запросы.", generation))
                     continue
                 task = tasks.create_task(answer(phrase, generation))
                 pending.add(task)
