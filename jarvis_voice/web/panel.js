@@ -268,6 +268,8 @@ volteButton.addEventListener("click", async () => {
 const historyType = document.querySelector("#history-type");
 const historyStatus = document.querySelector("#history-status");
 const historyItems = document.querySelector("#history-items");
+const historyNewer = document.querySelector("#history-newer");
+const historyPage = document.querySelector("#history-page");
 const historyOlder = document.querySelector("#history-older");
 const historyStates = {
   ringing: "Звонит", dialing: "Набор", connected: "Разговор",
@@ -275,21 +277,30 @@ const historyStates = {
   interrupted: "Прерван", received: "Получено",
 };
 let historyOffset = 0;
+let historyPageSize = 50;
+let historyHasMore = false;
 let historyRequest = 0;
 
-async function loadHistory(append = false) {
+async function loadHistory(offset = 0) {
   const ticket = ++historyRequest;
   const params = new URLSearchParams();
   if (historyType.value) params.set("type", historyType.value);
-  if (append) params.set("offset", historyOffset);
+  params.set("offset", offset);
+  historyNewer.disabled = true;
   historyOlder.disabled = true;
   try {
     const result = await (await request("history?" + params)).json();
     if (ticket !== historyRequest) return;
-    if (!append) {
-      historyItems.replaceChildren();
-      historyOffset = 0;
+    historyPageSize = result.page_size;
+    const pageCount = Math.max(1, Math.ceil(result.total / historyPageSize));
+    if (offset >= pageCount * historyPageSize) {
+      await loadHistory((pageCount - 1) * historyPageSize);
+      return;
     }
+    historyOffset = offset;
+    historyHasMore = result.more;
+    historyPage.textContent = "Страница " + (Math.floor(offset / historyPageSize) + 1) + " из " + pageCount;
+    historyItems.replaceChildren();
     for (const item of result.items) {
       const row = document.createElement("li");
       const heading = document.createElement("strong");
@@ -309,26 +320,28 @@ async function loadHistory(append = false) {
       }
       historyItems.append(row);
     }
-    historyOffset += result.items.length;
     const storage = Object.entries(result.sms.storage || {})
       .map(([name, count]) => name + " " + count.used + "/" + count.total).join(" · ");
     historyStatus.dataset.error = String(Boolean(result.sms.error));
     historyStatus.textContent = result.sms.error || [
-      historyOffset ? "" : "Записей пока нет.",
+      result.total ? "Записей: " + result.total : "Записей пока нет.",
       storage ? "Память SMS: " + storage : "",
     ].filter(Boolean).join(" ");
-    historyOlder.hidden = !result.more;
   } catch (error) {
     if (ticket !== historyRequest) return;
     historyStatus.textContent = error.message;
     historyStatus.dataset.error = "true";
   } finally {
-    if (ticket === historyRequest) historyOlder.disabled = false;
+    if (ticket === historyRequest) {
+      historyNewer.disabled = historyOffset === 0;
+      historyOlder.disabled = !historyHasMore;
+    }
   }
 }
 
 historyType.addEventListener("change", () => loadHistory());
-historyOlder.addEventListener("click", () => loadHistory(true));
+historyNewer.addEventListener("click", () => loadHistory(historyOffset - historyPageSize));
+historyOlder.addEventListener("click", () => loadHistory(historyOffset + historyPageSize));
 document.querySelector("#history-refresh").addEventListener("click", async () => {
   try {
     await request("history/refresh", "POST");
@@ -338,7 +351,7 @@ document.querySelector("#history-refresh").addEventListener("click", async () =>
     historyStatus.dataset.error = "true";
     return;
   }
-  await loadHistory();
+  await loadHistory(historyOffset);
 });
 loadHistory();
 

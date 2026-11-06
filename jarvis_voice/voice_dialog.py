@@ -7,7 +7,11 @@ from difflib import SequenceMatcher
 
 LOG = logging.getLogger(__name__)
 STOP_WORDS = {"стоп", "подожди", "секунду", "погоди"}
-FAREWELLS = {"пока", "до свидания", "заверши звонок"}
+FAREWELLS = {
+    "пока", "до свидания", "до связи", "заверши звонок", "завершай звонок",
+    "можно завершить звонок", "положи трубку", "спасибо пока", "спасибо до связи",
+    "все больше ничего не нужно", "больше ничего не нужно",
+}
 
 
 def words(text):
@@ -29,7 +33,8 @@ def echoes_playback(phrase, outputs):
     return False
 
 
-async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, background_tools=False):
+async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, background_tools=False,
+                     keypad=None, on_key=None, idle_seconds=75):
     """Listen throughout a reply and interrupt once the caller is recognized."""
     clock = asyncio.get_running_loop().time
     last_spoken = []
@@ -51,6 +56,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
     playing = None
     generation = 0
     pending = set()
+    idle = None
 
     async def playback():
         nonlocal playing
@@ -77,9 +83,20 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
         if turn == generation:
             output.put_nowait((text, turn))
 
+    async def listen_keypad():
+        while True:
+            key = await keypad.get()
+            if idle is not None and not idle.expired():
+                idle.reschedule(clock() + idle_seconds)
+            turn = generation
+            text = await on_key(key)
+            if text and turn == generation:
+                output.put_nowait((text, turn))
+
     output.put_nowait((prompt, generation))
     async with asyncio.TaskGroup() as tasks:
         player = tasks.create_task(playback())
+        keys = tasks.create_task(listen_keypad()) if keypad is not None and on_key else None
         try:
             while True:
                 heard_playback = []
@@ -97,9 +114,26 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                         if playing and not playing.done():
                             playing.cancel()
 
-                phrase = await speech.recognize_live(
-                    source, threshold=450, on_voice_start=remember_output, on_partial=interrupt
-                )
+                try:
+                    async with asyncio.timeout(idle_seconds) as idle:
+                        def voice_started():
+                            remember_output()
+                            idle.reschedule(clock() + idle_seconds)
+
+                        phrase = await speech.recognize_live(
+                            source, threshold=450, on_voice_start=voice_started, on_partial=interrupt
+                        )
+                except TimeoutError:
+                    if not idle.expired():
+                        raise
+                    audio_ready.set()
+                    if pending or playing or not output.empty():
+                        continue
+                    await speak("До связи.")
+                    await hangup()
+                    return
+                finally:
+                    idle = None
                 remember_output()
                 tokens = words(phrase)
                 if not tokens or echoes_playback(tokens, heard_playback):
@@ -127,5 +161,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                 task.add_done_callback(pending.discard)
         finally:
             player.cancel()
+            if keys:
+                keys.cancel()
             for task in pending:
                 task.cancel()

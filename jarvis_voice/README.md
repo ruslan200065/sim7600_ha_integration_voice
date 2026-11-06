@@ -157,9 +157,10 @@ Open **Семья, память и напоминания** in the JARVIS panel.
 `name | number | entity IDs separated by spaces | gate entity | personal calendar | person entity`. Only the name and number
 are required. Keep the legacy owner number in its own field. Save and restart the add-on.
 Family callers can read and use supported controls for the entities assigned to their profile.
-A gate can be a dedicated `cover`, `lock`, `button` or `script`. Set the six-digit gate code
-in the panel. JARVIS requests it within the call before issuing the configured gate action.
-Speech recognition processes spoken codes. Choose a code unique to JARVIS.
+A gate can be a dedicated `cover`, `lock`, `button` or `script`. The gate code is optional. When configured, enter the digits followed by `#` on the phone
+keypad or say the digits. Press `*` to clear keypad input. Gate access remains limited to
+the assigned family caller. JARVIS ends a call on a farewell or after 75 seconds of silence
+when no reply or tool is in progress.
 
 Ask JARVIS to remember or forget a fact, or say when to remind you. Each caller has separate
 notes and recent conversational context. Successful reads and controls can teach the device for an exact repeated phrase. Notes and learned choices stay in the add-on database and can be used as context for

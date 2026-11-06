@@ -54,6 +54,7 @@ class Server:
         self.speech = None
         self.brain = None
         self.session = None
+        self.keypad = None
         self.session_lock = asyncio.Lock()
         self.auto_answer_task = None
         self.mode = "booting"
@@ -144,6 +145,17 @@ class Server:
             await self.http.close()
 
     async def event(self, name, data):
+        if name == "dtmf_received":
+            keypad = self.keypad
+            if keypad and keypad[0] == data["call_id"]:
+                keys = keypad[1]
+                if keys.full():
+                    while not keys.empty():
+                        keys.get_nowait()
+                    keys.put_nowait(None)
+                else:
+                    keys.put_nowait(data["digit"])
+            return
         self.events.append({"name":name,"data":data})
         self.events=self.events[-25:]
         LOG.info("JARVIS event: %s",name)
@@ -336,36 +348,71 @@ class Server:
             brain = self.caller_brain(member)
             pending_pin = 0.0
             attempts = 0
+            digits = ""
+            gate = member["gate"] if member else ""
+            pin = self.o.get("gate_pin", "")
             clock = asyncio.get_running_loop().time
+            call_id = self.modem.call_id
+            keypad = asyncio.Queue(maxsize=32)
+            self.keypad = (call_id, keypad)
+
+            async def open_gate():
+                if (self.modem.call_id, self.modem.call_state) != (call_id, "connected"):
+                    return ""
+                domain = gate.split(".", 1)[0]
+                try:
+                    await self.brain._ha("POST", f"/api/services/{domain}/{GATE_ACTIONS[domain]}",
+                                         {"entity_id": gate})
+                except (RuntimeError, TimeoutError, ClientError):
+                    return "Home Assistant не подтвердил команду открытия."
+                return "Команда открытия отправлена."
+
+            async def check_pin(candidate):
+                nonlocal pending_pin, attempts, digits
+                pending_pin = 0.0
+                digits = ""
+                attempts += 1
+                if not hmac.compare_digest(candidate, pin):
+                    return "Код не подошёл."
+                return await open_gate()
+
+            async def press(key):
+                nonlocal pending_pin, digits
+                if pending_pin <= clock():
+                    return ""
+                if key is None:
+                    pending_pin, digits = 0.0, ""
+                    return "Ввод прерван. Попроси открыть калитку ещё раз."
+                if key == "#":
+                    return await check_pin(digits)
+                if key == "*":
+                    digits = ""
+                elif key in "0123456789" and len(digits) <= len(pin):
+                    digits += key
+                pending_pin = clock() + 30
+                return ""
 
             async def reply(phrase, *, on_progress):
-                nonlocal pending_pin, attempts
+                nonlocal pending_pin, digits
                 if reminder_id:
                     if re.fullmatch(r"(?:да|давай|слушаю|напомни)[.! ]*", phrase.lower().strip()):
                         return prompt
                     return "Можно озвучить напоминание?"
-                gate = member["gate"] if member else ""
-                pin = self.o.get("gate_pin", "")
                 if pending_pin > clock():
-                    pending_pin = 0.0
-                    digits = re.sub(r"[^0-9]", "", phrase)
-                    attempts += 1
-                    if not hmac.compare_digest(digits, pin):
-                        return "Код не подошёл."
-                    domain = gate.split(".", 1)[0]
-                    try:
-                        await self.brain._ha("POST", f"/api/services/{domain}/{GATE_ACTIONS[domain]}",
-                                             {"entity_id": gate})
-                    except (RuntimeError, TimeoutError, ClientError):
-                        return "Home Assistant не подтвердил команду открытия."
-                    return "Команда открытия отправлена."
+                    spoken = phrase.strip().rstrip(".!?")
+                    if not digits and re.fullmatch(r"[0-9][0-9 ,\-]*", spoken):
+                        return await check_pin(re.sub(r"[^0-9]", "", spoken))
+                    return "Набери код и нажми решётку."
                 if gate and re.search(r"\b(?:откро|открыв|открыть|отопр)\w*", phrase, re.I) and re.search(r"\b(?:калит|ворот)\w*", phrase, re.I):
                     if re.search(r"\bне\s+(?:откро|открыв|открыть|отопр)\w*", phrase, re.I):
                         return "Хорошо."
-                    if not re.fullmatch(r"[0-9]{6}", pin) or attempts >= 3:
+                    if not pin:
+                        return await open_gate()
+                    if not re.fullmatch(r"[0-9]+", pin) or attempts >= 3:
                         return "Открытие по телефону недоступно."
+                    digits = ""
                     pending_pin = clock() + 30
-                    return "Назови шестизначный код."
+                    return "Набери код на клавиатуре и нажми решётку."
                 return await brain.reply(phrase, camera_entity=camera, on_progress=on_progress)
 
             async def play(text):
@@ -379,7 +426,7 @@ class Server:
                 self.speech, reply, self.audio.queue, play, self.modem.hangup,
                 ("У меня для вас напоминание. Можно озвучить?"
                  if reminder_id else prompt or "Здравствуйте. Это Джарвис. Слушаю вас."),
-                background_tools=True,
+                background_tools=True, keypad=keypad, on_key=press,
             )
         except asyncio.CancelledError:
             raise
@@ -389,6 +436,7 @@ class Server:
             LOG.exception("Voice session failed")
             # Do not hang up just because the speech service fails: leave the call under user control.
         finally:
+            self.keypad = None
             await self.audio.stop()
 
     @web.middleware

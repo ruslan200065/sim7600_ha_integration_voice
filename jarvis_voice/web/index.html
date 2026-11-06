@@ -95,8 +95,8 @@
               <label>Члены семьи<textarea name="family_members" rows="5"></textarea>
                 <span class="hint">По одному на строку: имя | номер в международном формате | ID устройств через пробел | ID калитки | личный календарь | person участника. Достаточно имени и номера.</span>
               </label>
-              <label>Код калитки<input name="gate_pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password">
-                <span class="hint">Шесть цифр. Запрашивается перед открытием назначенной этому участнику калитки.</span>
+              <label>Код калитки<input name="gate_pin" type="password" inputmode="numeric" autocomplete="new-password">
+                <span class="hint">Необязательно. Если задан, наберите цифры и решётку на клавиатуре телефона во время звонка.</span>
               </label>
               <label class="check"><input type="checkbox" id="clear-gate-pin"> Удалить код калитки</label>
               <label>Календарь напоминаний владельца<input name="reminder_calendar" placeholder="calendar.reminders"></label>
@@ -155,7 +155,11 @@
       </div>
       <output id="history-status" aria-live="polite"></output>
       <ul id="history-items"></ul>
-      <button type="button" id="history-older" hidden>Показать более ранние</button>
+      <nav class="actions" aria-label="Страницы журнала">
+        <button type="button" id="history-newer" disabled>Назад</button>
+        <output id="history-page" aria-live="polite">Страница 1</output>
+        <button type="button" id="history-older" disabled>Далее</button>
+      </nav>
     </section>
   </main>
 </body>

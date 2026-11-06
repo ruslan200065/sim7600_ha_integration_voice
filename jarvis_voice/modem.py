@@ -9,6 +9,7 @@ import serial
 LOG = logging.getLogger(__name__)
 NUMBER = re.compile(r"^\+?[0-9]{7,16}$")
 CALL_END = {"NO CARRIER", "BUSY", "NO ANSWER", "NO DIALTONE"}
+RX_DTMF = re.compile(r'\+RXDTMF:\s*"?([0-9*#A-D])"?(?:\s*,\s*\d+)?$')
 VOICE_RING = re.compile(r"(?:RING|\+CRING:\s*VOICE(?:/[^ ]+)?)$")
 CALL_STATUS = re.compile(
     r'\+CLCC:\s*\d+\s*,\s*([01])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*[01]'
@@ -128,6 +129,11 @@ class Modem:
             value = partial.decode("utf-8", "replace").strip()
             partial = b""
             if not value:
+                continue
+            if value.startswith("+RXDTMF:"):
+                match = RX_DTMF.fullmatch(value)
+                if match and self.call_state == "connected":
+                    await self._emit("dtmf_received", digit=match[1], call_id=self.call_id)
                 continue
             if VOICE_RING.fullmatch(value) or value.startswith(("VOICE CALL:", "+CLIP:")):
                 await self._urc(value)

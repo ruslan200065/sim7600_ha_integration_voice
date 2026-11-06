@@ -1,3 +1,9 @@
+## 0.4.24 (experimental)
+
+- Make the gate PIN optional and accept variable-length PINs over SIM7600 DTMF.
+- End phone calls on clear farewells or sustained inactivity.
+- Page through the calls and SMS journal with a filtered count and navigation controls.
+
 ## 0.4.23 (experimental)
 
 - Run a permitted device action once when a zone or device condition becomes true.

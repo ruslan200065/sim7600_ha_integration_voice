@@ -195,6 +195,9 @@ class History:
         return await asyncio.to_thread(self._run, self._page, kind, offset)
 
     def _page(self, conn, kind, offset):
+        conn.execute("BEGIN")
+        total = conn.execute("SELECT count(*) FROM history WHERE (? IS NULL OR kind=?)",
+                             (kind, kind)).fetchone()[0]
         rows = conn.execute(
             "SELECT kind,created_at,number,direction,state,text,connected_at,ended_at "
             "FROM history WHERE (? IS NULL OR kind=?) ORDER BY created_at DESC,id DESC "
@@ -204,4 +207,6 @@ class History:
         return {
             "items": [dict(row) for row in rows[:PAGE_SIZE]],
             "more": len(rows) > PAGE_SIZE,
+            "total": total,
+            "page_size": PAGE_SIZE,
         }

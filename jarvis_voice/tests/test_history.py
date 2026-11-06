@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from history import History
+from history import History, PAGE_SIZE
 
 
 def sms_pdu(text, part=None):
@@ -63,3 +63,15 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[1]["direction"], "outgoing")
         self.assertIsNotNone(rows[1]["connected_at"])
         self.assertEqual(rows[2]["number"], "+1234")
+
+    async def test_page_count_and_offsets_respect_filter(self):
+        for call_id in range(PAGE_SIZE + 1):
+            await self.history.call("outgoing_call", {"call_id": call_id})
+        await self.history.import_sms(["+CMGL: 1,0,,30", sms_pdu("Тест"), "OK"])
+        first = await self.history.page("call", 0)
+        second = await self.history.page("call", PAGE_SIZE)
+        self.assertEqual((first["total"], first["page_size"]), (PAGE_SIZE + 1, PAGE_SIZE))
+        self.assertTrue(first["more"])
+        self.assertEqual(len(second["items"]), 1)
+        self.assertFalse(second["more"])
+        self.assertEqual((await self.history.page("sms", 0))["total"], 1)

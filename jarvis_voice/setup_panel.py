@@ -73,7 +73,7 @@ def validate_changes(changes, current):
     options = current.copy()
     for key, value in changes.items():
         if key in TEXT_FIELDS or key in SECRET_KEYS:
-            if not isinstance(value, str) or len(value) > TEXT_FIELDS.get(key, 512):
+            if not isinstance(value, str) or (key != "gate_pin" and len(value) > TEXT_FIELDS.get(key, 512)):
                 raise ValueError(f"Неверное значение поля {key}.")
             value = value.strip()
             if any(ord(char) < 32 for char in value):
@@ -130,8 +130,8 @@ def validate_changes(changes, current):
     if number and number.lstrip("+") in family:
         raise ValueError("Номер владельца уже добавлен отдельно.")
     pin = options.get("gate_pin", "")
-    if pin and not re.fullmatch(r"[0-9]{6}", pin):
-        raise ValueError("Код калитки должен состоять из шести цифр.")
+    if pin and not re.fullmatch(r"[0-9]+", pin):
+        raise ValueError("Код калитки должен содержать только цифры.")
     calendar = options.get("reminder_calendar", "")
     if calendar and (not ENTITY_ID.fullmatch(calendar) or not calendar.startswith("calendar.")):
         raise ValueError("Укажите календарь Home Assistant вида calendar.name.")

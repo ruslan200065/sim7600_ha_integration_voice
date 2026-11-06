@@ -96,3 +96,16 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
             await run_dialog(Speech(), brain, asyncio.Queue(), play, AsyncMock(), "Привет",
                              background_tools=True)
         self.assertNotIn("Фото отправлено", spoken)
+
+    async def test_hangs_up_on_silence(self):
+        class SilentSpeech:
+            async def recognize_live(self, *args, **kwargs):
+                await asyncio.Future()
+
+        hangup = AsyncMock()
+        play = AsyncMock()
+        async with asyncio.timeout(2):
+            await run_dialog(SilentSpeech(), AsyncMock(), asyncio.Queue(), play, hangup,
+                             "Привет", idle_seconds=0.02)
+        hangup.assert_awaited_once()
+        play.assert_any_await("До связи.")
