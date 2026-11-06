@@ -109,3 +109,33 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
                              "Привет", idle_seconds=0.02)
         hangup.assert_awaited_once()
         play.assert_any_await("До связи.")
+
+    async def test_status_question_keeps_the_original_reply(self):
+        status = asyncio.Event()
+        completed = asyncio.Event()
+
+        async def play(text):
+            if text == "Я услышал, ещё разбираюсь.":
+                status.set()
+            if text == "Температура двадцать градусов.":
+                completed.set()
+
+        class Speech:
+            turn = 0
+            async def recognize_live(self, _source, *, on_partial, **kwargs):
+                self.turn += 1
+                if self.turn == 1:
+                    return "Какая температура?"
+                if self.turn == 2:
+                    on_partial("Чё молчишь")
+                    return "Чё молчишь?"
+                await completed.wait()
+                return "До свидания"
+
+        async def reply(text):
+            self.assertEqual(text, "Какая температура?")
+            await status.wait()
+            return "Температура двадцать градусов."
+
+        async with asyncio.timeout(2):
+            await run_dialog(Speech(), reply, asyncio.Queue(), play, AsyncMock(), "Привет")

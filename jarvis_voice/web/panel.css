@@ -90,3 +90,6 @@ audio {max-width:100%}
 @media(max-width:510px) {
   .fields,.checks {grid-template-columns:minmax(0,1fr)}
 }
+
+.personal-section {margin-bottom:22px}
+.personal-section > .muted {margin:0 0 12px}

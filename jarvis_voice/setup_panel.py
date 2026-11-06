@@ -1,6 +1,7 @@
 """Administrator-only Home Assistant ingress for settings and hardware checks."""
 
 import asyncio
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import io
@@ -334,6 +335,76 @@ class SetupPanel:
         except web.HTTPException as exc:
             LOG.warning("Could not restart add-on from ingress: %s", exc.status)
 
+    def personal_profiles(self):
+        service = self.service
+        return {
+            service.owner_key or "local": service.o.get("owner_name") or "Владелец",
+            **{member["key"]: member["name"] for member in service.family.values()},
+        }
+
+    async def personal(self, request):
+        profiles = self.personal_profiles()
+        profile = request.query.get("profile") or next(iter(profiles))
+        if profile not in profiles:
+            raise web.HTTPNotFound(text="Профиль не найден.")
+        data = await asyncio.to_thread(self.service.personal.dashboard, profile)
+        return web.json_response({**data, "profile": profile,
+                                  "profiles": [{"id": key, "name": name} for key, name in profiles.items()]})
+
+    async def personal_edit(self, request):
+        profile = request.query.get("profile")
+        kind, identifier = request.match_info["kind"], request.match_info["id"]
+        if profile not in self.personal_profiles() or kind not in {"notes", "preferences", "reminders"}:
+            raise web.HTTPNotFound(text="Запись не найдена.")
+        store = self.service.personal
+        if request.method == "DELETE":
+            changed = await asyncio.to_thread(store.remove_record, profile, kind, identifier)
+        else:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise web.HTTPBadRequest(text="Неверные данные записи.")
+            text = data.get("text")
+            if not isinstance(text, str) or not 0 < len(text.strip()) <= 500:
+                raise web.HTTPBadRequest(text="Введи текст до 500 символов.")
+            text = text.strip()
+            if kind == "notes":
+                changed = await asyncio.to_thread(store.edit_note, profile, identifier, text)
+            elif kind == "preferences":
+                entity = data.get("entity")
+                if not isinstance(entity, str) or not ENTITY_ID.fullmatch(entity):
+                    raise web.HTTPBadRequest(text="Выбери сущность Home Assistant.")
+                text = " ".join(re.findall(r"[a-zа-я0-9]+", text.lower().replace("ё", "е")))[:160]
+                if not text:
+                    raise web.HTTPBadRequest(text="Введи фразу для запоминания.")
+                changed = await asyncio.to_thread(store.edit_preference, profile, identifier, text, entity)
+            else:
+                due = data.get("due")
+                if due is not None:
+                    try:
+                        due = datetime.fromisoformat(due)
+                        if due.tzinfo is None or due <= datetime.now(timezone.utc):
+                            raise ValueError
+                        due = due.timestamp()
+                    except (ValueError, TypeError, OverflowError, OSError) as exc:
+                        raise web.HTTPBadRequest(text="Выбери будущую дату и время.") from exc
+                value = data.get("value")
+                if value is not None and (not isinstance(value, str) or not 0 < len(value.strip()) <= 80):
+                    raise web.HTTPBadRequest(text="Введи значение условия.")
+                if value is not None:
+                    existing = await asyncio.to_thread(store.dashboard, profile)
+                    condition = next((item["condition"] for item in existing["reminders"] if item["id"] == identifier), None)
+                    if condition and condition.get("operator") in {"above", "below"}:
+                        try:
+                            if not -1e20 <= float(value) <= 1e20:
+                                raise ValueError
+                        except ValueError as exc:
+                            raise web.HTTPBadRequest(text="Введи числовой порог.") from exc
+                changed = await asyncio.to_thread(store.edit_reminder, profile, identifier, text, due,
+                                                  value.strip() if value is not None else None)
+        if not changed:
+            raise web.HTTPConflict(text="Запись уже изменилась, выполнена или совпадает с другой.")
+        return web.json_response({"updated": True})
+
     async def models(self, request):
         try:
             data = await request.json()
@@ -583,6 +654,9 @@ class SetupPanel:
         app.router.add_get("/state", self.state)
         app.router.add_get("/entities", self.entities)
         app.router.add_post("/llm/models", self.models)
+        app.router.add_get("/personal", self.personal)
+        app.router.add_patch("/personal/{kind}/{id}", self.personal_edit)
+        app.router.add_delete("/personal/{kind}/{id}", self.personal_edit)
         app.router.add_put("/settings", self.save)
         app.router.add_post("/restart", self.restart)
         app.router.add_get("/phone", self.phone_state)

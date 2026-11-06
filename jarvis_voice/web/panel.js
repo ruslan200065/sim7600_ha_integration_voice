@@ -169,6 +169,144 @@ document.querySelector("#llm-add").addEventListener("click", () => {
   changed();
 });
 
+
+const personalProfile = document.querySelector("#personal-profile");
+const personalStatus = document.querySelector("#personal-status");
+const personalContent = document.querySelector("#personal-content");
+let personalRequest = 0;
+
+function personalInput(title, element) {
+  const label = document.createElement("label");
+  label.textContent = title;
+  label.append(element);
+  return label;
+}
+function localDate(value) {
+  const date = new Date(value * 1000);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+function personalRecord(kind, record, profile) {
+  const card = document.createElement("article");
+  card.className = "card";
+  const fields = document.createElement("div");
+  fields.className = "fields";
+  const text = document.createElement("textarea");
+  text.rows = 2;
+  text.maxLength = 500;
+  text.value = kind === "preferences" ? record.phrase : record.text;
+  text.readOnly = Boolean(record.completed);
+  fields.append(personalInput(kind === "preferences" ? "Фраза" : "Текст", text));
+  let entity, due, threshold;
+  if (kind === "preferences") {
+    entity = document.createElement("input");
+    entity.value = record.entity;
+    entity.setAttribute("list", "personal-entities");
+    fields.append(personalInput("Устройство", entity));
+  }
+  if (kind === "reminders") {
+    const details = document.createElement("p");
+    details.className = "hint";
+    const condition = record.condition;
+    const label = condition?.action ? "Одноразовое действие" : "Личное напоминание";
+    const state = record.completed ? "Завершено" : "Ожидает";
+    const action = condition?.action ? [condition.action.entity_id, condition.action.service].join(" · ") : "";
+    const trigger = condition?.zone || condition?.entity || "";
+    const runStatus = {accepted:"Команда принята", blocked:"Заблокировано", unconfirmed:"Нет подтверждения",
+      started:"Запуск начат", profile_removed:"Профиль удалён"};
+    details.textContent = [label, state, trigger, action, runStatus[record.status]].filter(Boolean).join(" · ");
+    card.append(details);
+    if (record.due && (!condition || condition.kind === "time")) {
+      due = document.createElement("input");
+      due.type = "datetime-local";
+      due.value = localDate(record.due);
+      due.disabled = record.completed;
+      fields.append(personalInput("Дата и время", due));
+    }
+    if (condition?.kind === "state") {
+      threshold = document.createElement("input");
+      threshold.value = condition.value;
+      threshold.disabled = record.completed;
+      const operation = {above:"Выше",below:"Ниже",equals:"Равно"}[condition.operator];
+      fields.append(personalInput(operation || "Значение условия", threshold));
+    }
+  }
+  card.append(fields);
+  const actions = document.createElement("div");
+  actions.className = "actions phone-actions";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = "Сохранить запись";
+  save.disabled = Boolean(record.completed);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = kind === "reminders" && !record.completed ? "Отменить" : "Удалить";
+  actions.append(save, remove);
+  card.append(actions);
+  const path = "personal/" + kind + "/" + encodeURIComponent(record.id) + "?profile=" + encodeURIComponent(profile);
+  async function update(method, data) {
+    save.disabled = true;
+    remove.disabled = true;
+    try {
+      await request(path, method, data);
+      if (personalProfile.value === profile) await loadPersonal();
+    } catch (error) {
+      personalStatus.textContent = error.message;
+      personalStatus.dataset.error = "true";
+      save.disabled = Boolean(record.completed);
+      remove.disabled = false;
+    }
+  }
+  save.addEventListener("click", () => {
+    const data = {text: text.value.trim()};
+    if (entity) data.entity = entity.value.trim();
+    if (due && due.value && due.value !== localDate(record.due)) data.due = new Date(due.value).toISOString();
+    if (threshold && threshold.value !== record.condition.value) data.value = threshold.value.trim();
+    update("PATCH", data);
+  });
+  remove.addEventListener("click", () => {
+    if (window.confirm("Убрать эту запись?")) update("DELETE");
+  });
+  return card;
+}
+
+async function loadPersonal() {
+  const ticket = ++personalRequest;
+  const selected = personalProfile.value;
+  personalStatus.textContent = "Загружаем записи…";
+  personalStatus.dataset.error = "false";
+  try {
+    const data = await (await request("personal" + (selected ? "?profile=" + encodeURIComponent(selected) : ""))).json();
+    if (ticket !== personalRequest) return;
+    personalProfile.replaceChildren(...data.profiles.map(profile => new Option(profile.name, profile.id)));
+    personalProfile.value = data.profile;
+    const list = document.querySelector("#personal-entities");
+    list.replaceChildren(...catalog.map(row => new Option([row.name,row.area].filter(Boolean).join(" · "), row.id)));
+    personalContent.replaceChildren();
+    for (const [kind, title] of [["reminders", "Напоминания и правила"], ["notes", "Заметки"], ["preferences", "Привычки и предпочтения"]]) {
+      const section = document.createElement("section");
+      section.className = "personal-section";
+      const heading = document.createElement("h3");
+      heading.textContent = title + " · " + data[kind].length;
+      section.append(heading);
+      for (const item of data[kind]) section.append(personalRecord(kind, item, data.profile));
+      if (!data[kind].length) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "Здесь пока пусто.";
+        section.append(empty);
+      }
+      personalContent.append(section);
+    }
+    personalStatus.textContent = "";
+  } catch (error) {
+    if (ticket !== personalRequest) return;
+    personalStatus.textContent = error.message;
+    personalStatus.dataset.error = "true";
+  }
+}
+personalProfile.addEventListener("change", loadPersonal);
+document.querySelector("#personal-refresh").addEventListener("click", loadPersonal);
+
 function setTab(key) {
   if (!tabs.some(tab => tab.dataset.tab === key)) key = "calls";
   for (const tab of tabs) {
@@ -176,7 +314,8 @@ function setTab(key) {
     else tab.removeAttribute("aria-current");
   }
   for (const view of views) view.hidden = view.dataset.view !== key;
-  form.hidden = key === "history";
+  form.hidden = key === "history" || key === "personal";
+  if (key === "personal") loadPersonal();
   if (key === "calls" || key === "hardware") refreshPhone();
   if (key === "voice" && current) loadActiveModels();
 }

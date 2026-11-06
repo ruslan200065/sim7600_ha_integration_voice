@@ -53,6 +53,21 @@ class PersonalTests(unittest.TestCase):
             self.assertFalse(store.claim_action(identifier))
             self.assertEqual(store.due_actions(now), [])
 
+    def test_dashboard_edits_are_scoped_and_finished_rules_are_immutable(self):
+        with TemporaryDirectory() as directory:
+            store = Personal(Path(directory) / "data.sqlite3")
+            store.remember("first", "draft")
+            note = store.dashboard("first")["notes"][0]
+            self.assertFalse(store.edit_note("second", note["id"], "foreign"))
+            self.assertTrue(store.edit_note("first", note["id"], "updated"))
+            now = datetime.now(timezone.utc)
+            identifier = store.reminder("first", "First", "original", now)
+            self.assertTrue(store.edit_reminder("first", identifier, "changed", now.timestamp() + 60, None))
+            self.assertEqual(store.dashboard("first")["reminders"][0]["text"], "changed")
+            store.delivered(identifier)
+            self.assertFalse(store.edit_reminder("first", identifier, "different", None, None))
+            self.assertTrue(store.remove_record("first", "reminders", identifier))
+
 
 class SpeechCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_cache_reuses_complete_pcm(self):

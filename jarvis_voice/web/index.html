@@ -22,6 +22,7 @@
         <button type="button" data-tab="family">Семья</button>
         <button type="button" data-tab="devices">Устройства</button>
         <button type="button" data-tab="voice">Голос и интеграции</button>
+        <button type="button" data-tab="personal">Память и правила</button>
         <button type="button" data-tab="history">Журнал</button>
         <button type="button" data-tab="hardware">Оборудование</button>
       </nav>
@@ -193,6 +194,16 @@
             </div>
           </fieldset>
         </form>
+    <section class="view" data-view="personal" hidden>
+      <div class="section-heading"><div><p class="eyebrow">Личный помощник</p><h2>Память и правила</h2></div></div>
+      <div class="card actions">
+        <label>Профиль<select id="personal-profile"></select></label>
+        <button type="button" id="personal-refresh">Обновить</button>
+      </div>
+      <output id="personal-status" aria-live="polite"></output>
+      <datalist id="personal-entities"></datalist>
+      <div id="personal-content"></div>
+    </section>
     <section class="card view" data-view="history" hidden aria-labelledby="history-title">
       <h2 id="history-title">Звонки и SMS</h2>
       <div class="actions history-controls">

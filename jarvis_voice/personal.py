@@ -59,6 +59,49 @@ class Personal:
                     json.dumps(condition, ensure_ascii=False) if condition else None))
         return identifier
 
+    def dashboard(self, profile):
+        notes = [{"id": i, "text": text} for i, text in self.query(
+            "SELECT rowid,note FROM notes WHERE profile=? ORDER BY rowid DESC", (profile,))]
+        preferences = [{"id": i, "phrase": phrase, "entity": entity, "count": count}
+                       for i, phrase, entity, count in self.query(
+            "SELECT rowid,phrase,entity,count FROM preferences WHERE profile=? ORDER BY count DESC", (profile,))]
+        reminders = [{"id": i, "text": text, "due": due, "completed": bool(delivered),
+                      "condition": json.loads(condition) if condition else None, "status": status}
+                     for i, text, due, delivered, condition, status in self.query(
+            """SELECT reminders.id,text,due,delivered,condition,status FROM reminders
+            LEFT JOIN action_runs USING(id) WHERE profile=? ORDER BY delivered, due, reminders.rowid DESC""",
+            (profile,))]
+        return {"notes": notes, "preferences": preferences, "reminders": reminders}
+
+    def edit_note(self, profile, identifier, text):
+        return bool(self.query("UPDATE OR IGNORE notes SET note=? WHERE profile=? AND rowid=? RETURNING rowid",
+                               (text, profile, identifier)))
+
+    def edit_preference(self, profile, identifier, phrase, entity):
+        return bool(self.query("""UPDATE OR IGNORE preferences SET phrase=?,entity=?,count=MAX(count,2)
+            WHERE profile=? AND rowid=? RETURNING rowid""", (phrase, entity, profile, identifier)))
+
+    def edit_reminder(self, profile, identifier, text, due, condition_value):
+        if due is not None:
+            return bool(self.query("""UPDATE reminders SET text=?,due=?,retry_at=0
+                WHERE profile=? AND id=? AND delivered=0 AND due IS NOT NULL
+                AND (condition IS NULL OR json_extract(condition,'$.kind')='time') RETURNING id""",
+                (text, due, profile, identifier)))
+        if condition_value is not None:
+            return bool(self.query("""UPDATE reminders SET text=?,armed=0,due=NULL,retry_at=0,
+                condition=json_set(condition,'$.value',?)
+                WHERE profile=? AND id=? AND delivered=0 AND json_extract(condition,'$.kind')='state'
+                RETURNING id""", (text, condition_value, profile, identifier)))
+        return bool(self.query("UPDATE reminders SET text=? WHERE profile=? AND id=? AND delivered=0 RETURNING id",
+                               (text, profile, identifier)))
+
+    def remove_record(self, profile, kind, identifier):
+        tables = {"notes": ("notes", "rowid"), "preferences": ("preferences", "rowid"),
+                  "reminders": ("reminders", "id")}
+        table, column = tables[kind]
+        return bool(self.query(f"DELETE FROM {table} WHERE profile=? AND {column}=? RETURNING {column}",
+                               (profile, identifier)))
+
     def pending(self, profile):
         return [{"id": i, "text": t, "when": datetime.fromtimestamp(d, timezone.utc).isoformat() if d else None,
                  "condition": json.loads(c) if c else None}

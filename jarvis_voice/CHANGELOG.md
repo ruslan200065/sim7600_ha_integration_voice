@@ -1,3 +1,9 @@
+## 0.4.29 (experimental)
+
+- Recover from missed speech and acknowledge delayed voice turns.
+- Understand natural requests for reminders and rules without fixed command wording.
+- Add a panel for editing notes, preferences, reminders and rules.
+
 ## 0.4.28 (experimental)
 
 - Cache Home Assistant registry metadata and invalidate it on registry updates.

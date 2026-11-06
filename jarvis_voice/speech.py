@@ -11,6 +11,19 @@ import yandex.cloud.ai.tts.v3.tts_pb2 as tts
 import yandex.cloud.ai.tts.v3.tts_service_pb2_grpc as tts_grpc
 
 
+def update_transcript(response, kind, finals, refinements):
+    if kind == "final" and response.final.alternatives:
+        finals[response.audio_cursors.final_index] = response.final.alternatives[0].text
+    if kind == "final_refinement" and response.final_refinement.normalized_text.alternatives:
+        update = response.final_refinement
+        refinements[update.final_index] = update.normalized_text.alternatives[0].text
+
+
+def transcript_text(finals, refinements):
+    return " ".join(refinements.get(index) or finals.get(index, "")
+                    for index in sorted(finals.keys() | refinements.keys())).strip()
+
+
 class SpeechKit:
     def __init__(self, api_key, voice="denis", role="neutral", *, cache=None):
         self.auth = (("authorization", "Api-Key " + api_key),)
@@ -41,15 +54,12 @@ class SpeechKit:
             yield stt.StreamingRequest(session_options=opts)
             for offset in range(0, len(pcm), 3200):
                 yield stt.StreamingRequest(chunk=stt.AudioChunk(data=pcm[offset:offset+3200]))
-        final = []
-        refined = []
+        final = {}
+        refined = {}
         async for response in self.stt_stub.RecognizeStreaming(requests(), metadata=self.auth, timeout=25):
             kind = response.WhichOneof("Event")
-            if kind == "final" and response.final.alternatives:
-                final.append(response.final.alternatives[0].text)
-            if kind == "final_refinement" and response.final_refinement.normalized_text.alternatives:
-                refined.append(response.final_refinement.normalized_text.alternatives[0].text)
-        return " ".join(refined or final).strip()
+            update_transcript(response, kind, final, refined)
+        return transcript_text(final, refined)
 
 
     async def recognize_live(self, source, threshold=700, *, on_voice_start=None, on_partial=None):
@@ -88,20 +98,17 @@ class SpeechKit:
                 if rms(frame)>=threshold:
                     last_voice=now
                 yield stt.StreamingRequest(chunk=stt.AudioChunk(data=frame))
-                if now-last_voice>0.8:
+                if now-last_voice>1.0:
                     break
 
-        final=[]
-        refined=[]
+        final = {}
+        refined = {}
         async for response in self.stt_stub.RecognizeStreaming(requests(),metadata=self.auth,timeout=35):
             kind=response.WhichOneof("Event")
             if kind=="partial" and on_partial and response.partial.alternatives:
                 on_partial(response.partial.alternatives[0].text)
-            if kind=="final" and response.final.alternatives:
-                final.append(response.final.alternatives[0].text)
-            if kind=="final_refinement" and response.final_refinement.normalized_text.alternatives:
-                refined.append(response.final_refinement.normalized_text.alternatives[0].text)
-        return " ".join(refined or final).strip()
+            update_transcript(response, kind, final, refined)
+        return transcript_text(final, refined)
 
     async def synthesize(self, text):
         source = self.cache.stream(text, self.voice, self.role, self._synthesize) if self.cache else self._synthesize(text)
