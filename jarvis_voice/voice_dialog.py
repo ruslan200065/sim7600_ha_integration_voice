@@ -15,6 +15,15 @@ FAREWELLS = {
 }
 
 
+FAREWELL_PREFIX = re.compile(r"(?:(?:ну|все|ладно|хорошо|давай|давайте|спасибо|тогда|джарвис|на этом) )+")
+
+
+def is_farewell(text):
+    if text in FAREWELLS:
+        return True
+    return FAREWELL_PREFIX.sub("", text, count=1) in FAREWELLS
+
+
 def words(text):
     return re.findall(r"[а-яa-z0-9]+", text.lower().replace("ё", "е"))
 
@@ -193,7 +202,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                 audio_ready.set()
                 if normalized in STOP_WORDS:
                     continue
-                if normalized in FAREWELLS:
+                if is_farewell(normalized):
                     player.cancel()
                     await asyncio.gather(player, return_exceptions=True)
                     await speak("До связи.")

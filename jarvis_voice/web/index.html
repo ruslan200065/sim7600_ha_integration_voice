@@ -135,6 +135,12 @@
                 </template>
               </section>
               <section class="card">
+                <h3>Манера общения</h3>
+                <label>Системная инструкция<textarea name="system_prompt" rows="6" maxlength="6000"
+                  placeholder="По умолчанию: уважительно, дружелюбно и на «вы»."></textarea></label>
+                <p class="hint">Укажи, как обращаться, каким тоном отвечать и насколько подробно. Пустое поле возвращает стандартный стиль.</p>
+              </section>
+              <section class="card">
                 <h3>Подключения</h3>
                 <div class="fields">
                   <label>Ключ Yandex SpeechKit<input type="password" name="yandex_api_key" autocomplete="new-password"></label>
@@ -145,7 +151,9 @@
                 </div>
                 <details><summary>Голос SpeechKit</summary><div class="fields">
                   <label>Голос SpeechKit<input name="yandex_voice" placeholder="denis"></label>
-                  <label>Амплуа SpeechKit<input name="yandex_role" placeholder="neutral"></label>
+                  <label>Амплуа SpeechKit<input name="yandex_role" list="speech-roles" placeholder="casual">
+                    <datalist id="speech-roles"><option value="casual"><option value="formal"><option value="neutral"><option value="support"><option value="narrator"></datalist>
+                  </label>
                 </div></details>
               </section>
             </section>

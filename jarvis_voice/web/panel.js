@@ -32,7 +32,8 @@ let catalogError = false;
 let dirty = false;
 const domainLabels = {light:"Свет", switch:"Выключатели", cover:"Приводы", fan:"Вентиляторы",
   scene:"Сцены", media_player:"Медиаплееры", climate:"Климат", humidifier:"Влажность",
-  vacuum:"Пылесосы", input_boolean:"Логические помощники"};
+  vacuum:"Пылесосы", input_boolean:"Логические помощники", timer:"Таймеры",
+  number:"Числовые параметры", input_number:"Числовые помощники", select:"Режимы", input_select:"Помощники выбора"};
 let controlDomains = Object.keys(domainLabels);
 
 

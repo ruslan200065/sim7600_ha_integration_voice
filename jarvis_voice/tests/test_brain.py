@@ -151,3 +151,17 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
         settings = await brain._tool("get_assistant_settings", {})
         self.assertNotIn("private", str(settings))
         self.assertNotIn("llm", settings)
+
+    async def test_new_device_actions_validate_advertised_options(self):
+        brain = Brain({"control_all_entities": True}, None, None)
+        brain._ha = AsyncMock(return_value={"entity_id": "select.test", "state": "eco",
+                                           "attributes": {"options": ["eco", "normal"]}})
+        denied = await brain._tool("call_ha_service", {"entity_id": "select.test", "service": "select_option",
+                                                       "option": "unsupported"})
+        self.assertIn("error", denied)
+        brain._ha.assert_awaited_once_with("GET", "/api/states/select.test")
+        allowed = await brain._tool("call_ha_service", {"entity_id": "select.test", "service": "select_option",
+                                                        "option": "eco"})
+        self.assertTrue(allowed["accepted"])
+        brain._ha.assert_any_await("POST", "/api/services/select/select_option",
+                                   {"entity_id": "select.test", "option": "eco"})

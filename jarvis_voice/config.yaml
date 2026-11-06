@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.4.32
+version: 0.4.33
 stage: experimental
 description: Smart GSM assistant for SIM7600 and Home Assistant
 arch:
@@ -41,7 +41,7 @@ options:
   auto_answer: false
   yandex_api_key: ""
   yandex_voice: "denis"
-  yandex_role: "neutral"
+  yandex_role: "casual"
   deepseek_api_key: ""
   deepseek_model: "deepseek-flash"
   deepseek_effort: "off"
@@ -73,7 +73,7 @@ options:
     - fan
     - scene
     - media_player
-  system_prompt: "Ты Джарвис, краткий русскоязычный голосовой ассистент. Задавай уточняющие вопросы. Не утверждай, что действие выполнено, до успешного ответа инструмента."
+  system_prompt: ""
 schema:
   auto_install_integration: bool
   at_port: str

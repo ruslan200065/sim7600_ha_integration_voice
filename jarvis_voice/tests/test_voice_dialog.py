@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from voice_dialog import run_dialog
+from voice_dialog import is_farewell, run_dialog, words
 
 
 class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
@@ -167,3 +167,9 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(2):
             await run_dialog(Speech(), reply, asyncio.Queue(), play, AsyncMock(), greeting)
         reply.assert_awaited_once_with(greeting)
+
+    def test_conversational_farewells_do_not_require_exact_wording(self):
+        for phrase in ("Всё, давай, пока", "Ну всё, тогда до связи", "Джарвис, спасибо, до свидания"):
+            self.assertTrue(is_farewell(" ".join(words(phrase))))
+        for phrase in ("Пока не выключай свет", "Что значит пока", "Не завершай звонок"):
+            self.assertFalse(is_farewell(" ".join(words(phrase))))

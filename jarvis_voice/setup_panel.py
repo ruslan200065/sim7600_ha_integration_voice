@@ -41,6 +41,7 @@ TEXT_FIELDS = {
     "llm_active": 64,
     "yandex_voice": 80,
     "yandex_role": 80,
+    "system_prompt": 6000,
     "camera_entity": 256,
     "home_tts_entity": 256,
     "telegram_photo_target": 256,
@@ -82,7 +83,8 @@ def validate_changes(changes, current):
             if not isinstance(value, str) or (key != "gate_pin" and len(value) > TEXT_FIELDS.get(key, 512)):
                 raise ValueError(f"Неверное значение поля {key}.")
             value = value.strip()
-            if any(ord(char) < 32 for char in value):
+            allowed_whitespace = "\n\r\t" if key == "system_prompt" else ""
+            if any(ord(char) < 32 and char not in allowed_whitespace for char in value):
                 raise ValueError(f"Недопустимые символы в поле {key}.")
         elif key in INTEGER_FIELDS:
             lo, hi = INTEGER_FIELDS[key]

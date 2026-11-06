@@ -1,3 +1,8 @@
+## 0.4.33 (experimental)
+
+- Recognize conversational farewells, add a prompt editor and use a conversational voice preset.
+- Support additional device types and validated settings for lights, covers, fans, timers and helpers.
+
 ## 0.4.32 (experimental)
 
 - Reset USB PCM at call startup and verify incoming frames and a silent write before playing the greeting.
