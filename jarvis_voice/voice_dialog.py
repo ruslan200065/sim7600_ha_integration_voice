@@ -124,9 +124,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
             if text and turn == generation:
                 output.put_nowait((text, turn))
 
-    # Finish the initial greeting before starting STT: startup noise must not
-    # invalidate the greeting's generation or cancel its playback.
-    await speak(prompt)
+    output.put_nowait((prompt, generation))
     try:
         async with asyncio.TaskGroup() as tasks:
             player = tasks.create_task(playback())
