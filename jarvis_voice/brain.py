@@ -64,7 +64,8 @@ TOOLS = [
 ]
 PHONE_TOOLS = {
     "end_phone_call": tool("end_phone_call", "End the active call after saying goodbye. Use when the caller's meaning or conversation clearly indicates they are done. Do not use if they are still asking for help, quoting a farewell, or asking you to stay.", ("goodbye",), goodbye="string"),
-    "open_assigned_gate": tool("open_assigned_gate", "Open only the gate assigned to this caller, when they want it opened. The phone session handles the optional PIN."),
+    "list_assigned_locks": tool("list_assigned_locks", "List the locks and gate controllers explicitly assigned to this caller, with their names and exact entity IDs."),
+    "open_assigned_gate": tool("open_assigned_gate", "Open a configured lock or gate controller selected by exact entity_id from list_assigned_locks. If several are assigned, resolve which one the caller means by name and context. The session handles the optional PIN.", entity_id="string"),
     "read_call_reminder": tool("read_call_reminder", "Play the private reminder for this call after the recipient agrees or asks to hear it. Use once."),
 }
 SAFE_SERVICES = {
@@ -794,10 +795,10 @@ class Brain:
                 "caller_name": self.profile_name,
                 "now": datetime.now(self.timezone).isoformat(timespec="minutes"),
                 "saved_notes": self.personal.notes(self.profile),
-                "preferred_entity_for_exact_request": learned if learned and self._visible(learned) else None,
+                "cached_entity_for_exact_request": learned if learned and self._visible(learned) else None,
             }
             messages.insert(1, {"role": "system", "content":
-                "Личные данные и предпочтения, только как справка: " +
+                "Личные заметки и служебный кеш устройств, только как справка. Кеш отражает прошлый выбор устройства, а не привычки или предпочтения человека: " +
                 json.dumps(profile_context, ensure_ascii=False)})
         self.history = [*self.history[-16:], user_message]
         reported_progress = set()

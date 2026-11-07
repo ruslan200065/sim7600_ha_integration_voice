@@ -283,12 +283,18 @@ async function loadPersonal() {
     const list = document.querySelector("#personal-entities");
     list.replaceChildren(...catalog.map(row => new Option([row.name,row.area].filter(Boolean).join(" · "), row.id)));
     personalContent.replaceChildren();
-    for (const [kind, title] of [["reminders", "Напоминания и правила"], ["notes", "Заметки"], ["preferences", "Привычки и предпочтения"]]) {
+    for (const [kind, title] of [["reminders", "Напоминания и правила"], ["notes", "Заметки"], ["preferences", "Кеш выбора устройств"]]) {
       const section = document.createElement("section");
       section.className = "personal-section";
       const heading = document.createElement("h3");
       heading.textContent = title + " · " + data[kind].length;
       section.append(heading);
+      if (kind === "preferences") {
+        const explanation = document.createElement("p");
+        explanation.className = "muted";
+        explanation.textContent = "Служебные соответствия фраз и устройств для повторных обращений. Это не привычки и не личная память. Можно исправить или удалить; важные факты сохраняются в заметках по вашей просьбе.";
+        section.append(explanation);
+      }
       for (const item of data[kind]) section.append(personalRecord(kind, item, data.profile));
       if (!data[kind].length) {
         const empty = document.createElement("p");
@@ -384,7 +390,7 @@ function makePicker(host, accessibleName, roomSelection = false) {
   function matches(row) {
     const domain = row.id.split(".")[0];
     if (filter === "control") return controlDomains.includes(domain);
-    if (filter === "gate") return ["cover", "lock", "button", "script"].includes(domain);
+    if (filter === "gate") return ["cover", "lock", "button", "script", "switch", "input_boolean"].includes(domain);
     return !filter || filter === domain;
   }
   function write(next) {
@@ -400,7 +406,10 @@ function makePicker(host, accessibleName, roomSelection = false) {
       const item = catalog.find(row => row.id === id);
       const chip = document.createElement("span");
       chip.className = "selection-chip";
-      chip.textContent = item?.name || id;
+      const action = {lock:"разблокировать",cover:"открыть",button:"нажать",script:"выполнить",switch:"включить",input_boolean:"включить"};
+      chip.textContent = filter === "gate"
+        ? [item?.name || id, id, action[id.split(".")[0]]].filter(Boolean).join(" · ")
+        : item?.name || id;
       chip.title = id;
       const remove = document.createElement("button");
       remove.type = "button";
@@ -491,7 +500,7 @@ function addFamily(line = "", expand = false) {
   fields.className = "fields";
   const definitions = [
     ["Имя"], ["Номер телефона"], ["Доступ к устройствам", "", true],
-    ["Калитка", "gate"], ["Личный календарь", "calendar"], ["Местоположение", "person"],
+    ["Доступные замки", "gate", true], ["Личный календарь", "calendar"], ["Местоположение", "person"],
     ["Права доступа"],
   ];
   for (const [index, [label, filter, multiple]] of definitions.entries()) {
@@ -642,7 +651,7 @@ function setRoute(route, state) {
 
 function fieldValue(key, element) {
   if (key === "family_members") return element.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  if (["allowed_entities", "observed_entities", "allow_domains"].includes(key)) {
+  if (["allowed_entities", "observed_entities", "allow_domains", "owner_locks"].includes(key)) {
     return element.value.split(/\s+/).filter(Boolean);
   }
   if (element.type === "checkbox") return element.checked;

@@ -12,6 +12,21 @@ from speech_cache import SpeechCache
 
 
 class PersonalTests(unittest.TestCase):
+    def test_old_device_choices_migrate_without_becoming_personal_notes(self):
+        import sqlite3
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "data.sqlite3"
+            with sqlite3.connect(path) as db:
+                db.execute("CREATE TABLE preferences (profile TEXT, phrase TEXT, entity TEXT, count INTEGER, PRIMARY KEY(profile,phrase,entity))")
+                db.execute("INSERT INTO preferences VALUES ('owner','включи обратно','light.test',2)")
+            db.close()
+            store = Personal(path)
+            self.assertEqual(store.notes("owner"), [])
+            self.assertEqual(store.learned("owner", "включи обратно"), "light.test")
+            self.assertEqual(len(store.dashboard("owner")["preferences"]), 1)
+            self.assertEqual(store.query("SELECT * FROM preferences"), [])
+            self.assertEqual(store.learned("other", "включи обратно"), "")
+
     def test_private_profiles_and_one_shot_delivery(self):
         profiles = family_profiles([
             "Первый | +12025550101 | sensor.test | | | person.first",

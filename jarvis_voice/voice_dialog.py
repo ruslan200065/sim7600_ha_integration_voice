@@ -96,7 +96,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
         async def acknowledge():
             await asyncio.sleep(2.5)
             if not spoke and turn == generation:
-                output.put_nowait(("Секунду, я услышал.", turn))
+                output.put_nowait(("Секунду.", turn))
 
         fallback = asyncio.create_task(acknowledge())
         try:

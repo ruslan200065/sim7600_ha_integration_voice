@@ -63,11 +63,13 @@
               <textarea name="family_members" hidden aria-hidden="true"></textarea>
               <div id="family-list"></div>
               <section class="card">
-                <h3>Владелец и доступ к калитке</h3>
+                <h3>Замки и доступ владельца</h3>
+                <p class="hint">Выберите реальные сущности HA. Для замка выполняется unlock, для привода open_cover, для кнопки press, для сценария или реле turn_on.</p>
                 <div class="fields">
+                  <div><p class="field-title">Замки владельца</p><div data-entity="gate" data-multiple><textarea name="owner_locks" hidden></textarea></div></div>
                   <div class="entity-field"><span>Календарь владельца</span><div data-entity="calendar"><input name="reminder_calendar"></div></div>
                   <div class="entity-field"><span>Местоположение владельца</span><div data-entity="person"><input name="reminder_person"></div></div>
-                  <label>Код калитки<input name="gate_pin" type="password" inputmode="numeric" autocomplete="new-password"><span class="hint">Необязательно. Набирается на клавиатуре телефона с <code>#</code> в конце.</span></label>
+                  <label>Код доступа к замкам<input name="gate_pin" type="password" inputmode="numeric" autocomplete="new-password"><span class="hint">Необязательно. Набирается на клавиатуре телефона с <code>#</code> в конце.</span></label>
                   <label class="check"><input type="checkbox" id="clear-gate-pin"> Удалить сохранённый код</label>
                 </div>
               </section>

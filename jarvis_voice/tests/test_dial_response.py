@@ -58,10 +58,10 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
                 service.audio.start = AsyncMock()
                 service.audio.wait_ready = AsyncMock()
                 service.audio.stop = AsyncMock()
-                service.brain = SimpleNamespace(_ha=AsyncMock())
+                service.brain = SimpleNamespace(_ha=AsyncMock(return_value={"state": "closed", "attributes": {"friendly_name": "Test lock"}}))
                 async def choose_gate(_phrase, *, phone_actions, **kwargs):
                     result = await phone_actions["open_assigned_gate"]({})
-                    return result
+                    return result["instruction"] if isinstance(result, dict) else result
                 service.caller_brain = lambda member: SimpleNamespace(reply=choose_gate)
 
                 async def dialog(_speech, reply, _source, _play, _hangup, _prompt, *, keypad, on_key, **_):
@@ -71,7 +71,7 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
                     text = await reply("Открой калитку", on_progress=progress)
                     if pin:
                         self.assertIn("решётку", text)
-                        service.brain._ha.assert_not_awaited()
+                        self.assertFalse(any(call.args[0] == "POST" for call in service.brain._ha.await_args_list))
                         for key in "3*" + pin + "#":
                             await service.event("dtmf_received", {"digit": key, "call_id": service.modem.call_id})
                             result = await on_key(keypad.get_nowait())
@@ -81,9 +81,31 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
                         self.assertIn("отправлена", text)
                 with patch.object(server_module, "run_dialog", dialog):
                     await service._dialog("", None)
-                service.brain._ha.assert_awaited_once_with("POST", "/api/services/cover/open_cover", {"entity_id": "cover.test"})
+                service.brain._ha.assert_any_await("POST", "/api/services/cover/open_cover", {"entity_id": "cover.test"})
                 self.assertEqual(service.events, [])
                 self.assertIsNone(service.keypad)
+
+    async def test_multiple_locks_require_selection_and_reject_unassigned_entity(self):
+        service = Server({"api_token": "test", "owner_locks": ["lock.first", "switch.second"]})
+        service.modem.call_state = "connected"
+        service.start_call_audio = AsyncMock()
+        service.audio.stop = AsyncMock()
+        service.brain = SimpleNamespace(_ha=AsyncMock(return_value={"state": "locked", "attributes": {}}))
+        async def choose(_phrase, *, phone_actions, **kwargs):
+            missing = await phone_actions["open_assigned_gate"]({})
+            self.assertEqual(len(missing["locks"]), 2)
+            await phone_actions["open_assigned_gate"]({"entity_id": "lock.foreign"})
+            self.assertFalse(any(c.args[0] == "POST" for c in service.brain._ha.await_args_list))
+            result = await phone_actions["open_assigned_gate"]({"entity_id": "switch.second"})
+            self.assertIn("отправлена", result)
+            return result
+        service.caller_brain = lambda member: SimpleNamespace(reply=choose)
+        async def dialog(_speech, reply, *args, **kwargs):
+            await reply("Открой второй замок", on_progress=lambda text: None)
+        with patch.object(server_module, "run_dialog", dialog):
+            await service._dialog("", None)
+        service.brain._ha.assert_any_await("POST", "/api/services/switch/turn_on", {"entity_id": "switch.second"})
+        self.assertEqual(sum(c.args[0] == "POST" for c in service.brain._ha.await_args_list), 1)
 
     async def test_failed_greeting_retries_in_the_same_call(self):
         for error, reset in ((RuntimeError("speech unavailable"), False),

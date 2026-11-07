@@ -4,7 +4,18 @@ import re
 
 NUMBER = re.compile(r"\+?[1-9][0-9]{7,14}")
 ENTITY = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
-GATE_ACTIONS = {"cover": "open_cover", "lock": "unlock", "button": "press", "script": "turn_on"}
+GATE_ACTIONS = {"cover": "open_cover", "lock": "unlock", "button": "press", "script": "turn_on", "switch": "turn_on", "input_boolean": "turn_on"}
+
+
+def lock_entities(value):
+    if isinstance(value, str):
+        value = value.replace(",", " ").split()
+    if not isinstance(value, list) or any(
+        not isinstance(entity, str) or not ENTITY.fullmatch(entity)
+        or entity.split(".", 1)[0] not in GATE_ACTIONS for entity in value
+    ):
+        raise ValueError("Выбери замок, привод, кнопку, сценарий или реле.")
+    return list(dict.fromkeys(value))
 
 
 def profile_key(name, number):
@@ -24,9 +35,10 @@ def family_profiles(lines):
             raise ValueError("Формат профиля: имя | номер | устройства | калитка | календарь | person | доступ.")
         name, number, entities, gate, calendar, person, access = (parts + [""] * 7)[:7]
         entities = entities.replace(",", " ").split()
+        locks = lock_entities(gate)
         if (not name or len(name) > 60 or not name.isprintable() or not NUMBER.fullmatch(number)
             or any(not ENTITY.fullmatch(item) for item in entities)
-            or (gate and (not ENTITY.fullmatch(gate) or gate.split(".")[0] not in GATE_ACTIONS))):
+):
             raise ValueError("Проверьте имя, номер и идентификаторы устройств семьи.")
         if calendar and (not ENTITY.fullmatch(calendar) or not calendar.startswith("calendar.")):
             raise ValueError("Укажите календарь участника вида calendar.name.")
@@ -40,5 +52,5 @@ def family_profiles(lines):
             raise ValueError("Имена и номера членов семьи должны быть уникальны.")
         names.add(name.casefold())
         profiles[number] = {"name": name, "number": "+" + number, "entities": entities,
-                            "gate": gate, "calendar": calendar, "person": person, "access": access, "key": profile_key(name, number)}
+                            "gate": locks[0] if locks else "", "locks": locks, "calendar": calendar, "person": person, "access": access, "key": profile_key(name, number)}
     return profiles

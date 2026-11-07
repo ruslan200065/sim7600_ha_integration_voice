@@ -18,9 +18,14 @@ class Personal:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS notes (
                     profile TEXT, note TEXT, PRIMARY KEY (profile, note));
+                CREATE TABLE IF NOT EXISTS device_choices (
+                    profile TEXT, phrase TEXT, entity TEXT, count INTEGER,
+                    PRIMARY KEY (profile, phrase, entity));
                 CREATE TABLE IF NOT EXISTS preferences (
                     profile TEXT, phrase TEXT, entity TEXT, count INTEGER,
                     PRIMARY KEY (profile, phrase, entity));
+                INSERT OR IGNORE INTO device_choices SELECT * FROM preferences;
+                DELETE FROM preferences;
                 CREATE TABLE IF NOT EXISTS reminders (
                     id TEXT PRIMARY KEY, profile TEXT, name TEXT, text TEXT,
                     due REAL, delivered INTEGER DEFAULT 0, retry_at REAL DEFAULT 0, condition TEXT, armed INTEGER DEFAULT 0);
@@ -43,12 +48,12 @@ class Personal:
 
     def learned(self, profile, phrase):
         rows = self.query(
-            "SELECT entity FROM preferences WHERE profile=? AND phrase=? AND count>=2",
+            "SELECT entity FROM device_choices WHERE profile=? AND phrase=? AND count>=2",
             (profile, phrase))
         return rows[0][0] if len(rows) == 1 else ""
 
     def record(self, profile, phrase, entity):
-        self.query("""INSERT INTO preferences VALUES (?, ?, ?, 1)
+        self.query("""INSERT INTO device_choices VALUES (?, ?, ?, 1)
             ON CONFLICT(profile, phrase, entity) DO UPDATE SET count=count+1""",
             (profile, phrase, entity))
 
@@ -64,7 +69,7 @@ class Personal:
             "SELECT rowid,note FROM notes WHERE profile=? ORDER BY rowid DESC", (profile,))]
         preferences = [{"id": i, "phrase": phrase, "entity": entity, "count": count}
                        for i, phrase, entity, count in self.query(
-            "SELECT rowid,phrase,entity,count FROM preferences WHERE profile=? ORDER BY count DESC", (profile,))]
+            "SELECT rowid,phrase,entity,count FROM device_choices WHERE profile=? ORDER BY count DESC", (profile,))]
         reminders = [{"id": i, "text": text, "due": due, "completed": bool(delivered),
                       "condition": json.loads(condition) if condition else None, "status": status}
                      for i, text, due, delivered, condition, status in self.query(
@@ -78,7 +83,7 @@ class Personal:
                                (text, profile, identifier)))
 
     def edit_preference(self, profile, identifier, phrase, entity):
-        return bool(self.query("""UPDATE OR IGNORE preferences SET phrase=?,entity=?,count=MAX(count,2)
+        return bool(self.query("""UPDATE OR IGNORE device_choices SET phrase=?,entity=?,count=MAX(count,2)
             WHERE profile=? AND rowid=? RETURNING rowid""", (phrase, entity, profile, identifier)))
 
     def edit_reminder(self, profile, identifier, text, due, condition_value):
@@ -96,7 +101,7 @@ class Personal:
                                (text, profile, identifier)))
 
     def remove_record(self, profile, kind, identifier):
-        tables = {"notes": ("notes", "rowid"), "preferences": ("preferences", "rowid"),
+        tables = {"notes": ("notes", "rowid"), "preferences": ("device_choices", "rowid"),
                   "reminders": ("reminders", "id")}
         table, column = tables[kind]
         return bool(self.query(f"DELETE FROM {table} WHERE profile=? AND {column}=? RETURNING {column}",

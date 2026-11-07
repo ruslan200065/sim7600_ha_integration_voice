@@ -1,3 +1,10 @@
+## 0.4.36
+
+- Separate device-resolution cache from personal memory and explain its purpose in the panel. (experimental)
+
+- Let owners and family profiles select multiple named locks and gate controllers in the panel.
+- Shorten the delayed-response acknowledgement.
+
 ## 0.4.35 (experimental)
 
 - Tell the model when a private reminder is waiting for the caller’s consent.

@@ -19,7 +19,7 @@ from aiohttp import ClientError, ClientTimeout, web
 from audio import rms
 from modem import NUMBER
 from brain import SAFE_SERVICES
-from family import family_profiles
+from family import family_profiles, lock_entities
 from llm import DEEPSEEK_URL, EFFORTS, active_profile, base_url, list_models, merge_profiles
 from q1_audio import capture_pcm, play_pcm
 from q1_hardware import VIDEO_LINK, VIDEO_PATH, list_serial, list_video, probe_audio
@@ -60,6 +60,7 @@ OPTION_FIELDS = (
     | BOOLEAN_FIELDS
     | {
         "allowed_entities",
+        "owner_locks",
         "observed_entities",
         "allow_domains",
         "family_members",
@@ -92,6 +93,8 @@ def validate_changes(changes, current):
                 raise ValueError(f"{key}: допустимо от {lo} до {hi}.")
         elif key in BOOLEAN_FIELDS and not isinstance(value, bool):
             raise ValueError(f"Неверное значение поля {key}.")
+        elif key == "owner_locks":
+            value = lock_entities(value)
         elif key == "llm_profiles":
             value = merge_profiles(value, current.get("llm_profiles", []))
         elif key == "family_members":

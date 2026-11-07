@@ -25,7 +25,7 @@ from q1_hardware import diagnostics, snapshot, apply_original_camera_controls
 from q1_media import Q1Media
 from setup_panel import SetupPanel
 from history import History
-from family import GATE_ACTIONS, family_profiles, profile_key
+from family import GATE_ACTIONS, family_profiles, lock_entities, profile_key
 from personal import Personal, condition_matches
 from speech_cache import SpeechCache
 from microphone import MicrophoneMonitor
@@ -89,7 +89,10 @@ class Server:
         self.microphone_task = None
         self.family = family_profiles(options.get("family_members", []))
         self.family.pop((options.get("allowed_number") or "").lstrip("+"), None)
-        self.gates = frozenset(member["gate"] for member in self.family.values() if member["gate"])
+        self.owner_locks = lock_entities(options.get("owner_locks", []))
+        self.gates = frozenset(self.owner_locks + [
+            entity for member in self.family.values() for entity in member["locks"]
+        ])
         self.family_brains = {}
         self.reminder_task = None
         self.registry_task = None
@@ -406,7 +409,9 @@ class Server:
             pending_pin = 0.0
             attempts = 0
             digits = ""
-            gate = member["gate"] if member else ""
+            allowed_locks = member["locks"] if member else self.owner_locks
+            gate = ""
+            gate_name = ""
             pin = self.o.get("gate_pin", "")
             clock = asyncio.get_running_loop().time
             call_id = self.modem.call_id
@@ -439,7 +444,7 @@ class Server:
                     return ""
                 if key is None:
                     pending_pin, digits = 0.0, ""
-                    return "Ввод прерван. Попроси открыть калитку ещё раз."
+                    return "Ввод прерван. Попроси открыть замок ещё раз."
                 if key == "#":
                     return await check_pin(digits)
                 if key == "*":
@@ -460,18 +465,37 @@ class Server:
                 return CallOutput(prompt)
 
             async def reply(phrase, *, on_progress):
-                async def request_gate(_args):
-                    nonlocal pending_pin, digits
-                    if not gate:
-                        return "Калитка не назначена этому участнику."
+                async def list_locks(_args):
+                    devices = []
+                    for entity in allowed_locks:
+                        try:
+                            row = await self.brain._ha("GET", "/api/states/" + entity)
+                        except (RuntimeError, TimeoutError, ClientError):
+                            continue
+                        devices.append({"entity_id": entity, "name": row.get("attributes", {}).get("friendly_name") or entity,
+                                        "state": row.get("state"), "service": GATE_ACTIONS[entity.split(".", 1)[0]]})
+                    return {"locks": devices}
+
+                async def request_gate(args):
+                    nonlocal pending_pin, digits, gate, gate_name
+                    selected = args.get("entity_id") or (allowed_locks[0] if len(allowed_locks) == 1 else "")
+                    if not isinstance(selected, str) or selected not in allowed_locks:
+                        return {"error": "Выбери назначенный замок по названию из списка.", **await list_locks({})}
+                    row = await self.brain._ha("GET", "/api/states/" + selected)
+                    if row.get("state") in {"unavailable", "unknown"}:
+                        return "Выбранный замок сейчас недоступен."
+                    if pending_pin > clock() and gate != selected:
+                        return "Сначала заверши ввод кода для уже выбранного замка."
+                    gate = selected
+                    gate_name = row.get("attributes", {}).get("friendly_name") or "назначенный замок"
                     if not pin:
-                        on_progress("Открываю назначенную калитку.")
+                        on_progress(f"Открываю «{gate_name}».")
                         return await open_gate()
                     if not re.fullmatch(r"[0-9]+", pin) or attempts >= 3:
                         return "Открытие по телефону недоступно."
                     digits = ""
                     pending_pin = clock() + 30
-                    return "Для открытия нужен код. Попроси набрать его на клавиатуре и нажать решётку."
+                    return {"lock": gate_name, "instruction": "Для открытия нужен код. Попроси набрать его на клавиатуре и нажать решётку."}
 
                 if pending_pin > clock():
                     spoken = phrase.strip().rstrip(".!?")
@@ -480,7 +504,8 @@ class Server:
                 actions = {"end_phone_call": end_call}
                 if reminder_id:
                     actions["read_call_reminder"] = read_reminder
-                if gate:
+                if allowed_locks:
+                    actions["list_assigned_locks"] = list_locks
                     actions["open_assigned_gate"] = request_gate
                 return await brain.reply(phrase, camera_entity=camera, on_progress=on_progress,
                                          phone_actions=actions)
