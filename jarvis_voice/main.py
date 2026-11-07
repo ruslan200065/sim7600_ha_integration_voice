@@ -16,7 +16,7 @@ from aiohttp import web, ClientError, ClientSession
 
 from modem import Modem
 from audio import PCMPlaybackError, PCMTransport, rms
-from voice_dialog import run_dialog
+from voice_dialog import CallOutput, run_dialog
 from speech import SpeechKit
 from brain import Brain
 from q1_audio import audio_route, capture_pcm, recognize_microphone_live, play_stream
@@ -449,20 +449,21 @@ class Server:
                 pending_pin = clock() + 30
                 return ""
 
+            async def end_call(args):
+                goodbye = args.get("goodbye")
+                goodbye = " ".join(goodbye.split())[:160] if isinstance(goodbye, str) else ""
+                return CallOutput(goodbye or "До связи.", end_call=True)
+
+            async def read_reminder(_args):
+                if not reminder_id:
+                    return "Это напоминание уже озвучено."
+                return CallOutput(prompt)
+
             async def reply(phrase, *, on_progress):
-                nonlocal pending_pin, digits
-                if reminder_id:
-                    if re.fullmatch(r"(?:да|давай|слушаю|напомни)[.! ]*", phrase.lower().strip()):
-                        return prompt
-                    return "Можно озвучить напоминание?"
-                if pending_pin > clock():
-                    spoken = phrase.strip().rstrip(".!?")
-                    if not digits and re.fullmatch(r"[0-9][0-9 ,\-]*", spoken):
-                        return await check_pin(re.sub(r"[^0-9]", "", spoken))
-                    return "Набери код и нажми решётку."
-                if gate and re.search(r"\b(?:откро|открыв|открыть|отопр)\w*", phrase, re.I) and re.search(r"\b(?:калит|ворот)\w*", phrase, re.I):
-                    if re.search(r"\bне\s+(?:откро|открыв|открыть|отопр)\w*", phrase, re.I):
-                        return "Хорошо."
+                async def request_gate(_args):
+                    nonlocal pending_pin, digits
+                    if not gate:
+                        return "Калитка не назначена этому участнику."
                     if not pin:
                         on_progress("Открываю назначенную калитку.")
                         return await open_gate()
@@ -470,13 +471,25 @@ class Server:
                         return "Открытие по телефону недоступно."
                     digits = ""
                     pending_pin = clock() + 30
-                    return "Набери код на клавиатуре и нажми решётку."
-                return await brain.reply(phrase, camera_entity=camera, on_progress=on_progress)
+                    return "Для открытия нужен код. Попроси набрать его на клавиатуре и нажать решётку."
+
+                if pending_pin > clock():
+                    spoken = phrase.strip().rstrip(".!?")
+                    if not digits and re.fullmatch(r"[0-9][0-9 ,\-]*", spoken):
+                        return await check_pin(re.sub(r"[^0-9]", "", spoken))
+                actions = {"end_phone_call": end_call}
+                if reminder_id:
+                    actions["read_call_reminder"] = read_reminder
+                if gate:
+                    actions["open_assigned_gate"] = request_gate
+                return await brain.reply(phrase, camera_entity=camera, on_progress=on_progress,
+                                         phone_actions=actions)
 
             async def play(text):
                 nonlocal reminder_id
                 await self._say(text)
-                if reminder_id and text == prompt:
+                if (reminder_id and text == prompt
+                    and (self.modem.call_id, self.modem.call_state) == (call_id, "connected")):
                     self.personal.delivered(reminder_id)
                     reminder_id = None
 

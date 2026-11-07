@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from brain import Brain, photo_requested
+from brain import Brain
 
 
 class BrainTools(unittest.IsolatedAsyncioTestCase):
@@ -77,10 +77,8 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
             "telegram_photo_target": "notify.telegram_bot_owner",
         }, None, None, share_photo=photo)
         brain._picture = AsyncMock(return_value=(b"image", "image/jpeg"))
-        await brain._tool("send_camera_photo", {}, "camera.gate")
-        photo.assert_not_awaited()
         await brain._tool(
-            "send_camera_photo", {"target": "notify.untrusted"}, "camera.gate", explicit_photo=True,
+            "send_camera_photo", {"target": "notify.untrusted"}, "camera.gate",
         )
         brain._picture.assert_awaited_once_with("camera.gate")
         photo.assert_awaited_once_with("notify.telegram_bot_owner", b"image", "image/jpeg")
@@ -96,24 +94,9 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
             {"entity_id": "binary_sensor.yard", "attributes": {"friendly_name": "Двор"}},
         ])
         brain._picture = AsyncMock(return_value=(b"image", "image/jpeg"))
-        await brain._tool("send_camera_photo", {"camera": "двор"}, explicit_photo=True)
+        await brain._tool("send_camera_photo", {"camera": "двор"})
         brain._picture.assert_awaited_once_with("camera.yard")
         photo.assert_awaited_once_with("notify.owner", b"image", "image/jpeg")
-
-    def test_natural_photo_requests(self):
-        for phrase in (
-            "Отправить фото с камеры", "Фото с камеры двора, пожалуйста",
-            "Сделай снимок с камеры", "Можно фото с камеры в телегу?",
-            "Кадр с камеры на калитке", "Скинь кадр", "Отправь в телегу",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertTrue(photo_requested(phrase))
-        for phrase in (
-            "Посмотри, что на камере", "Опиши кадр с камеры",
-            "Не отправляй фото с камеры", "Не надо делать фото с камеры",
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertFalse(photo_requested(phrase))
 
     async def test_registry_cache_reuses_metadata_and_filters_each_request(self):
         brain = Brain({}, None, None)
@@ -142,12 +125,12 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
     async def test_caller_profile_limits_phone_and_family_access(self):
         brain = Brain({"allowed_number": "+12025550101", "deepseek_api_key": "private"},
                       None, None, profile_name="Участник", caller_number="+12025550102", owner=False)
-        plain = await brain._tool("get_my_profile", {}, phrase="Как меня зовут?")
+        plain = await brain._tool("get_my_profile", {})
         self.assertEqual(plain["name"], "Участник")
         self.assertNotIn("phone_number", plain)
-        number = await brain._tool("get_my_profile", {}, phrase="Какой у меня номер телефона?")
+        number = await brain._tool("get_my_profile", {"include_number": True})
         self.assertEqual(number["phone_number"], "+12025550102")
-        self.assertIsInstance(await brain._tool("list_family", {}, phrase="Какие номера телефонов?"), str)
+        self.assertIsInstance(await brain._tool("list_family", {"include_numbers": True}), str)
         settings = await brain._tool("get_assistant_settings", {})
         self.assertNotIn("private", str(settings))
         self.assertNotIn("llm", settings)

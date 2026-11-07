@@ -1,3 +1,8 @@
+## 0.4.34 (experimental)
+
+- Let the LLM select conversational tools, including call completion, gate access and reminder playback.
+- Remove phrase matching from voice intents while preserving permission and input checks.
+
 ## 0.4.33 (experimental)
 
 - Recognize conversational farewells, add a prompt editor and use a conversational voice preset.

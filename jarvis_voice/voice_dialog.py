@@ -3,25 +3,19 @@
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 LOG = logging.getLogger(__name__)
-STOP_WORDS = {"стоп", "подожди", "секунду", "погоди"}
-STATUS_PHRASE = re.compile(r"(?:почему|что|че|чего) (?:ты )?молчишь|ты (?:там|меня слышишь)|джарвис")
-FAREWELLS = {
-    "пока", "до свидания", "до связи", "заверши звонок", "завершай звонок",
-    "можно завершить звонок", "положи трубку", "спасибо пока", "спасибо до связи",
-    "все больше ничего не нужно", "больше ничего не нужно",
-}
+
+@dataclass(frozen=True)
+class CallOutput:
+    text: str
+    end_call: bool = False
 
 
-FAREWELL_PREFIX = re.compile(r"(?:(?:ну|все|ладно|хорошо|давай|давайте|спасибо|тогда|джарвис|на этом) )+")
-
-
-def is_farewell(text):
-    if text in FAREWELLS:
-        return True
-    return FAREWELL_PREFIX.sub("", text, count=1) in FAREWELLS
+class CallFinished(Exception):
+    """End the listening task after the farewell has played."""
 
 
 def words(text):
@@ -74,14 +68,19 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
     async def playback():
         nonlocal playing
         while True:
-            text, turn = await output.get()
+            message, turn = await output.get()
             await audio_ready.wait()
             if turn == generation:
+                text = message.text if isinstance(message, CallOutput) else message
                 playing = asyncio.create_task(speak(text))
                 try:
                     result, = await asyncio.gather(playing, return_exceptions=True)
                     if isinstance(result, Exception):
                         LOG.warning("Playback failed: %s", type(result).__name__)
+                    if (isinstance(message, CallOutput) and message.end_call
+                        and turn == generation and not isinstance(result, asyncio.CancelledError)):
+                        await hangup()
+                        raise CallFinished
                 finally:
                     playing = None
 
@@ -111,7 +110,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
         finally:
             fallback.cancel()
             await asyncio.gather(fallback, return_exceptions=True)
-        LOG.info("LLM answer length=%d", len(text or ""))
+        LOG.info("LLM answer length=%d", len(text.text if isinstance(text, CallOutput) else text or ""))
         if turn == generation:
             output.put_nowait((text or "Не получилось ответить. Попробуй ещё раз.", turn))
 
@@ -126,97 +125,83 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                 output.put_nowait((text, turn))
 
     output.put_nowait((prompt, generation))
-    async with asyncio.TaskGroup() as tasks:
-        player = tasks.create_task(playback())
-        keys = tasks.create_task(listen_keypad()) if keypad is not None and on_key else None
-        try:
-            while True:
-                heard_playback = []
-                user_partial = False
+    try:
+        async with asyncio.TaskGroup() as tasks:
+            player = tasks.create_task(playback())
+            keys = tasks.create_task(listen_keypad()) if keypad is not None and on_key else None
+            try:
+                while True:
+                    heard_playback = []
+                    user_partial = False
 
-                def remember_output():
-                    if clock() <= echo_until and last_spoken and last_spoken not in heard_playback:
-                        heard_playback.append(last_spoken)
+                    def remember_output():
+                        if clock() <= echo_until and last_spoken and last_spoken not in heard_playback:
+                            heard_playback.append(last_spoken)
 
-                def interrupt(partial):
-                    nonlocal user_partial
-                    remember_output()
-                    tokens = words(partial)
-                    confirmed = len(tokens) >= 2 or (len(tokens) == 1 and tokens[0] in STOP_WORDS)
-                    if confirmed and not (echo_filter and echoes_playback(tokens, heard_playback)):
-                        user_partial = True
-                        if STATUS_PHRASE.fullmatch(" ".join(tokens)):
+                    def interrupt(partial):
+                        nonlocal user_partial
+                        remember_output()
+                        tokens = words(partial)
+                        confirmed = len(tokens) >= 2
+                        if confirmed and not (echo_filter and echoes_playback(tokens, heard_playback)):
+                            user_partial = True
+                            audio_ready.clear()
+                            if playing and not playing.done():
+                                playing.cancel()
+
+                    try:
+                        async with asyncio.timeout(idle_seconds) as idle:
+                            def voice_started():
+                                remember_output()
+                                idle.reschedule(clock() + idle_seconds)
+
+                            phrase = await speech.recognize_live(
+                                source, threshold=450, on_voice_start=voice_started, on_partial=interrupt
+                            )
+                    except TimeoutError:
+                        audio_ready.set()
+                        if idle.expired():
+                            if pending or playing or not output.empty():
+                                continue
+                            await speak("До связи.")
+                            await hangup()
                             return
-                        audio_ready.clear()
-                        if playing and not playing.done():
-                            playing.cancel()
-
-                try:
-                    async with asyncio.timeout(idle_seconds) as idle:
-                        def voice_started():
-                            remember_output()
-                            idle.reschedule(clock() + idle_seconds)
-
-                        phrase = await speech.recognize_live(
-                            source, threshold=450, on_voice_start=voice_started, on_partial=interrupt
-                        )
-                except TimeoutError:
+                        phrase = ""
+                        user_partial = True
+                    except Exception as exc:
+                        audio_ready.set()
+                        LOG.warning("STT failed: %s", type(exc).__name__)
+                        if clock() - last_recovery >= 10:
+                            output.put_nowait(("Не получилось расслышать. Скажи ещё раз.", generation))
+                            last_recovery = clock()
+                        await asyncio.sleep(1)
+                        continue
+                    finally:
+                        idle = None
+                    remember_output()
+                    tokens = words(phrase)
+                    if not tokens or (echo_filter and echoes_playback(tokens, heard_playback)):
+                        audio_ready.set()
+                        if not tokens and user_partial and clock() - last_recovery >= 5:
+                            output.put_nowait(("Не расслышал конец фразы. Повтори, пожалуйста.", generation))
+                            last_recovery = clock()
+                        continue
+                    LOG.info("Live STT recognized %d chars", len(phrase))
+                    generation += 1
+                    if playing and not playing.done():
+                        playing.cancel()
                     audio_ready.set()
-                    if idle.expired():
-                        if pending or playing or not output.empty():
-                            continue
-                        await speak("До связи.")
-                        await hangup()
-                        return
-                    phrase = ""
-                    user_partial = True
-                except Exception as exc:
-                    audio_ready.set()
-                    LOG.warning("STT failed: %s", type(exc).__name__)
-                    if clock() - last_recovery >= 10:
-                        output.put_nowait(("Не получилось расслышать. Скажи ещё раз.", generation))
-                        last_recovery = clock()
-                    await asyncio.sleep(1)
-                    continue
-                finally:
-                    idle = None
-                remember_output()
-                tokens = words(phrase)
-                if not tokens or (echo_filter and echoes_playback(tokens, heard_playback)):
-                    audio_ready.set()
-                    if not tokens and user_partial and clock() - last_recovery >= 5:
-                        output.put_nowait(("Не расслышал конец фразы. Повтори, пожалуйста.", generation))
-                        last_recovery = clock()
-                    continue
-                normalized = " ".join(tokens)
-                if STATUS_PHRASE.fullmatch(normalized):
-                    audio_ready.set()
-                    status = ("Я услышал, ещё разбираюсь." if pending else
-                              "Если я пропустил фразу, скажи её ещё раз.")
-                    output.put_nowait((status, generation))
-                    continue
-                LOG.info("Live STT recognized %d chars", len(phrase))
-                generation += 1
-                if playing and not playing.done():
-                    playing.cancel()
-                audio_ready.set()
-                if normalized in STOP_WORDS:
-                    continue
-                if is_farewell(normalized):
-                    player.cancel()
-                    await asyncio.gather(player, return_exceptions=True)
-                    await speak("До связи.")
-                    await hangup()
-                    return
-                if len(pending) >= 4:
-                    output.put_nowait(("Секунду, ещё выполняю предыдущие запросы.", generation))
-                    continue
-                task = tasks.create_task(answer(phrase, generation))
-                pending.add(task)
-                task.add_done_callback(pending.discard)
-        finally:
-            player.cancel()
-            if keys:
-                keys.cancel()
-            for task in pending:
-                task.cancel()
+                    if len(pending) >= 4:
+                        output.put_nowait(("Секунду, ещё выполняю предыдущие запросы.", generation))
+                        continue
+                    task = tasks.create_task(answer(phrase, generation))
+                    pending.add(task)
+                    task.add_done_callback(pending.discard)
+            finally:
+                player.cancel()
+                if keys:
+                    keys.cancel()
+                for task in pending:
+                    task.cancel()
+    except* CallFinished:
+        pass

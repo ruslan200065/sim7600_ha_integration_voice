@@ -59,7 +59,10 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
                 service.audio.wait_ready = AsyncMock()
                 service.audio.stop = AsyncMock()
                 service.brain = SimpleNamespace(_ha=AsyncMock())
-                service.caller_brain = lambda member: None
+                async def choose_gate(_phrase, *, phone_actions, **kwargs):
+                    result = await phone_actions["open_assigned_gate"]({})
+                    return result
+                service.caller_brain = lambda member: SimpleNamespace(reply=choose_gate)
 
                 async def dialog(_speech, reply, _source, _play, _hangup, _prompt, *, keypad, on_key, **_):
                     progress = lambda text: None

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from voice_dialog import is_farewell, run_dialog, words
+from voice_dialog import CallOutput, run_dialog
 
 
 class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
@@ -42,17 +42,20 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
                     on_partial("Какая погода")
                     await greeting_stopped.wait()
                     return "Какая погода сегодня?"
-                await answered.wait()
-                on_voice_start()
-                return "До свидания"
+                if self.turn == 3:
+                    await answered.wait()
+                    on_voice_start()
+                    return "До свидания"
+                await asyncio.Future()
 
         brain = unittest.mock.Mock()
-        brain.reply = AsyncMock(return_value="Проверяю погоду")
+        brain.reply = AsyncMock(side_effect=["Проверяю погоду", CallOutput("До связи.", True)])
         hangup = AsyncMock()
         async with asyncio.timeout(2):
             await run_dialog(Speech(), brain.reply, asyncio.Queue(), play, hangup, greeting, echo_filter=True)
 
-        brain.reply.assert_awaited_once_with("Какая погода сегодня?")
+        self.assertEqual([call.args[0] for call in brain.reply.await_args_list],
+                         ["Какая погода сегодня?", "До свидания"])
         hangup.assert_awaited_once()
 
     async def test_tool_survives_interruption_without_replaying_stale_reply(self):
@@ -75,6 +78,8 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
                 await new_answer_played.wait()
                 tool_completed.set()
                 return "Фото отправлено"
+            if phrase == "До свидания":
+                return CallOutput("До связи.", True)
             return "Свет включён"
 
         class Speech:
@@ -88,9 +93,11 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
                     await progress_played.wait()
                     on_partial("А свет")
                     return "А свет включён?"
-                await tool_completed.wait()
-                await asyncio.sleep(0)
-                return "До свидания"
+                if self.turn == 3:
+                    await tool_completed.wait()
+                    await asyncio.sleep(0)
+                    return "До свидания"
+                await asyncio.Future()
 
         async with asyncio.timeout(2):
             await run_dialog(Speech(), brain, asyncio.Queue(), play, AsyncMock(), "Привет",
@@ -110,35 +117,33 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
         hangup.assert_awaited_once()
         play.assert_any_await("До связи.")
 
-    async def test_status_question_keeps_the_original_reply(self):
-        status = asyncio.Event()
-        completed = asyncio.Event()
+    async def test_only_model_can_choose_to_end_a_call(self):
+        response_spoken = asyncio.Event()
+        heard = []
 
         async def play(text):
-            if text == "Я услышал, ещё разбираюсь.":
-                status.set()
-            if text == "Температура двадцать градусов.":
-                completed.set()
+            heard.append(text)
+            if text == "Продолжаю слушать.":
+                response_spoken.set()
 
         class Speech:
             turn = 0
-            async def recognize_live(self, _source, *, on_partial, **kwargs):
+
+            async def recognize_live(self, _source, **kwargs):
                 self.turn += 1
                 if self.turn == 1:
-                    return "Какая температура?"
+                    return "Что значит до свидания?"
                 if self.turn == 2:
-                    on_partial("Чё молчишь")
-                    return "Чё молчишь?"
-                await completed.wait()
-                return "До свидания"
+                    await response_spoken.wait()
+                    return "Этого достаточно."
+                await asyncio.Future()
 
-        async def reply(text):
-            self.assertEqual(text, "Какая температура?")
-            await status.wait()
-            return "Температура двадцать градусов."
-
+        reply = AsyncMock(side_effect=["Продолжаю слушать.", CallOutput("Хорошего вечера!", True)])
+        hangup = AsyncMock()
         async with asyncio.timeout(2):
-            await run_dialog(Speech(), reply, asyncio.Queue(), play, AsyncMock(), "Привет")
+            await run_dialog(Speech(), reply, asyncio.Queue(), play, hangup, "Привет")
+        self.assertEqual(heard[-1], "Хорошего вечера!")
+        hangup.assert_awaited_once()
 
     async def test_echo_filter_is_off_by_default(self):
         greeting = "Добрый вечер слушаю"
@@ -160,16 +165,12 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
                     await started.wait()
                     on_partial(greeting)
                     return greeting
-                await answered.wait()
-                return "До свидания"
+                if self.turn == 2:
+                    await answered.wait()
+                    return "До свидания"
+                await asyncio.Future()
 
-        reply = AsyncMock(return_value="Привет.")
+        reply = AsyncMock(side_effect=["Привет.", CallOutput("До связи.", True)])
         async with asyncio.timeout(2):
             await run_dialog(Speech(), reply, asyncio.Queue(), play, AsyncMock(), greeting)
-        reply.assert_awaited_once_with(greeting)
-
-    def test_conversational_farewells_do_not_require_exact_wording(self):
-        for phrase in ("Всё, давай, пока", "Ну всё, тогда до связи", "Джарвис, спасибо, до свидания"):
-            self.assertTrue(is_farewell(" ".join(words(phrase))))
-        for phrase in ("Пока не выключай свет", "Что значит пока", "Не завершай звонок"):
-            self.assertFalse(is_farewell(" ".join(words(phrase))))
+        self.assertEqual([call.args[0] for call in reply.await_args_list], [greeting, "До свидания"])

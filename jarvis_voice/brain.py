@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from personal import condition_matches
 from family import family_profiles
+from voice_dialog import CallOutput
 from llm import active_profile, auth_headers, base_url, completion_options
 import json
 import logging
@@ -14,24 +15,6 @@ import re
 import aiohttp
 
 LOG = logging.getLogger(__name__)
-
-def photo_requested(phrase):
-    text = phrase.lower().replace("ё", "е")
-    send = r"(?:пришл|присл|отправ|скин|сброс|пошл|посл|перешл|пересыл)\w*"
-    photo = r"(?:фото|сним(?:ок|ка|ки|ку|ком)|кадр)\w*"
-    destination = r"(?:телег|telegram)\w*"
-    if re.search(rf"\b(?:не|нельзя)\s+(?:надо\s+|нужно\s+|стоит\s+)?{send}\b", text):
-        return False
-    if re.search(rf"\b{send}\b", text):
-        return bool(re.search(rf"\b(?:{photo}|{destination})\b", text))
-    if re.search(r"\b(?:посмотр|опиш|проверь|расскаж|проанализ)\w*\b", text):
-        return False
-    return bool(
-        re.search(rf"\b{photo}\b", text)
-        and re.search(rf"\b(?:камер\w*|{destination})\b", text)
-        and not re.search(r"\b(?:не|нельзя)\s+(?:надо\s+|нужно\s+)?(?:дела|сдела|снима)\w*\b", text)
-    )
-
 
 def search_stem(word):
     match = RUSSIAN_ENDING.fullmatch(word)
@@ -59,9 +42,9 @@ LEGACY_PERSONA = ("Ты Джарвис, краткий русскоязычны�
                   "Не утверждай, что действие выполнено, до успешного ответа инструмента.")
 
 TOOLS = [
-    tool("get_my_profile", "Read the current caller's profile. A phone number is shown only if the caller asks for it."),
+    tool("get_my_profile", "Read the current caller's profile. Set include_number only when the caller asks for it.", include_number="boolean"),
     tool("get_assistant_settings", "Read user-facing settings for this caller. Includes no passwords or API keys."),
-    tool("list_family", "List family profiles for the owner. Numbers are shown only when the owner requests contacts or numbers."),
+    tool("list_family", "List family profiles for the owner. Set include_numbers only when the owner requests contact details.", include_numbers="boolean"),
     tool("remember", "Save a fact or preference the person explicitly asks to remember.", ("text",), text="string"),
     tool("forget", "Delete a saved note by its exact text on request.", ("text",), text="string"),
     tool("remind", "Schedule a reminder after an explicit request. Ask for time if unclear. Use an ISO 8601 local date/time.", ("text", "when"), text="string", when="string"),
@@ -79,6 +62,11 @@ TOOLS = [
     tool("announce", "Speak text on a controllable Home Assistant media player.", ("entity_id", "text"), entity_id="string", text="string"),
     tool("send_camera_photo", "Send a fresh snapshot to the configured Telegram recipient when the caller asks for a photo or to send a snapshot. Natural requests like «фото с камеры двора» need no repeated confirmation. Use see_camera when asked to look or describe. Omit camera to use this call's camera.", camera="string"),
 ]
+PHONE_TOOLS = {
+    "end_phone_call": tool("end_phone_call", "End the active call after saying goodbye. Use when the caller's meaning or conversation clearly indicates they are done. Do not use if they are still asking for help, quoting a farewell, or asking you to stay.", ("goodbye",), goodbye="string"),
+    "open_assigned_gate": tool("open_assigned_gate", "Open only the gate assigned to this caller, when they want it opened. The phone session handles the optional PIN."),
+    "read_call_reminder": tool("read_call_reminder", "Play the private reminder for this call after the recipient agrees or asks to hear it. Use once."),
+}
 SAFE_SERVICES = {
     "light": {"turn_on", "turn_off", "toggle"},
     "switch": {"turn_on", "turn_off", "toggle"},
@@ -493,12 +481,12 @@ class Brain:
                 raise
             return await self._picture(alternate)
 
-    async def _tool(self, name, arguments, camera_entity=None, *, explicit_photo=False, phrase="", on_progress=None, known_names=None):
+    async def _tool(self, name, arguments, camera_entity=None, *, on_progress=None, known_names=None):
         if not isinstance(arguments, dict):
             return "Некорректные аргументы команды"
         if name == "get_my_profile":
             result = {"name": self.profile_name, "role": "владелец" if self.owner else "участник семьи"}
-            if re.search(r"\b(?:номер|телефон)\w*", phrase, re.I):
+            if arguments.get("include_number") is True:
                 result["phone_number"] = self.caller_number or None
             return result
         if name == "get_assistant_settings":
@@ -520,7 +508,7 @@ class Brain:
         if name == "list_family":
             if not self.owner:
                 return "Семейный справочник доступен владельцу"
-            numbers = bool(re.search(r"\b(?:номер|телефон|контакт)\w*", phrase, re.I))
+            numbers = arguments.get("include_numbers") is True
             profiles = [{"name": self.profile_name, "number": self.caller_number},
                         *family_profiles(self.options.get("family_members", [])).values()]
             return [{"name": profile["name"], **({"phone_number": profile["number"]} if numbers else {})}
@@ -530,15 +518,13 @@ class Brain:
             return [{"id": row["entity_id"], "name": row.get("attributes", {}).get("friendly_name")}
                     for row in rows if row["entity_id"].startswith("zone.")]
         if name in {"remember", "forget", "remind", "remind_when", "run_when", "list_reminders", "cancel_reminder"}:
-            return await self._personal_tool(name, arguments, phrase, on_progress)
+            return await self._personal_tool(name, arguments, on_progress)
         if name == "find_devices":
             return await self._find_devices(arguments.get("query", ""), arguments.get("domain"))
 
         if name in ("see_camera", "send_camera_photo"):
             entity = arguments.get("camera") or camera_entity or self.options.get("camera_entity")
             target = self.options.get("telegram_photo_target", "")
-            if name == "send_camera_photo" and not explicit_photo:
-                return "Уточни, нужен ли снимок в Telegram"
             if name == "send_camera_photo" and not (
                 self.share_photo and isinstance(target, str) and target.startswith("notify.")
                 and ENTITY_ID.fullmatch(target)
@@ -677,15 +663,13 @@ class Brain:
             return {"accepted": True, "device": self._state(row)}
         return "Unknown tool"
 
-    async def _personal_tool(self, name, args, phrase, on_progress=None):
+    async def _personal_tool(self, name, args, on_progress=None):
         if not self.personal:
             return "Личная память недоступна"
         if name == "list_reminders":
             return {"pending": self.personal.pending(self.profile),
                     "recent_actions": self.personal.action_history(self.profile)}
         if name == "cancel_reminder":
-            if not re.search(r"\b(?:отмен|удал|убер)\w*", phrase, re.I):
-                return "Уточни, нужно ли отменить напоминание"
             removed = self.personal.cancel(self.profile, str(args.get("id", "")))
             return "Напоминание отменено" if removed else "Напоминание не найдено"
         text = args.get("text")
@@ -693,20 +677,12 @@ class Brain:
             return "Возьми краткое описание из разговора"
         text = text.strip()
         if name == "remember":
-            if not phrase.strip():
-                return "Нужна просьба собеседника"
             if on_progress:
                 on_progress("Запоминаю: " + spoken_name(text) + ".")
             self.personal.remember(self.profile, text)
             return "Запомнил"
         if name == "forget":
-            if not re.search(r"\b(?:забуд|удал|сотри)\w*", phrase, re.I):
-                return "Уточни, нужно ли удалить запись"
             return "Запись удалена" if self.personal.forget(self.profile, text) else "Запись не найдена"
-        if not phrase.strip() or re.search(
-            r"\bне\s+(?:надо\s+|нужно\s+)?(?:созда|став|напомина|включ|выключ|запуска)\w*", phrase, re.I
-        ):
-            return "Оставляю всё как есть"
         if name == "run_when":
             action_entity, service = args.get("action_entity"), args.get("service")
             if (not isinstance(service, str) or service in {"volume_set", "set_temperature", "set_value", "select_option", "set_percentage", "set_cover_position"}
@@ -786,19 +762,25 @@ class Brain:
             raise ValueError("Time must be in the future")
         return due
 
-    async def reply(self, phrase, camera_entity=None, *, on_progress=None):
+    async def reply(self, phrase, camera_entity=None, *, on_progress=None, phone_actions=None):
         if on_progress is not None:
-            return await self._reply(phrase, camera_entity, on_progress)
+            return await self._reply(phrase, camera_entity, on_progress, phone_actions)
         async with self.lock:
-            return await self._reply(phrase, camera_entity, None)
+            return await self._reply(phrase, camera_entity, None, phone_actions)
 
-    async def _reply(self, phrase, camera_entity, on_progress):
+    async def _reply(self, phrase, camera_entity, on_progress, phone_actions):
         profile = active_profile(self.options)
         if not profile or not profile.get("model") or (profile["id"] == "deepseek" and not profile["api_key"]):
             return "Настрой модель и подключение LLM в панели JARVIS."
         user_message = {"role": "user", "content": phrase}
-        explicit_photo = photo_requested(phrase)
         messages = [self.system_message, *self.history, user_message]
+        available_tools = TOOLS + [PHONE_TOOLS[name] for name in (phone_actions or {})]
+        if phone_actions is not None:
+            messages.insert(1, {"role": "system", "content":
+                "Это живой звонок. Выбирай инструменты по смыслу реплики и предыдущих реплик. "
+                "Если человек закончил разговор, вызови end_phone_call с коротким прощанием. "
+                "Простая благодарность ещё не означает конец. Если есть просьба, сначала помоги."})
+        used_phone_actions = set()
         phrase_key = " ".join(SEARCH_WORDS.findall(phrase.lower().replace("ё", "е")))[:160]
         if self.personal:
             learned = self.personal.learned(self.profile, phrase_key)
@@ -825,7 +807,7 @@ class Brain:
             for _ in range(6):
                 parameters = completion_options(profile)
                 payload = {"model": profile["model"], "messages": messages,
-                           "tools": TOOLS, "tool_choice": "auto", **parameters}
+                           "tools": available_tools, "tool_choice": "auto", **parameters}
                 slower = profile["effort"] not in {"off", "default"}
                 async with self.http.post(
                     base_url(profile["base_url"]) + "/chat/completions", json=payload,
@@ -854,11 +836,23 @@ class Brain:
                     name=call["function"]["name"]
                     try:
                         args = json.loads(call["function"].get("arguments") or "{}")
-                        if name == "call_ha_service":
+                        if name in PHONE_TOOLS:
+                            if name not in (phone_actions or {}) or name in used_phone_actions:
+                                result = "Действие недоступно."
+                            elif len(calls) > 1 and name in {"end_phone_call", "read_call_reminder"}:
+                                result = "Заверши остальные действия и вызови этот инструмент отдельно, если ещё нужно."
+                            elif not isinstance(args, dict):
+                                result = "Неверные параметры."
+                            else:
+                                used_phone_actions.add(name)
+                                result = await phone_actions[name](args)
+                                if isinstance(result, CallOutput):
+                                    return result
+                        elif name == "call_ha_service":
                             async with self.action_lock:
-                                result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo, phrase=phrase, on_progress=announce_progress, known_names=known_names)
+                                result = await self._tool(name, args, camera_entity, on_progress=announce_progress, known_names=known_names)
                         else:
-                            result = await self._tool(name, args, camera_entity, explicit_photo=explicit_photo, phrase=phrase, on_progress=announce_progress, known_names=known_names)
+                            result = await self._tool(name, args, camera_entity, on_progress=announce_progress, known_names=known_names)
                         if name == "find_devices" and isinstance(result, dict):
                             known_names.update((row["entity_id"], row.get("name")) for row in result.get("devices", []))
                         if self.personal and isinstance(result, dict):
