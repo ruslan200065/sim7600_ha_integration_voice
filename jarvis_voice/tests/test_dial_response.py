@@ -107,6 +107,19 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
         service.brain._ha.assert_any_await("POST", "/api/services/switch/turn_on", {"entity_id": "switch.second"})
         self.assertEqual(sum(c.args[0] == "POST" for c in service.brain._ha.await_args_list), 1)
 
+    async def test_failed_session_restarts_only_while_same_call_connected(self):
+        service = Server({"api_token": "test"})
+        service.modem.call_state = "connected"
+        service.modem.call_id = 12
+        service._dialog = AsyncMock(side_effect=[False, None])
+        with patch.object(server_module.asyncio, "sleep", AsyncMock()):
+            await service._start_session(12, "hello", None)
+        self.assertEqual(service._dialog.await_count, 2)
+        service._dialog.reset_mock()
+        service.modem.call_id = 13
+        await service._start_session(12, "hello", None)
+        service._dialog.assert_not_awaited()
+
     async def test_failed_greeting_retries_in_the_same_call(self):
         for error, reset in ((RuntimeError("speech unavailable"), False),
                              (server_module.PCMPlaybackError("USB write failed"), True)):

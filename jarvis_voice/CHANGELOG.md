@@ -1,3 +1,8 @@
+## 0.4.37 (experimental)
+
+- Retry a failed voice session within the same connected call.
+- Broaden temperature discovery and clarify one-shot task defaults for the LLM.
+
 ## 0.4.36
 
 - Separate device-resolution cache from personal memory and explain its purpose in the panel. (experimental)

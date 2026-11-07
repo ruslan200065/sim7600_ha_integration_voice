@@ -351,8 +351,15 @@ class Server:
 
     async def _start_session(self, call_id, prompt, camera, reminder_id=None):
         async with self.session_lock:
-            if (self.modem.call_id, self.modem.call_state) == (call_id, "connected"):
-                await self._dialog(prompt, camera, reminder_id)
+            for attempt in range(2):
+                if (self.modem.call_id, self.modem.call_state) != (call_id, "connected"):
+                    return
+                failed = await self._dialog(prompt, camera, reminder_id)
+                if failed is not False:
+                    return
+                LOG.warning("Voice session recovery call=%s attempt=%s", call_id, attempt + 1)
+                await asyncio.sleep(1)
+            LOG.error("Voice session recovery exhausted call=%s", call_id)
 
     async def start_call_audio(self, call_id):
         for attempt in range(3):
@@ -530,7 +537,8 @@ class Server:
         except Exception as exc:
             self.last_error=str(exc)[:250]
             self.mode="error"
-            LOG.exception("Voice session failed")
+            LOG.exception("Voice session failed call=%s", self.modem.call_id)
+            return False
             # Do not hang up just because the speech service fails: leave the call under user control.
         finally:
             self.keypad = None
