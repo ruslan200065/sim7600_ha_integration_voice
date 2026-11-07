@@ -1,3 +1,7 @@
+## 0.4.35 (experimental)
+
+- Tell the model when a private reminder is waiting for the caller’s consent.
+
 ## 0.4.34 (experimental)
 
 - Let the LLM select conversational tools, including call completion, gate access and reminder playback.
