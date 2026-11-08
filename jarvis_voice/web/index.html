@@ -6,6 +6,7 @@
   <title>Настройки JARVIS Q1</title>
   <link rel="stylesheet" href="assets/panel.css">
   <script src="assets/panel.js" defer></script>
+  <script src="assets/operations.js" defer></script>
 </head>
 <body>
   <main class="shell">
@@ -21,6 +22,8 @@
         <button type="button" data-tab="calls" aria-current="page">Звонки</button>
         <button type="button" data-tab="family">Семья</button>
         <button type="button" data-tab="devices">Устройства</button>
+        <button type="button" data-tab="knowledge">Карта дома</button>
+        <button type="button" data-tab="operations">Задачи и уведомления</button>
         <button type="button" data-tab="voice">Голос и интеграции</button>
         <button type="button" data-tab="personal">Память и правила</button>
         <button type="button" data-tab="history">Журнал</button>
@@ -225,6 +228,19 @@
             </div>
           </fieldset>
         </form>
+    <section class="view" data-view="operations" hidden><div id="operations-content"></div></section>
+    <section class="view" data-view="knowledge" hidden>
+      <div class="section-heading"><div><p class="eyebrow">Как Джарвис понимает дом</p><h2>Карта дома</h2></div><button type="button" id="knowledge-refresh">Обновить</button></div>
+      <p class="intro">Выберите устройство, добавьте разговорные названия, комнату и назначение. Это дополнение к данным Home Assistant: права доступа остаются прежними.</p>
+      <section class="card"><div class="fields">
+        <label>Найти устройство<input type="search" id="knowledge-search" placeholder="Свет, кухня, entity_id…"></label>
+        <label>Устройство<select id="knowledge-entity"></select></label>
+        <label>Разговорные названия<textarea id="knowledge-aliases" rows="3" placeholder="Каждое название с новой строки"></textarea></label>
+        <label>Комната<input id="knowledge-room" maxlength="100" placeholder="Например, мамина комната"></label>
+        <label>Назначение<input id="knowledge-purpose" maxlength="300" placeholder="Основной свет над столом"></label>
+      </div><div class="actions"><button type="button" id="knowledge-save" class="primary">Сохранить описание</button><button type="button" id="knowledge-remove">Вернуть данные HA</button></div><output id="knowledge-status" aria-live="polite"></output></section>
+      <div id="knowledge-list"></div>
+    </section>
     <section class="view" data-view="personal" hidden>
       <div class="section-heading"><div><p class="eyebrow">Личный помощник</p><h2>Память и правила</h2></div></div>
       <div class="card actions">

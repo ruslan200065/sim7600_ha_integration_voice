@@ -1,4 +1,6 @@
 """DeepSeek tool calling, HA entity allowlist and on-demand visual inspection."""
+from assistant_features import AssistantFeatures, FEATURE_TOOLS
+from workflows import expected_outcome, outcome_matches
 import base64
 from contextvars import ContextVar
 from datetime import datetime, timedelta
@@ -17,22 +19,22 @@ import aiohttp
 
 LOG = logging.getLogger(__name__)
 REPLY_TURN = ContextVar("jarvis_reply_turn", default=None)
-ACTION_TOOLS = frozenset({"call_ha_service", "send_camera_photo", "announce", "remember", "forget", "remind", "remind_when", "run_when", "cancel_reminder", "open_assigned_gate", "handle_call_reminder"})
+ACTION_TOOLS = frozenset({"call_ha_service", "send_camera_photo", "announce", "remember", "forget", "remind", "remind_when", "run_when", "cancel_reminder", "open_assigned_gate", "handle_call_reminder", "save_scenario", "run_scenario", "resume_task", "cancel_task", "delete_scenario", "set_notification_policy"})
 
 def search_stem(word):
     match = RUSSIAN_ENDING.fullmatch(word)
     return match[1] if match else word
 
 
-def tool(name, description, required=(), **properties):
+def tool(tool_name, description, required=(), **properties):
     return {
         "type": "function",
         "function": {
-            "name": name,
+            "name": tool_name,
             "description": description,
             "parameters": {
                 "type": "object",
-                "properties": {key: {"type": kind} for key, kind in properties.items()},
+                "properties": {key: {"type": kind, **({"items": {"type": "object"}} if kind == "array" else {})} for key, kind in properties.items()},
                 "required": list(required),
             },
         },
@@ -42,15 +44,29 @@ def tool(name, description, required=(), **properties):
 DEFAULT_PERSONA = ("Ты Джарвис, живой русскоязычный дворецкий и помощник по дому. Говори тепло, естественно и "
                    "по-человечески, с лёгким юмором, без шаблонных фраз. Сам понимай, чего хочет человек, "
                    "и сам выбирай нужные действия, не заставляя его подбирать слова. "
-                   "Обращайся на «вы», пока собеседник не попросит иначе.")
+                   "Обращайся на «вы», пока собеседник не попросит иначе. "
+                   "При уточнении или отмене используй контекст и list_tasks/cancel_task: отличай ещё не отправленную команду от выполненной, не обещай откат. "
+                   "Для нескольких действий используй сценарии; сохраняй их только по просьбе. Продолжай задачу через resume_task после уточнения. "
+                   "Смотри verified в результате управления: accepted означает только приём команды. Не заявляй об успехе без подтверждения состояния.")
 LEGACY_PERSONA = ("Ты Джарвис, краткий русскоязычный голосовой ассистент. Задавай уточняющие вопросы. "
                   "Не утверждай, что действие выполнено, до успешного ответа инструмента.")
 
 TOOLS = [
+    tool("recent_events", "Read this caller's recent event episodes with latest context and repeat counts. Useful when asked what changed or why the assistant called."),
+    tool("list_tasks", "List this caller's pending, running and completed tasks, with IDs and results."),
+    tool("resume_task", "Continue a task paused for clarification or confirmation. Use its ID from list_tasks. Set confirmed only after the caller agreed; ordinary device checks still apply.", ("id",), id="string", confirmed="boolean"),
+    tool("cancel_task", "Cancel remaining steps of a task on request, using its ID from list_tasks. Already sent physical commands cannot be undone.", ("id",), id="string"),
+    tool("save_scenario", "Save a reusable named sequence discussed with the caller. Each steps item has tool and arguments. Use ordinary permitted tools; no raw HA service bypass. Saving does not execute it.", ("name","steps"), name="string", steps="array"),
+    tool("list_scenarios", "List this caller's saved scenarios and their steps."),
+    tool("run_scenario", "Run a saved scenario requested by the caller. Each step checks current device permissions and result; stop on failure or need for confirmation.", ("name",), name="string"),
+    tool("delete_scenario", "Delete the caller's saved scenario on request.", ("name",), name="string"),
+    tool("list_memories", "List the caller's personal notes with source and metadata. Use to resolve what to forget or change."),
+    tool("get_notification_policy", "Read this caller's notification channel and quiet hours."),
+    tool("set_notification_policy", "Change this caller's notification preferences only on request. Channel call or telegram; quiet_start/end HH:MM; timezone IANA; telegram_target is a configured chat ID, not a phone number.", channel="string", quiet_start="string", quiet_end="string", timezone="string", urgent_bypass="boolean", telegram_target="string"),
     tool("get_my_profile", "Read the current caller's profile. Set include_number only when the caller asks for it.", include_number="boolean"),
     tool("get_assistant_settings", "Read user-facing settings for this caller. Includes no passwords or API keys."),
     tool("list_family", "List family profiles for the owner. Set include_numbers only when the owner requests contact details.", include_numbers="boolean"),
-    tool("remember", "Save a fact or preference the person explicitly asks to remember.", ("text",), text="string"),
+    tool("remember", "Save a fact, preference or conversational name only when the person asks. Choose kind fact, preference or name from context.", ("text",), text="string", kind="string"),
     tool("forget", "Delete a saved note by its exact text on request.", ("text",), text="string"),
     tool("remind", "Schedule a reminder after an explicit request. Ask for time if unclear. Use an ISO 8601 local date/time.", ("text", "when"), text="string", when="string"),
     tool("find_zones", "List configured Home Assistant zones by name and ID for an arrival reminder."),
@@ -233,10 +249,12 @@ STATE_ATTRIBUTES = {
 class Brain:
     def __init__(self, options, session, capture_camera, listen_room=None, share_photo=None, *,
                  personal=None, profile="owner", profile_name="Владелец", timezone_name="UTC",
-                 restricted_entities=(), registry_cache=None, caller_number="", owner=True):
+                 restricted_entities=(), registry_cache=None, caller_number="", owner=True, knowledge=None, policies=None, timeline=None):
         self.options = options
         self.personal = personal
+        self.knowledge, self.policies, self.timeline = knowledge, policies, timeline
         self.profile = profile
+        self.features = AssistantFeatures(self, personal.path.parent / "workflows.sqlite3") if personal else None
         self.profile_name = profile_name
         self.caller_number = caller_number or (options.get("allowed_number", "") if owner else "")
         self.owner = owner
@@ -528,6 +546,12 @@ class Brain:
             and (not domain_filter or row["entity_id"].split(".", 1)[0] == domain_filter)
         ]
         metadata = await self._registry_metadata({row["entity_id"] for row in visible})
+        if self.knowledge:
+            overrides = await asyncio.to_thread(self.knowledge.entities)
+            metadata = {entity: {**metadata.get(entity, {}),
+                "aliases": [*metadata.get(entity, {}).get("aliases", []), *value.get("aliases", []), value.get("purpose", "")],
+                **({"area": value["room"]} if value.get("room") else {})} for entity, value in overrides.items()} | {
+                    entity: value for entity, value in metadata.items() if entity not in overrides}
         matches = []
         for row in visible:
             entity_id = row["entity_id"]
@@ -648,6 +672,8 @@ class Brain:
                     continue
                 zones.append({"id": entity, "name": attrs.get("friendly_name")})
             return zones
+        if name in FEATURE_TOOLS:
+            return await self.features.tool(name, arguments) if self.features else {"error": "Личный профиль недоступен."}
         if name in {"remember", "forget", "remind", "remind_when", "run_when", "list_reminders", "cancel_reminder"}:
             return await self._personal_tool(name, arguments, on_progress)
         if name == "find_devices":
@@ -688,7 +714,14 @@ class Brain:
                 return "Не удалось получить кадр с выбранной камеры"
             if name == "send_camera_photo":
                 try:
-                    await self.share_photo(target, picture, mime)
+                    policy = await asyncio.to_thread(self.policies.get, self.profile) if self.policies else {}
+                    recipient = policy.get("telegram_target")
+                    if not self.owner and not recipient:
+                        return "Для вашего профиля не настроен личный получатель Telegram."
+                    if recipient:
+                        await self.share_photo(target, picture, mime, recipient=recipient)
+                    else:
+                        await self.share_photo(target, picture, mime)
                 except (RuntimeError, ValueError, TimeoutError, aiohttp.ClientError) as exc:
                     LOG.warning("Telegram photo delivery failed: %s status=%s",
                                 type(exc).__name__, getattr(exc, "status", "-"))
@@ -796,15 +829,19 @@ class Brain:
                     detail = ", " + spoken_name(str(data.get("value", data.get("option"))))
                 target = f"«{label}»" if label else "устройство"
                 on_progress(f"{SERVICE_PROGRESS.get(service, 'Выполняю команду')} {target}{detail}.")
-            before = row.get("last_updated") if isinstance(row, dict) else None
+            expected = expected_outcome(service, {**arguments, **data}, row)
             await self._ha("POST", "/api/services/" + domain + "/" + service, data)
             row = await self._ha("GET", "/api/states/" + entity)
             for _ in range(STATE_SETTLE_POLLS):
-                if before is None or not isinstance(row, dict) or row.get("last_updated") != before:
+                if not expected or outcome_matches(row, expected):
                     break
                 await asyncio.sleep(STATE_SETTLE_DELAY)
                 row = await self._ha("GET", "/api/states/" + entity)
-            return {"accepted": True, "device": self._state(row)}
+            verified = outcome_matches(row, expected) if expected else None
+            return {"accepted": True, "verified": verified, "expected": expected,
+                    "verification": "confirmed" if verified else "not_confirmed" if expected else "not_observable",
+                    "instruction": "Подтверждай выполнение только при verified=true. Иначе сообщи, что команда принята, но результат не подтверждён; не повторяй физическую команду автоматически.",
+                    "device": self._state(row)}
         return "Unknown tool"
 
     async def _personal_tool(self, name, args, on_progress=None):
@@ -821,12 +858,20 @@ class Brain:
             return "Возьми краткое описание из разговора"
         text = text.strip()
         if name == "remember":
+            kind = args.get("kind", "fact")
+            if kind not in {"fact", "preference", "name"}:
+                return {"error": "Выбери вид памяти fact, preference или name."}
             if on_progress:
                 on_progress("Запоминаю: " + spoken_name(text) + ".")
             self.personal.remember(self.profile, text)
+            if self.knowledge:
+                self.knowledge.remember(self.profile, text, source="voice", kind=kind)
             return "Запомнил"
         if name == "forget":
-            return "Запись удалена" if self.personal.forget(self.profile, text) else "Запись не найдена"
+            removed = self.personal.forget(self.profile, text)
+            if self.knowledge:
+                self.knowledge.forget(self.profile, text)
+            return "Запись удалена" if removed else "Запись не найдена"
         if self.personal.count_pending(self.profile) >= MAX_PENDING_RULES:
             return f"Уже есть {MAX_PENDING_RULES} активных напоминаний и правил. Сначала отмени ненужные."
         if name == "run_when":
@@ -951,7 +996,12 @@ class Brain:
         except Exception:
             LOG.exception("Could not record LLM usage")
 
-    def _audit(self, name, args, result):
+    def _audit(self, name, args, result, duration_ms=None):
+        if self.timeline:
+            try:
+                self.timeline.record(self.profile, str(getattr(self, "session_call", "room")), "tool:" + name, "completed", duration_ms=duration_ms, details={"arguments": args, "result": result})
+            except Exception:
+                LOG.warning("Could not trace tool result")
         if not self.personal:
             return
         try:
@@ -1204,6 +1254,7 @@ class Brain:
                     function = call.get("function") if isinstance(call, dict) else None
                     name = function.get("name") if isinstance(function, dict) else ""
                     args = {}
+                    tool_started = time.monotonic()
                     try:
                         if position >= MAX_TOOL_CALLS_PER_STEP:
                             raise OverflowError
@@ -1221,8 +1272,10 @@ class Brain:
                                 if isinstance(result, CallOutput):
                                     return result
                         elif name == "call_ha_service":
-                            async with self.action_lock:
-                                result = await self._tool(name, args, camera_entity, on_progress=announce_progress, known_names=known_names)
+                            async def run_action(tool_name, tool_args):
+                                async with self.action_lock:
+                                    return await self._tool(tool_name, tool_args, camera_entity, on_progress=announce_progress, known_names=known_names)
+                            result = await self.features.action(name, args, run_action) if self.features else await run_action(name,args)
                         else:
                             result = await self._tool(name, args, camera_entity, on_progress=announce_progress, known_names=known_names)
                         if name == "find_devices" and isinstance(result, dict):
@@ -1245,7 +1298,7 @@ class Brain:
                         self.completed_actions.append({"turn": turn, "tool": name,
                             "arguments": args, "result": str(result)[:1600]})
                         del self.completed_actions[:-32]
-                    await asyncio.to_thread(self._audit, name, args, result)
+                    await asyncio.to_thread(self._audit, name, args, result, (time.monotonic()-tool_started)*1000)
                     call_id = call.get("id", "") if isinstance(call, dict) else ""
                     if isinstance(result, dict) and "image" in result:
                         # Image content MUST be a new user message, not a tool result.

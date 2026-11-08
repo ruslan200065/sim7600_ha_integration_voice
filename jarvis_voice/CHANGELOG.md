@@ -1,3 +1,14 @@
+## 0.6.0 (experimental)
+
+- Verify observable device postconditions without retrying physical commands.
+- Add per-profile cancellable tasks, reusable multi-step scenarios and continuation after clarification.
+- Add an editable home vocabulary with device aliases, room and purpose.
+- Add notification channels, quiet hours, urgent opt-in and recipient-specific Telegram delivery.
+- Coalesce event episodes and durably queue call notifications with bounded delivery.
+- Add a paginated conversation timeline with stage timings and secret redaction.
+- Add memory provenance, classification and exact scoped deletion.
+- Add home-map and operations panels with structured editors.
+
 ## 0.5.2 (experimental)
 
 - Keep concurrent replies fast while retaining completed background actions and per-turn confirmations.

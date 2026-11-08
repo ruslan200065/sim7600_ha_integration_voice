@@ -18,6 +18,7 @@ from pathlib import Path
 from aiohttp import ClientError, ClientTimeout, web
 from audio import rms
 from modem import NUMBER
+from workflows import validate_steps
 from brain import SAFE_SERVICES
 from family import family_profiles, lock_entities
 from llm import DEEPSEEK_URL, EFFORTS, active_profile, base_url, list_models, merge_profiles
@@ -387,8 +388,77 @@ class SetupPanel:
         if profile not in profiles:
             raise web.HTTPNotFound(text="Профиль не найден.")
         data = await asyncio.to_thread(self.service.personal.dashboard, profile)
+        knowledge = getattr(self.service, "knowledge", None)
+        if knowledge:
+            metadata = {row["text"]: row for row in await asyncio.to_thread(knowledge.memories, profile)}
+            for note in data["notes"]:
+                note.update({**metadata.get(note["text"], {}), "owner_name": profiles[profile]})
         return web.json_response({**data, "profile": profile,
                                   "profiles": [{"id": key, "name": name} for key, name in profiles.items()]})
+
+    async def operations(self, request):
+        profiles = self.personal_profiles()
+        profile = request.query.get("profile") or next(iter(profiles))
+        if profile not in profiles:
+            raise web.HTTPNotFound(text="Профиль не найден.")
+        policies = getattr(self.service, "policies", None)
+        timeline = getattr(self.service, "timeline", None)
+        if policies is None or timeline is None:
+            raise web.HTTPServiceUnavailable(text="Службы задач ещё не готовы.")
+        member = next((item for item in self.service.family.values() if item["key"] == profile), None)
+        brain = self.service.caller_brain(member) if member else self.service.brain
+        manager = getattr(getattr(brain, "features", None), "workflows", None)
+        try:
+            if request.method == "PATCH":
+                data = await request.json()
+                if not isinstance(data, dict) or set(data) != {"policy"}:
+                    raise ValueError("Ожидались настройки уведомлений.")
+                policy = await asyncio.to_thread(policies.set, profile, data["policy"])
+                return web.json_response({"policy": policy})
+            if request.method == "POST":
+                data = await request.json()
+                if not isinstance(data, dict) or manager is None:
+                    raise ValueError("Задачи этого профиля недоступны.")
+                if data.get("action") == "cancel_task" and set(data) == {"action", "id"}:
+                    if not isinstance(data["id"], str):
+                        raise ValueError("Укажите задачу.")
+                    return web.json_response(manager.cancel(data["id"]))
+                if data.get("action") == "delete_scenario" and set(data) == {"action", "name"}:
+                    return web.json_response({"deleted": await asyncio.to_thread(manager.delete, data["name"])})
+                if data.get("action") == "save_scenario" and set(data) == {"action", "name", "steps"}:
+                    steps = validate_steps(data["steps"])
+                    for step in steps:
+                        args = step.get("arguments", {})
+                        entity = args.get("entity_id")
+                        if entity and (not isinstance(entity, str) or not brain._visible(entity)):
+                            raise ValueError("Устройство недоступно этому участнику.")
+                        if step["tool"] in {"call_ha_service", "get_entity_state", "announce"} and not entity:
+                            raise ValueError("Выберите устройство для каждого шага.")
+                        if step["tool"] == "call_ha_service" and args.get("service") not in brain._control_actions(entity):
+                            raise ValueError("Действие недоступно этому участнику.")
+                        if step["tool"] == "announce" and not brain._control_actions(entity):
+                            raise ValueError("Оповещение недоступно этому участнику.")
+                        camera = args.get("camera")
+                        if step["tool"] in {"see_camera", "send_camera_photo"} and camera and (
+                                not isinstance(camera, str) or not brain.camera_allowed(camera)):
+                            raise ValueError("Камера недоступна этому участнику.")
+                        # A stored scenario is a plan, never a persistent confirmation.
+                        args.pop("confirmed", None)
+                    saved = await asyncio.to_thread(manager.save, data["name"], steps)
+                    return web.json_response(saved)
+                raise ValueError("Неизвестное действие с задачей.")
+            offset = int(request.query.get("offset", 0))
+            policy, trace, scenarios = await asyncio.gather(
+                asyncio.to_thread(policies.get, profile),
+                asyncio.to_thread(timeline.list, profile, limit=100, offset=offset),
+                asyncio.to_thread(manager.list_scenarios) if manager else asyncio.sleep(0, result=[]),
+            )
+            return web.json_response({"profile": profile,
+                "profiles": [{"id": key, "name": value} for key, value in profiles.items()],
+                "policy": policy, "timeline": trace,
+                "tasks": manager.list_tasks() if manager else [], "scenarios": scenarios})
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
 
     async def personal_edit(self, request):
         profile = request.query.get("profile")
@@ -396,6 +466,11 @@ class SetupPanel:
         if profile not in self.personal_profiles() or kind not in {"notes", "preferences", "reminders"}:
             raise web.HTTPNotFound(text="Запись не найдена.")
         store = self.service.personal
+        knowledge = getattr(self.service, "knowledge", None)
+        old_note = None
+        if kind == "notes" and knowledge:
+            current = await asyncio.to_thread(store.dashboard, profile)
+            old_note = next((row["text"] for row in current["notes"] if str(row["id"]) == str(identifier)), None)
         if request.method == "DELETE":
             changed = await asyncio.to_thread(store.remove_record, profile, kind, identifier)
         else:
@@ -445,7 +520,36 @@ class SetupPanel:
                                                   value.strip() if value is not None else None)
         if not changed:
             raise web.HTTPConflict(text="Запись уже изменилась, выполнена или совпадает с другой.")
+        if kind == "notes" and knowledge:
+            if request.method == "DELETE" and old_note:
+                await asyncio.to_thread(knowledge.forget, profile, old_note)
+            elif request.method != "DELETE":
+                await asyncio.to_thread(knowledge.rename_memory, profile, old_note, text)
         return web.json_response({"updated": True})
+
+    async def knowledge(self, request):
+        store = self.service.knowledge
+        if request.method == "GET":
+            return web.json_response({"entities": await asyncio.to_thread(store.entities)})
+        entity = request.match_info["entity"]
+        if not ENTITY_ID.fullmatch(entity):
+            raise web.HTTPBadRequest(text="Выберите сущность Home Assistant.")
+        if request.method == "DELETE":
+            await asyncio.to_thread(store.remove_entity, entity)
+            return web.json_response({"updated": True})
+        try:
+            data = await request.json()
+            if not isinstance(data, dict) or data.keys() - {"aliases", "room", "purpose"}:
+                raise ValueError("Неверные поля карты дома.")
+            # Settings map is administrator-maintained and cannot create a phantom device.
+            await self.service.brain._ha("GET", "/api/states/" + entity)
+            value = await asyncio.to_thread(store.set_entity, entity, data.get("aliases", []),
+                                            data.get("room", ""), data.get("purpose", ""))
+        except (ValueError, TypeError) as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        except (ClientError, TimeoutError, RuntimeError) as exc:
+            raise web.HTTPBadGateway(text="Не удалось проверить устройство в Home Assistant.") from exc
+        return web.json_response({"entity": entity, **value})
 
     async def models(self, request):
         try:
@@ -759,7 +863,13 @@ class SetupPanel:
         app.router.add_static("/assets", ASSETS)
         app.router.add_get("/state", self.state)
         app.router.add_get("/entities", self.entities)
+        app.router.add_get("/knowledge", self.knowledge)
+        app.router.add_patch("/knowledge/{entity}", self.knowledge)
+        app.router.add_delete("/knowledge/{entity}", self.knowledge)
         app.router.add_post("/llm/models", self.models)
+        app.router.add_get("/operations", self.operations)
+        app.router.add_patch("/operations", self.operations)
+        app.router.add_post("/operations", self.operations)
         app.router.add_get("/personal", self.personal)
         app.router.add_patch("/personal/{kind}/{id}", self.personal_edit)
         app.router.add_delete("/personal/{kind}/{id}", self.personal_edit)

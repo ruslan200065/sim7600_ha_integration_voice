@@ -1,3 +1,6 @@
+from knowledge import Knowledge
+from notifications import NotificationPolicies
+from timeline import Timeline
 """JARVIS Voice Bridge: HA add-on HTTP API, SIM7600 call management, SpeechKit and DeepSeek."""
 import asyncio
 import json
@@ -107,6 +110,9 @@ class Server:
         data_dir = Path(os.environ.get("OPTIONS_PATH", "/data/options.json")).parent
         self.history = History(data_dir / "history.sqlite3")
         self.personal = Personal(data_dir / "personal.sqlite3")
+        self.knowledge = Knowledge(data_dir / "knowledge.sqlite3")
+        self.policies = NotificationPolicies(data_dir / "notifications.sqlite3")
+        self.timeline = Timeline(data_dir / "timeline.sqlite3")
         self.speech_cache = SpeechCache(data_dir / "speech_cache")
         self.microphone = MicrophoneMonitor(options.get("q1_mic_device", ""), self.mic_lock,
                                             data_dir / "microphone_monitor")
@@ -150,6 +156,7 @@ class Server:
         self.history_task = asyncio.create_task(self.write_history())
         self.http = ClientSession()
         self.brain = Brain(self.o, self.http, self.capture_camera, self.listen_room, self.share_photo,
+                           knowledge=self.knowledge, policies=self.policies, timeline=self.timeline,
                            personal=self.personal, profile=self.owner_key or "local",
                            profile_name=self.o.get("owner_name") or "Владелец",
                            restricted_entities=self.gates)
@@ -211,6 +218,9 @@ class Server:
             await asyncio.gather(self.history_task, return_exceptions=True)
         if self.speech:
             await self.speech.close()
+        for brain in [getattr(self, "brain", None), *self.family_brains.values(), getattr(self, "_room_brain", None)]:
+            if brain and getattr(brain, "features", None):
+                await brain.features.workflows.close()
         if self.http:
             await self.http.close()
 
@@ -398,11 +408,23 @@ class Server:
                     due = await asyncio.to_thread(self.personal.due, now, self.reminder_numbers)
                     if due:
                         identifier, profile, text = due[0]
+                        context = await asyncio.to_thread(self.personal.reminder_context, profile, identifier)
+                        decision = await asyncio.to_thread(self.policies.decide, profile, now, context.get("notification_urgent", False))
+                        if not decision["allowed"]:
+                            await asyncio.to_thread(self.personal.retry_after, identifier, datetime.fromisoformat(decision["defer_until"]))
+                            continue
                         if not await asyncio.to_thread(self.personal.reserve_delivery, identifier, profile, now):
+                            continue
+                        if decision["channel"] == "telegram":
+                            try:
+                                await self.send_telegram_notice(decision["telegram_target"], "Напоминание. " + text)
+                                await asyncio.to_thread(self.personal.delivered, identifier)
+                            except (RuntimeError, ClientError, TimeoutError):
+                                LOG.warning("Telegram reminder delivery not confirmed")
                             continue
                         self.reminder_call = (self.modem.call_id + 1, identifier, self.reminder_numbers[profile])
                         try:
-                            await self.dial_number(self.reminder_numbers[profile], "Напоминание. " + text)
+                            await self.dial_number(self.reminder_numbers[profile], "Напоминание. " + text, context.get("camera"))
                         except (web.HTTPException, RuntimeError, OSError):
                             self.reminder_call = None
                             LOG.info("Reminder call deferred")
@@ -487,7 +509,8 @@ class Server:
                 options.update(allowed_entities=entities, observed_entities=entities,
                                observe_all_entities=access == "read_all", control_all_entities=False)
             self.family_brains[key] = Brain(
-                options, self.http, None, personal=self.personal, profile=key,
+                options, self.http, None, share_photo=self.share_photo, knowledge=self.knowledge, policies=self.policies, timeline=self.timeline,
+                           personal=self.personal, profile=key,
                 profile_name=member["name"], timezone_name=self.brain.timezone.key,
                 restricted_entities=self.gates, registry_cache=self.brain.registry_cache,
                 caller_number=member["number"], owner=False,
@@ -504,7 +527,8 @@ class Server:
                 "observe_all_entities": False, "control_all_entities": False,
             }
             self._room_brain = Brain(
-                options, self.http, None, personal=self.personal, profile="room",
+                options, self.http, None, share_photo=self.share_photo, knowledge=self.knowledge, policies=self.policies, timeline=self.timeline,
+                           personal=self.personal, profile="room",
                 profile_name="Комната", timezone_name=self.brain.timezone.key,
                 restricted_entities=self.gates, registry_cache=self.brain.registry_cache,
                 caller_number="", owner=False,
@@ -672,6 +696,9 @@ class Server:
                 return {"ok": True, "action": action}
 
             async def reply(phrase, *, on_progress):
+                await self.record_trace(member["key"] if member else self.owner_key or "local", call_id,
+                                        "recognized", "received", {"text": "[код не сохраняется]" if pending_pin > clock() else phrase})
+                started = clock()
                 async def list_locks(_args):
                     devices = []
                     for entity in allowed_locks:
@@ -716,14 +743,23 @@ class Server:
                 if allowed_locks:
                     actions["list_assigned_locks"] = list_locks
                     actions["open_assigned_gate"] = request_gate
-                return await brain.reply(phrase, camera_entity=camera, on_progress=on_progress,
-                                         phone_actions=actions)
+                answer = await brain.reply(phrase, camera_entity=camera, on_progress=on_progress,
+                                           phone_actions=actions)
+                await self.record_trace(member["key"] if member else self.owner_key or "local", call_id,
+                                        "reply", "ready", {"text": answer.text if isinstance(answer, CallOutput) else answer}, (clock()-started)*1000)
+                return answer
 
             async def play(text):
                 nonlocal reminder_id
                 if initial_reminder and text == prompt and not reminder_id:
                     return
-                await self._say(text)
+                started = clock()
+                try:
+                    await self._say(text)
+                except Exception:
+                    await self.record_trace(member["key"] if member else self.owner_key or "local", call_id, "playback", "failed", duration_ms=(clock()-started)*1000)
+                    raise
+                await self.record_trace(member["key"] if member else self.owner_key or "local", call_id, "playback", "sent", duration_ms=(clock()-started)*1000)
                 if (reminder_id and text == prompt
                     and (self.modem.call_id, self.modem.call_state) == (call_id, "connected")):
                     self.personal.delivered(reminder_id)
@@ -781,6 +817,63 @@ class Server:
         task = asyncio.create_task(run())
         tasks.add(task)
         task.add_done_callback(tasks.discard)
+
+    async def record_trace(self, profile, call_id, stage, status, details=None, duration_ms=None):
+        try:
+            await asyncio.to_thread(self.timeline.record, profile, str(call_id), stage, status, duration_ms, details)
+        except Exception:
+            LOG.warning("Could not store conversation trace")
+
+    async def send_telegram_notice(self, target, text):
+        payload = {"target": [target], "message": text}
+        bot = self.o.get("telegram_photo_target", "")
+        if bot:
+            payload["entity_id"] = bot
+        result = await self.brain._ha("POST", "/api/services/telegram_bot/send_message?return_response", payload, timeout=20)
+        chats = result.get("service_response", {}).get("chats", [])
+        if not any(chat.get("message_id") for chat in chats):
+            raise RuntimeError("Telegram did not confirm delivery")
+
+    async def notify_event(self, request):
+        data = await read_json(request)
+        member = data.get("member", "")
+        profile = self.owner_key if not member else next((row["key"] for row in self.family.values()
+                    if row["key"] == member or row["name"].casefold() == str(member).casefold()), None)
+        if profile not in self.reminder_numbers:
+            raise web.HTTPBadRequest(text="Choose a configured recipient")
+        text, source = data.get("text"), data.get("source")
+        if not isinstance(text, str) or not 0 < len(text.strip()) <= 500:
+            raise web.HTTPBadRequest(text="text must be 1..500 characters")
+        camera = data.get("camera")
+        if camera is not None:
+            selected_member = next((row for row in self.family.values() if row["key"] == profile), None)
+            if not isinstance(camera, str) or not self.caller_brain(selected_member).camera_allowed(camera):
+                raise web.HTTPBadRequest(text="Camera is not allowed for this recipient")
+        urgent = data.get("urgent", False)
+        if type(urgent) is not bool:
+            raise web.HTTPBadRequest(text="urgent must be boolean")
+        try:
+            incident = await asyncio.to_thread(self.policies.coalesce, profile, source, {"text": text, "camera": data.get("camera")})
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        await self.record_trace(profile, "event:" + incident["id"], "event", "grouped" if not incident["notify"] else "new", incident)
+        if not incident["notify"]:
+            return web.json_response({"grouped": True, "incident": incident["id"], "count": incident["count"]})
+        now = datetime.now(timezone.utc)
+        decision = await asyncio.to_thread(self.policies.decide, profile, now, urgent)
+        if not decision["allowed"] or decision["channel"] == "call":
+            due = datetime.fromisoformat(decision["defer_until"]) if decision["defer_until"] else now
+            context = {"kind": "time", "notification_urgent": urgent, "source": source, "camera": data.get("camera")}
+            identifier = await asyncio.to_thread(self.personal.reminder, profile, member or "Владелец", text, due, context)
+            return web.json_response({"queued": True, "id": identifier, "incident": incident["id"]})
+        try:
+            await self.send_telegram_notice(decision["telegram_target"], text)
+        except (RuntimeError, ClientError, TimeoutError):
+            # Preserve a failed delivery as a bounded requester-scoped reminder.
+            identifier = await asyncio.to_thread(self.personal.reminder, profile, member or "Владелец", text, now,
+                {"kind": "time", "notification_urgent": urgent, "source": source, "camera": data.get("camera")})
+            return web.json_response({"queued": True, "id": identifier})
+        return web.json_response({"sent": True, "channel": decision["channel"], "incident": incident["id"]})
 
     @web.middleware
     async def auth(self, request, handler):
@@ -938,12 +1031,13 @@ class Server:
         phrase = await self.speech.recognize(pcm)
         return {"seconds": seconds, "rms": level, "speech": phrase}
 
-    async def share_photo(self, target, picture, mime):
+    async def share_photo(self, target, picture, mime, recipient=None):
         ticket = secrets.token_urlsafe(32)
         self.shared_photos[ticket] = (picture, mime)
         try:
             result = await self.brain._ha("POST", "/api/services/telegram_bot/send_photo?return_response", {
                 "entity_id": target,
+                **({"target": [recipient]} if recipient else {}),
                 "url": f"http://{socket.gethostname()}:8099/q1/shared-photo/{ticket}",
             }, timeout=25)
             chats = result.get("service_response", {}).get("chats", [])
@@ -1170,7 +1264,7 @@ class Server:
         app=web.Application(middlewares=[self.auth],client_max_size=256*1024)
         for method,path,fn in (
             ("GET","/health",self.health),("GET","/status",self.status),
-            ("POST","/dial",self.dial),("POST","/hangup",self.hangup),
+            ("POST","/notify",self.notify_event),("POST","/dial",self.dial),("POST","/hangup",self.hangup),
             ("POST","/answer",self.answer),("POST","/chat",self.chat),
             ("POST","/dtmf",self.send_dtmf),
             ("POST","/speak",self.speak),

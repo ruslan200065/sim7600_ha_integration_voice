@@ -197,6 +197,15 @@ function personalRecord(kind, record, profile) {
   text.value = kind === "preferences" ? record.phrase : record.text;
   text.readOnly = Boolean(record.completed);
   fields.append(personalInput(kind === "preferences" ? "Фраза" : "Текст", text));
+  if (kind === "notes") {
+    const metadata = document.createElement("p");
+    metadata.className = "hint";
+    const sources = {voice:"По просьбе в разговоре",panel:"Сохранено в панели",import:"Импортировано"};
+    const kinds = {fact:"Факт",preference:"Предпочтение",name:"Название"};
+    metadata.textContent = [record.owner_name, kinds[record.kind] || "Личная заметка",
+      sources[record.source] || "Существующая запись", record.created_at ? new Date(record.created_at).toLocaleString("ru-RU") : ""].filter(Boolean).join(" · ");
+    card.append(metadata);
+  }
   let entity, due, threshold;
   if (kind === "preferences") {
     entity = document.createElement("input");
@@ -362,8 +371,9 @@ function setTab(key) {
     else tab.removeAttribute("aria-current");
   }
   for (const view of views) view.hidden = view.dataset.view !== key;
-  form.hidden = key === "history" || key === "personal" || key === "audit";
+  form.hidden = key === "history" || key === "personal" || key === "audit" || key === "knowledge" || key === "operations";
   if (key === "personal") loadPersonal();
+  if (key === "knowledge") loadKnowledge();
   if (key === "audit") loadAudit();
   if (key === "calls" || key === "hardware") refreshPhone();
   if (key === "voice" && current) loadActiveModels();
@@ -1157,3 +1167,63 @@ request("state")
   .then(response => response.json())
   .then(render)
   .catch(error => showNotice("Не удалось загрузить настройки. " + error.message, true));
+
+
+// Administrator-maintained vocabulary; descriptive fields never grant control access.
+let homeVocabulary = {}, homeCatalog = [], knowledgeTicket = 0;
+const knowledgeStatus = document.querySelector("#knowledge-status");
+const knowledgeEntity = document.querySelector("#knowledge-entity");
+function fillKnowledgeEditor() {
+  const item = homeVocabulary[knowledgeEntity.value] || {};
+  document.querySelector("#knowledge-aliases").value = (item.aliases || []).join("\n");
+  document.querySelector("#knowledge-room").value = item.room || "";
+  document.querySelector("#knowledge-purpose").value = item.purpose || "";
+  document.querySelector("#knowledge-save").disabled = !knowledgeEntity.value;
+  document.querySelector("#knowledge-remove").disabled = !homeVocabulary[knowledgeEntity.value];
+}
+function renderKnowledge() {
+  const selected = knowledgeEntity.value;
+  const search = normalized(document.querySelector("#knowledge-search").value).trim();
+  const rows = homeCatalog.filter(row => !search || normalized([row.id,row.name,row.area,...(homeVocabulary[row.id]?.aliases || [])].join(" ")).includes(search));
+  knowledgeEntity.replaceChildren(...rows.map(row => new Option([row.name,row.area,row.id].filter(Boolean).join(" · "),row.id)));
+  if (rows.some(row => row.id === selected)) knowledgeEntity.value = selected;
+  fillKnowledgeEditor();
+  const list = document.querySelector("#knowledge-list");
+  list.replaceChildren();
+  for (const row of rows.filter(row => homeVocabulary[row.id])) {
+    const item = homeVocabulary[row.id];
+    const card = document.createElement("article");card.className = "card";
+    const name = document.createElement("h3");name.textContent = row.name;
+    const details = document.createElement("p");details.textContent = [row.id,item.room,item.purpose,...item.aliases].filter(Boolean).join(" · ");
+    const edit = document.createElement("button");edit.type="button";edit.textContent="Изменить";
+    edit.addEventListener("click",()=>{knowledgeEntity.value=row.id;fillKnowledgeEditor();knowledgeEntity.focus();});
+    card.append(name,details,edit);list.append(card);
+  }
+}
+async function loadKnowledge() {
+  const ticket=++knowledgeTicket;
+  knowledgeStatus.textContent="Загружаем карту дома…";
+  try {
+    const [vocabulary,devices]=await Promise.all([request("knowledge").then(r=>r.json()),request("entities").then(r=>r.json())]);
+    if(ticket!==knowledgeTicket)return;
+    homeVocabulary=vocabulary.entities || {};homeCatalog=devices.entities || [];
+    renderKnowledge();knowledgeStatus.textContent="Описания: "+Object.keys(homeVocabulary).length;
+  } catch(error){knowledgeStatus.textContent=error.message;}
+}
+async function updateKnowledge(remove=false) {
+  const entity=knowledgeEntity.value;if(!entity)return;
+  const save=document.querySelector("#knowledge-save");const clear=document.querySelector("#knowledge-remove");
+  save.disabled=clear.disabled=true;
+  try {
+    await request("knowledge/"+encodeURIComponent(entity),remove?"DELETE":"PATCH",remove?undefined:{
+      aliases:document.querySelector("#knowledge-aliases").value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean),
+      room:document.querySelector("#knowledge-room").value.trim(),purpose:document.querySelector("#knowledge-purpose").value.trim()});
+    await loadKnowledge();knowledgeStatus.textContent=remove?"Описание удалено. Используются данные Home Assistant.":"Описание сохранено и доступно Джарвису.";
+  } catch(error){knowledgeStatus.textContent=error.message;}
+  finally{fillKnowledgeEditor();}
+}
+knowledgeEntity.addEventListener("change",fillKnowledgeEditor);
+document.querySelector("#knowledge-search").addEventListener("input",renderKnowledge);
+document.querySelector("#knowledge-refresh").addEventListener("click",loadKnowledge);
+document.querySelector("#knowledge-save").addEventListener("click",()=>updateKnowledge());
+document.querySelector("#knowledge-remove").addEventListener("click",()=>updateKnowledge(true));

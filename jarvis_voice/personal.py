@@ -259,6 +259,10 @@ class Personal:
             self.query("UPDATE reminders SET due=?,expires_at=? WHERE id=? AND due IS NULL",
                        (now.timestamp(), now.timestamp() + DELIVERY_LIFETIME_SECONDS, identifier))
 
+    def reminder_context(self, profile, identifier):
+        rows = self.query("SELECT condition FROM reminders WHERE profile=? AND id=?", (profile, identifier))
+        return json.loads(rows[0][0]) if rows and rows[0][0] else {}
+
     def reserve_delivery(self, identifier, profile, now):
         """Claim one bounded delivery attempt before dialing, scoped to its recipient."""
         stamp = now.timestamp()

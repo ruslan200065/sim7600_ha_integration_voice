@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.5.2
+version: 0.6.0
 stage: experimental
 description: Smart GSM assistant for SIM7600 and Home Assistant
 arch:
