@@ -1,14 +1,18 @@
-"""Datentypen für die SIM7600 Integration."""
+"""Data types for the SIM7600 integration."""
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 
 
 @dataclass
 class GpsData:
-    """GPS-Positionsdaten vom Modem (AT+CGPSINFO).
+    """GPS position from the modem (AT+CGPSINFO).
 
-    Alle Felder sind verpflichtend. Fehlt ein Feld in der Modem-Antwort,
-    wird None zurückgegeben statt eines partiell befüllten GpsData-Objekts.
+    All fields are mandatory. If a field is missing in the modem response,
+    None is returned instead of a partially filled GpsData object.
+    `speed` is reported by the modem in knots. `fix_time` is the local
+    monotonic-independent wall clock time (time.time()) the fix was received.
     """
 
     latitude: float
@@ -17,13 +21,26 @@ class GpsData:
     speed: float
     date: str
     time: str
+    fix_time: float | None = None
 
 
 @dataclass
 class SmsData:
-    """SMS-Nachricht vom Modem (AT+CMGL)."""
+    """SMS message read from modem storage (AT+CMGL).
+
+    `index` is the storage index of the first part. `indices` lists all
+    storage slots of a (possibly concatenated) message.
+    """
 
     index: int
     sender: str
     timestamp: str
     message: str
+    indices: tuple[int, ...] = field(default_factory=tuple)
+    parts: int = 1
+    complete: bool = True
+
+    def __post_init__(self) -> None:
+        """Default indices to the single storage index."""
+        if not self.indices:
+            self.indices = (self.index,)

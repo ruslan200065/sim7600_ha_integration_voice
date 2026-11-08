@@ -25,7 +25,10 @@ def gps_data() -> GpsData:
 def mock_coordinator(gps_data: GpsData) -> MagicMock:
     """Coordinator-Mock mit GPS-Daten."""
     coordinator = MagicMock()
-    coordinator.data = {"gps": gps_data}
+    coordinator.manufacturer = "SIMCOM INCORPORATED"
+    coordinator.model = "SIMCOM_SIM7600E-H"
+    coordinator.firmware = "V1"
+    coordinator.data = {"gps": gps_data, "gps_last_fix": None}
     return coordinator
 
 
@@ -87,6 +90,15 @@ def test_tracker_time_attribute(
     tracker = SIM7600DeviceTracker(mock_coordinator, mock_entry)
     attrs = tracker.extra_state_attributes
     assert attrs["time"] == gps_data.time
+
+
+def test_tracker_unique_id_unchanged(
+    mock_coordinator: MagicMock, mock_entry: MagicMock
+) -> None:
+    """The tracker keeps its pre-0.5.0 unique_id."""
+    tracker = SIM7600DeviceTracker(mock_coordinator, mock_entry)
+    assert tracker.unique_id == "test_entry_GPS"
+    assert tracker.has_entity_name is True
 
 
 def test_tracker_persists_last_position_when_gps_none(

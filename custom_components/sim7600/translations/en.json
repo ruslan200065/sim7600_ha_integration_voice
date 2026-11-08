@@ -1,11 +1,24 @@
 {
+  "title": "SIM7600 4G & GPS Gateway",
   "config": {
+    "flow_title": "SIM7600 ({port})",
     "step": {
       "user": {
         "title": "Configure SIM7600",
-        "description": "Please select the serial port and baud rate for your SIM7600 module.",
+        "description": "Select the AT serial port of your SIM7600 module. The port must answer the AT command with OK.",
         "data": {
           "serial_port": "Serial Port",
+          "baud_rate": "Baud Rate",
+          "polling_interval": "Polling Interval (seconds)",
+          "gnss_interval": "GNSS Interval (seconds)",
+          "debug_mode": "Debug Mode"
+        }
+      },
+      "manual": {
+        "title": "Enter serial port",
+        "description": "Enter the path of the AT serial port, for example /dev/serial/by-id/usb-SimTech-if02-port0 or COM5.",
+        "data": {
+          "manual_path": "Serial port path",
           "baud_rate": "Baud Rate",
           "polling_interval": "Polling Interval (seconds)",
           "gnss_interval": "GNSS Interval (seconds)",
@@ -23,40 +36,154 @@
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect to the SIM7600 module.",
+      "cannot_connect": "Failed to connect to the SIM7600 module or it did not answer AT with OK.",
       "unknown": "Unexpected error occurred."
     },
     "abort": {
-      "already_configured": "Device is already configured"
+      "already_configured": "Device is already configured",
+      "no_devices": "No serial ports found.",
+      "not_at_port": "This serial interface is not the AT command port.",
+      "unknown": "Unexpected error occurred."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "SIM7600 Options",
-        "description": "Adjust polling intervals and debug settings.",
+        "description": "Adjust polling, the default SMS recipient for the notify entity and the optional balance USSD request.",
         "data": {
           "polling_interval": "Polling Interval (seconds)",
           "gnss_interval": "GNSS Interval (seconds)",
-          "debug_mode": "Debug Mode"
+          "debug_mode": "Debug Mode",
+          "default_recipient": "Default SMS recipient",
+          "balance_ussd": "Balance USSD code",
+          "balance_interval": "Balance update interval (hours)"
+        },
+        "data_description": {
+          "default_recipient": "Phone number used by notify.send_message, e.g. +79991234567. Leave empty to disable.",
+          "balance_ussd": "For example *100#. Leave empty to disable the balance sensor."
         }
       }
+    },
+    "error": {
+      "invalid_number": "Invalid phone number. Use digits with an optional leading +.",
+      "invalid_ussd": "Invalid USSD code. Use digits, * and #."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "signal_strength": { "name": "Signal strength" },
+      "operator": { "name": "Operator" },
+      "network_mode": { "name": "Network mode" },
+      "system_mode": { "name": "System mode" },
+      "reg_status": {
+        "name": "Network registration",
+        "state": {
+          "not_registered": "Not registered",
+          "home": "Home network",
+          "searching": "Searching",
+          "denied": "Registration denied",
+          "unknown": "Unknown",
+          "roaming": "Roaming",
+          "home_sms_only": "Home network (SMS only)",
+          "roaming_sms_only": "Roaming (SMS only)",
+          "emergency_only": "Emergency calls only",
+          "home_csfb_not_preferred": "Home network (CSFB not preferred)",
+          "roaming_csfb_not_preferred": "Roaming (CSFB not preferred)"
+        }
+      },
+      "gprs_reg_status": {
+        "name": "GPRS registration",
+        "state": {
+          "not_registered": "Not registered",
+          "home": "Home network",
+          "searching": "Searching",
+          "denied": "Registration denied",
+          "unknown": "Unknown",
+          "roaming": "Roaming",
+          "home_sms_only": "Home network (SMS only)",
+          "roaming_sms_only": "Roaming (SMS only)",
+          "emergency_only": "Emergency calls only",
+          "home_csfb_not_preferred": "Home network (CSFB not preferred)",
+          "roaming_csfb_not_preferred": "Roaming (CSFB not preferred)"
+        }
+      },
+      "imei": { "name": "IMEI" },
+      "firmware_version": { "name": "Firmware version" },
+      "sim_status": { "name": "SIM status" },
+      "last_sms": { "name": "Last SMS" },
+      "speed": { "name": "Speed" },
+      "altitude": { "name": "Altitude" },
+      "gnss_timestamp": { "name": "GNSS time" },
+      "gps_last_fix": { "name": "Last GPS fix" },
+      "balance": { "name": "Balance" }
+    },
+    "device_tracker": {
+      "gps": { "name": "GPS" }
+    },
+    "notify": {
+      "sms": { "name": "SMS" }
     }
   },
   "services": {
     "send_sms": {
       "name": "Send SMS",
-      "description": "Sends an SMS message via the SIM7600 modem.",
+      "description": "Sends an SMS via the SIM7600 modem. Non-Latin text (e.g. Cyrillic) is sent as UCS2, long text as a multipart SMS.",
       "fields": {
         "number": {
           "name": "Number",
-          "description": "The recipient's phone number."
+          "description": "Recipient phone number: 3-20 digits with an optional leading +."
         },
         "message": {
           "name": "Message",
           "description": "The message body."
+        },
+        "entry_id": {
+          "name": "Modem",
+          "description": "Config entry of the modem to use. Optional with a single modem."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Device of the modem to use. Optional with a single modem."
         }
       }
+    },
+    "send_ussd": {
+      "name": "Send USSD",
+      "description": "Sends a USSD request (e.g. *100#) and returns the network reply.",
+      "fields": {
+        "code": {
+          "name": "Code",
+          "description": "USSD code made of digits, * and #."
+        },
+        "entry_id": {
+          "name": "Modem",
+          "description": "Config entry of the modem to use. Optional with a single modem."
+        },
+        "device_id": {
+          "name": "Device",
+          "description": "Device of the modem to use. Optional with a single modem."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_input": { "message": "Invalid input: {error}" },
+    "send_sms_failed": { "message": "Sending the SMS failed: {error}" },
+    "send_ussd_failed": { "message": "The USSD request failed: {error}" },
+    "modem_not_found": { "message": "The selected SIM7600 modem is not loaded." },
+    "no_modem": { "message": "No SIM7600 modem is loaded." },
+    "multiple_modems": { "message": "Several SIM7600 modems are loaded. Select one with entry_id or device_id." },
+    "no_default_recipient": { "message": "No default SMS recipient is configured in the SIM7600 options." }
+  },
+  "issues": {
+    "sim_pin_required": {
+      "title": "SIM card is locked",
+      "description": "The SIM card in the modem on {port} reports \"{status}\". Remove the PIN lock (for example in a phone) and reload the integration."
+    },
+    "no_network_registration": {
+      "title": "Modem is not registered in a network",
+      "description": "The modem on {port} has not been registered in a mobile network for {minutes} minutes. Check the SIM card, antenna and coverage."
     }
   }
 }

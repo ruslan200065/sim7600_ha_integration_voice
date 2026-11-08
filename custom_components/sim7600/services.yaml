@@ -1,16 +1,41 @@
 send_sms:
-  name: Send SMS
-  description: Sends an SMS message to a specific number.
   fields:
     number:
-      name: Number
-      description: The phone number to send the SMS to.
       required: true
+      example: "+79991234567"
       selector:
         text:
     message:
-      name: Message
-      description: The message content to send.
       required: true
+      example: "Привет! Hello!"
       selector:
         text:
+          multiline: true
+    entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sim7600
+    device_id:
+      required: false
+      selector:
+        device:
+          integration: sim7600
+
+send_ussd:
+  fields:
+    code:
+      required: true
+      example: "*100#"
+      selector:
+        text:
+    entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sim7600
+    device_id:
+      required: false
+      selector:
+        device:
+          integration: sim7600

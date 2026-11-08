@@ -1,8 +1,9 @@
 """Tests für die SIM7600 Modem-Kommunikationsschicht."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+from pdu_helpers import make_deliver_pdu
 
 from custom_components.sim7600.modem import SIM7600Modem
 from custom_components.sim7600.types import GpsData, SmsData
@@ -148,11 +149,7 @@ async def test_get_unread_sms_includes_index(modem: SIM7600Modem) -> None:
         "send_command",
         side_effect=[
             ["OK"],
-            [
-                '+CMGL: 3,"REC UNREAD","+1234567890",,"21/03/25,02:35:04+00"',
-                "Hello",
-                "OK",
-            ],
+            ["+CMGL: 3,0,,20", make_deliver_pdu("+1234567890", "Hello"), "OK"],
         ],
     ):
         messages = await modem.get_unread_sms()
@@ -171,10 +168,10 @@ async def test_get_unread_sms_multiple_messages(modem: SIM7600Modem) -> None:
         side_effect=[
             ["OK"],
             [
-                '+CMGL: 1,"REC UNREAD","+111",,"21/03/25,01:00:00+00"',
-                "First",
-                '+CMGL: 5,"REC UNREAD","+222",,"21/03/25,02:00:00+00"',
-                "Second",
+                "+CMGL: 1,0,,20",
+                make_deliver_pdu("+111", "First"),
+                "+CMGL: 5,0,,20",
+                make_deliver_pdu("+222", "Second"),
                 "OK",
             ],
         ],
@@ -276,45 +273,5 @@ async def test_get_operator_no_service(modem: SIM7600Modem) -> None:
     assert result is None
 
 
-# --- SMS-Versand ---
-
-
-async def test_send_sms_success(modem: SIM7600Modem) -> None:
-    """Vollständiger SMS-Handshake → True."""
-    mock_reader = AsyncMock()
-    mock_writer = MagicMock()
-    mock_writer.drain = AsyncMock()
-    mock_reader.readuntil.side_effect = [b"OK\r\n", b"> "]
-    mock_reader.readline.return_value = b"OK\r\n"
-    modem._reader = mock_reader
-    modem._writer = mock_writer
-
-    result = await modem.send_sms("+49123", "Hallo")
-    assert result is True
-
-
-async def test_send_sms_error_response(modem: SIM7600Modem) -> None:
-    """ERROR nach \\x1A → False."""
-    mock_reader = AsyncMock()
-    mock_writer = MagicMock()
-    mock_writer.drain = AsyncMock()
-    mock_reader.readuntil.side_effect = [b"OK\r\n", b"> "]
-    mock_reader.readline.return_value = b"ERROR\r\n"
-    modem._reader = mock_reader
-    modem._writer = mock_writer
-
-    result = await modem.send_sms("+49123", "Hallo")
-    assert result is False
-
-
-async def test_send_sms_timeout_on_prompt(modem: SIM7600Modem) -> None:
-    """Kein >-Prompt innerhalb des Timeouts → False."""
-    mock_reader = AsyncMock()
-    mock_writer = MagicMock()
-    mock_writer.drain = AsyncMock()
-    mock_reader.readuntil.side_effect = [b"OK\r\n", TimeoutError()]
-    modem._reader = mock_reader
-    modem._writer = mock_writer
-
-    result = await modem.send_sms("+49123", "Test")
-    assert result is False
+# SMS sending (success, error, prompt timeout + ESC) is covered end-to-end
+# with a fake serial port in test_modem_protocol.py.

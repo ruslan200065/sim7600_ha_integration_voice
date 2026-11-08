@@ -1,17 +1,19 @@
 {
   "domain": "sim7600",
   "name": "SIM7600 4G & GPS Gateway",
-  "codeowners": ["@Timo"],
+  "codeowners": ["@ruslan200065"],
   "config_flow": true,
   "dependencies": ["usb"],
-  "documentation": "https://github.com/tschoor/sim7600_ha_integration.git",
-  "iot_class": "local_polling",
-  "requirements": ["pyserial-asyncio-fast"],
+  "documentation": "https://github.com/ruslan200065/sim7600_ha_integration_voice",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/ruslan200065/sim7600_ha_integration_voice/issues",
+  "requirements": ["pyserial==3.5", "pyserial-asyncio-fast==0.16"],
   "usb": [
     {
       "vid": "1E0E",
       "pid": "9001"
     }
   ],
-  "version": "0.1"
+  "version": "0.5.0"
 }

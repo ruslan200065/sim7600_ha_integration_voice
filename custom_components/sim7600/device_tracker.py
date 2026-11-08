@@ -8,10 +8,9 @@ from homeassistant.components.device_tracker import TrackerEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
 from .coordinator import SIM7600DataUpdateCoordinator
+from .entity import SIM7600Entity
 from .types import GpsData
 
 
@@ -21,37 +20,30 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up SIM7600 device tracker based on a config entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    coordinator: SIM7600DataUpdateCoordinator = entry.runtime_data
     async_add_entities([SIM7600DeviceTracker(coordinator, entry)])
 
 
-class SIM7600DeviceTracker(
-    CoordinatorEntity[SIM7600DataUpdateCoordinator], TrackerEntity
-):
-    """Representation of a SIM7600 device tracker.
+class SIM7600DeviceTracker(SIM7600Entity, TrackerEntity):
+    """GPS position of the SIM7600 modem.
 
-    State-Persistenz: Der Coordinator cached den letzten bekannten GPS-Fix.
-    Diese Entität zeigt immer den aktuellen Coordinator-Cache — nie unknown
-    solange mindestens ein erfolgreicher Fix vorlag.
+    The coordinator drops the fix after 10 minutes without a new one, so the
+    location becomes unknown instead of showing a stale position.
     """
+
+    _attr_name = None  # use the device name
+    _attr_translation_key = "gps"
 
     def __init__(
         self, coordinator: SIM7600DataUpdateCoordinator, entry: ConfigEntry
     ) -> None:
         """Initialize the tracker."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, entry)
+        # Unchanged since 0.1 to keep the existing entity.
         self._attr_unique_id = f"{entry.entry_id}_GPS"
-        self._attr_name = "SIM7600 Modem"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": "SIM7600 Modem",
-            "manufacturer": "SimTech",
-            "model": "SIM7600 Series",
-        }
 
     @property
     def _gps(self) -> GpsData | None:
-        """Aktueller GPS-Fix aus dem Coordinator-Cache."""
         return self.coordinator.data.get("gps")
 
     @property
@@ -76,11 +68,14 @@ class SIM7600DeviceTracker(
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
         gps = self._gps
-        if gps is not None:
-            return {
-                "date": gps.date,
-                "time": gps.time,
-                "speed": gps.speed,
-                "altitude": gps.altitude,
-            }
-        return {}
+        if gps is None:
+            return {}
+        last_fix = self.coordinator.data.get("gps_last_fix")
+        return {
+            "date": gps.date,
+            "time": gps.time,
+            "speed": gps.speed,
+            "speed_unit": "kn",
+            "altitude": gps.altitude,
+            "last_fix": last_fix.isoformat() if last_fix is not None else None,
+        }

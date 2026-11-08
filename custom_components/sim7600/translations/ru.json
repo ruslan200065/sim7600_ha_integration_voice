@@ -1,0 +1,189 @@
+{
+  "title": "SIM7600 4G и GPS шлюз",
+  "config": {
+    "flow_title": "SIM7600 ({port})",
+    "step": {
+      "user": {
+        "title": "Настройка SIM7600",
+        "description": "Выберите AT-порт модуля SIM7600. Порт должен отвечать OK на команду AT.",
+        "data": {
+          "serial_port": "Последовательный порт",
+          "baud_rate": "Скорость (бод)",
+          "polling_interval": "Интервал опроса (секунды)",
+          "gnss_interval": "Интервал GNSS (секунды)",
+          "debug_mode": "Режим отладки"
+        }
+      },
+      "manual": {
+        "title": "Ввод пути к порту",
+        "description": "Введите путь к AT-порту, например /dev/serial/by-id/usb-SimTech-if02-port0 или COM5.",
+        "data": {
+          "manual_path": "Путь к последовательному порту",
+          "baud_rate": "Скорость (бод)",
+          "polling_interval": "Интервал опроса (секунды)",
+          "gnss_interval": "Интервал GNSS (секунды)",
+          "debug_mode": "Режим отладки"
+        }
+      },
+      "discovery_confirm": {
+        "title": "Настройка SIM7600",
+        "description": "Модуль SIM7600 найден на {port}. Настройте интервалы опроса.",
+        "data": {
+          "polling_interval": "Интервал опроса (секунды)",
+          "gnss_interval": "Интервал GNSS (секунды)",
+          "debug_mode": "Режим отладки"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Не удалось подключиться к модулю SIM7600 или он не ответил OK на AT.",
+      "unknown": "Непредвиденная ошибка."
+    },
+    "abort": {
+      "already_configured": "Устройство уже настроено",
+      "no_devices": "Последовательные порты не найдены.",
+      "not_at_port": "Этот последовательный интерфейс не является AT-портом.",
+      "unknown": "Непредвиденная ошибка."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Параметры SIM7600",
+        "description": "Настройте опрос, получателя SMS по умолчанию для объекта уведомлений и необязательный USSD-запрос баланса.",
+        "data": {
+          "polling_interval": "Интервал опроса (секунды)",
+          "gnss_interval": "Интервал GNSS (секунды)",
+          "debug_mode": "Режим отладки",
+          "default_recipient": "Получатель SMS по умолчанию",
+          "balance_ussd": "USSD-код баланса",
+          "balance_interval": "Интервал обновления баланса (часы)"
+        },
+        "data_description": {
+          "default_recipient": "Номер для notify.send_message, например +79991234567. Оставьте пустым, чтобы отключить.",
+          "balance_ussd": "Например *100#. Оставьте пустым, чтобы отключить датчик баланса."
+        }
+      }
+    },
+    "error": {
+      "invalid_number": "Неверный номер телефона. Используйте цифры и необязательный + в начале.",
+      "invalid_ussd": "Неверный USSD-код. Используйте цифры, * и #."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "signal_strength": { "name": "Уровень сигнала" },
+      "operator": { "name": "Оператор" },
+      "network_mode": { "name": "Режим сети" },
+      "system_mode": { "name": "Системный режим" },
+      "reg_status": {
+        "name": "Регистрация в сети",
+        "state": {
+          "not_registered": "Не зарегистрирован",
+          "home": "Домашняя сеть",
+          "searching": "Поиск сети",
+          "denied": "Регистрация отклонена",
+          "unknown": "Неизвестно",
+          "roaming": "Роуминг",
+          "home_sms_only": "Домашняя сеть (только SMS)",
+          "roaming_sms_only": "Роуминг (только SMS)",
+          "emergency_only": "Только экстренные вызовы",
+          "home_csfb_not_preferred": "Домашняя сеть (CSFB не предпочтителен)",
+          "roaming_csfb_not_preferred": "Роуминг (CSFB не предпочтителен)"
+        }
+      },
+      "gprs_reg_status": {
+        "name": "Регистрация GPRS",
+        "state": {
+          "not_registered": "Не зарегистрирован",
+          "home": "Домашняя сеть",
+          "searching": "Поиск сети",
+          "denied": "Регистрация отклонена",
+          "unknown": "Неизвестно",
+          "roaming": "Роуминг",
+          "home_sms_only": "Домашняя сеть (только SMS)",
+          "roaming_sms_only": "Роуминг (только SMS)",
+          "emergency_only": "Только экстренные вызовы",
+          "home_csfb_not_preferred": "Домашняя сеть (CSFB не предпочтителен)",
+          "roaming_csfb_not_preferred": "Роуминг (CSFB не предпочтителен)"
+        }
+      },
+      "imei": { "name": "IMEI" },
+      "firmware_version": { "name": "Версия прошивки" },
+      "sim_status": { "name": "Состояние SIM" },
+      "last_sms": { "name": "Последнее SMS" },
+      "speed": { "name": "Скорость" },
+      "altitude": { "name": "Высота" },
+      "gnss_timestamp": { "name": "Время GNSS" },
+      "gps_last_fix": { "name": "Последняя GPS-фиксация" },
+      "balance": { "name": "Баланс" }
+    },
+    "device_tracker": {
+      "gps": { "name": "GPS" }
+    },
+    "notify": {
+      "sms": { "name": "SMS" }
+    }
+  },
+  "services": {
+    "send_sms": {
+      "name": "Отправить SMS",
+      "description": "Отправляет SMS через модем SIM7600. Нелатинский текст (например, кириллица) отправляется в UCS2, длинный текст — составным SMS.",
+      "fields": {
+        "number": {
+          "name": "Номер",
+          "description": "Номер получателя: 3–20 цифр, + в начале необязателен."
+        },
+        "message": {
+          "name": "Сообщение",
+          "description": "Текст сообщения."
+        },
+        "entry_id": {
+          "name": "Модем",
+          "description": "Запись конфигурации модема. Необязательно при одном модеме."
+        },
+        "device_id": {
+          "name": "Устройство",
+          "description": "Устройство модема. Необязательно при одном модеме."
+        }
+      }
+    },
+    "send_ussd": {
+      "name": "Отправить USSD",
+      "description": "Отправляет USSD-запрос (например, *100#) и возвращает ответ сети.",
+      "fields": {
+        "code": {
+          "name": "Код",
+          "description": "USSD-код из цифр, * и #."
+        },
+        "entry_id": {
+          "name": "Модем",
+          "description": "Запись конфигурации модема. Необязательно при одном модеме."
+        },
+        "device_id": {
+          "name": "Устройство",
+          "description": "Устройство модема. Необязательно при одном модеме."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_input": { "message": "Неверные данные: {error}" },
+    "send_sms_failed": { "message": "Не удалось отправить SMS: {error}" },
+    "send_ussd_failed": { "message": "USSD-запрос не выполнен: {error}" },
+    "modem_not_found": { "message": "Выбранный модем SIM7600 не загружен." },
+    "no_modem": { "message": "Нет загруженных модемов SIM7600." },
+    "multiple_modems": { "message": "Загружено несколько модемов SIM7600. Укажите entry_id или device_id." },
+    "no_default_recipient": { "message": "В параметрах SIM7600 не задан получатель SMS по умолчанию." }
+  },
+  "issues": {
+    "sim_pin_required": {
+      "title": "SIM-карта заблокирована",
+      "description": "SIM-карта в модеме на {port} сообщает «{status}». Снимите PIN-код (например, в телефоне) и перезагрузите интеграцию."
+    },
+    "no_network_registration": {
+      "title": "Модем не зарегистрирован в сети",
+      "description": "Модем на {port} не зарегистрирован в мобильной сети уже {minutes} мин. Проверьте SIM-карту, антенну и покрытие."
+    }
+  }
+}
