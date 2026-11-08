@@ -1,3 +1,12 @@
+## 0.5.1
+
+Live conversation fixes:
+- Phone turns run concurrently again: tools keep working in the background while the caller goes on talking (0.5.0 serialised every reply behind one lock).
+- Live speech recognition uses SpeechKit's own end-of-utterance detector (high sensitivity) and stops the stream as soon as the phrase is over; the local 1 s pause is only a fallback.
+- A goodbye with end_phone_call is always played and the call is hung up, even if echo or a late phrase arrived meanwhile.
+- The call prompt and default persona make Jarvis a natural, human-like butler that picks tools from context; on farewell it ends the call without asking again.
+- Confirmation of risky actions is now off by default (option confirm_risky_actions).
+
 ## 0.5.0 (experimental)
 
 Security:

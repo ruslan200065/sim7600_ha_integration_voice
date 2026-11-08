@@ -73,7 +73,13 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
     async def test_risky_action_requires_confirmation_in_next_turn(self):
         cover = {"entity_id": "cover.blinds", "state": "closed", "last_updated": "t1",
                  "attributes": {"friendly_name": "Шторы", "device_class": "curtain"}}
-        brain = Brain({"allowed_entities": ["cover.blinds"], "allow_domains": ["cover"]}, None, None)
+        # Off by default: Jarvis acts on a natural request without asking again.
+        relaxed = Brain({"allowed_entities": ["cover.blinds"], "allow_domains": ["cover"]}, None, None)
+        relaxed._ha = AsyncMock(return_value=cover)
+        direct = await relaxed._tool("call_ha_service", {"entity_id": "cover.blinds", "service": "open_cover"})
+        self.assertTrue(direct["accepted"])
+        brain = Brain({"allowed_entities": ["cover.blinds"], "allow_domains": ["cover"],
+                       "confirm_risky_actions": True}, None, None)
         brain._ha = AsyncMock(return_value=cover)
         args = {"entity_id": "cover.blinds", "service": "open_cover"}
         brain.turn = 1

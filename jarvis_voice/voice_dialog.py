@@ -70,15 +70,16 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
         while True:
             message, turn = await output.get()
             await audio_ready.wait()
-            if turn == generation:
+            farewell = isinstance(message, CallOutput) and message.end_call
+            if turn == generation or farewell:
                 text = message.text if isinstance(message, CallOutput) else message
                 playing = asyncio.create_task(speak(text))
                 try:
                     result, = await asyncio.gather(playing, return_exceptions=True)
                     if isinstance(result, Exception):
                         LOG.warning("Playback failed: %s", type(result).__name__)
-                    if (isinstance(message, CallOutput) and message.end_call
-                        and turn == generation and not isinstance(result, asyncio.CancelledError)):
+                    if farewell:
+                        # The caller already said goodbye; echo or a late phrase must not keep the line open.
                         await hangup()
                         raise CallFinished
                 finally:
@@ -112,7 +113,9 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
             await asyncio.gather(fallback, return_exceptions=True)
         LOG.info("LLM answer length=%d", len(text.text if isinstance(text, CallOutput) else text or ""))
         # A streamed reply may already be fully spoken through progress; then the tail is empty.
-        if turn == generation and (text or not spoke):
+        if isinstance(text, CallOutput) and text.end_call:
+            output.put_nowait((text, generation))
+        elif turn == generation and (text or not spoke):
             output.put_nowait((text or "Не получилось ответить. Попробуй ещё раз.", turn))
 
     async def listen_keypad():

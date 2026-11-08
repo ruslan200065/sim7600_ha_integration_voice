@@ -36,8 +36,10 @@ def tool(name, description, required=(), **properties):
     }
 
 
-DEFAULT_PERSONA = ("Ты Джарвис, русскоязычный домашний помощник. Общайся уважительно и тепло, "
-                   "как дружелюбный дворецкий. Обращайся на «вы», пока собеседник не попросит иначе.")
+DEFAULT_PERSONA = ("Ты Джарвис, живой русскоязычный дворецкий и помощник по дому. Говори тепло, естественно и "
+                   "по-человечески, с лёгким юмором, без шаблонных фраз. Сам понимай, чего хочет человек, "
+                   "и сам выбирай нужные действия, не заставляя его подбирать слова. "
+                   "Обращайся на «вы», пока собеседник не попросит иначе.")
 LEGACY_PERSONA = ("Ты Джарвис, краткий русскоязычный голосовой ассистент. Задавай уточняющие вопросы. "
                   "Не утверждай, что действие выполнено, до успешного ответа инструмента.")
 
@@ -299,7 +301,7 @@ class Brain:
         The model cannot confirm on its own: a confirmed call is accepted only when
         the matching request was issued during the immediately preceding user turn.
         """
-        if preconfirmed or self.options.get("confirm_risky_actions", True) is False:
+        if preconfirmed or self.options.get("confirm_risky_actions", False) is not True:
             return None
         pending = self.pending_confirm
         if (arguments.get("confirmed") is True and pending and pending["key"] == key
@@ -866,19 +868,25 @@ class Brain:
         return due
 
     async def reply(self, phrase, camera_entity=None, *, on_progress=None, phone_actions=None):
-        # Every caller shares self.history, so replies are always serialised.
+        if self.history and time.monotonic() - self.history_at > HISTORY_TTL:
+            self.reset_history()
+        self.turn += 1
+        if on_progress is not None:
+            # Live calls run turns concurrently: tools keep working in the background
+            # while the caller goes on talking, exactly like a person would.
+            return await self._timed_reply(phrase, camera_entity, on_progress, phone_actions)
         async with self.lock:
-            if self.history and time.monotonic() - self.history_at > HISTORY_TTL:
-                self.reset_history()
-            self.turn += 1
-            try:
-                async with asyncio.timeout(REPLY_DEADLINE):
-                    return await self._reply(phrase, camera_entity, on_progress, phone_actions)
-            except TimeoutError:
-                LOG.warning("LLM reply exceeded %s s", REPLY_DEADLINE)
-                return "Не успел ответить вовремя, повторите, пожалуйста."
-            finally:
-                self.history_at = time.monotonic()
+            return await self._timed_reply(phrase, camera_entity, None, phone_actions)
+
+    async def _timed_reply(self, phrase, camera_entity, on_progress, phone_actions):
+        try:
+            async with asyncio.timeout(REPLY_DEADLINE):
+                return await self._reply(phrase, camera_entity, on_progress, phone_actions)
+        except TimeoutError:
+            LOG.warning("LLM reply exceeded %s s", REPLY_DEADLINE)
+            return "Не успел ответить вовремя, повторите, пожалуйста."
+        finally:
+            self.history_at = time.monotonic()
 
     def _record_usage(self, data):
         usage = data.get("usage") if isinstance(data, dict) else None
@@ -1037,9 +1045,11 @@ class Brain:
         available_tools = TOOLS + [PHONE_TOOLS[name] for name in (phone_actions or {})]
         if phone_actions is not None:
             messages.insert(1, {"role": "system", "content":
-                "Это живой звонок. Выбирай инструменты по смыслу реплики и предыдущих реплик. "
-                "Если человек закончил разговор, вызови end_phone_call с коротким прощанием. "
-                "Простая благодарность ещё не означает конец. Если есть просьба, сначала помоги."})
+                "Это живой телефонный разговор. Веди его как внимательный человек-дворецкий: отвечай сразу и "
+                "естественно, без списков и технических подробностей, сам решай, какие инструменты нужны по смыслу. "
+                "Когда собеседник прощается или ясно, что разговор окончен («пока», «всё, спасибо», «до связи»), "
+                "сразу вызови end_phone_call с коротким тёплым прощанием, ничего не переспрашивая. "
+                "Если в прощальной фразе есть ещё просьба, сначала выполни её."})
             if "read_call_reminder" in phone_actions:
                 messages.insert(2, {"role": "system", "content":
                     "Этот исходящий звонок сделан для личного напоминания получателю. "

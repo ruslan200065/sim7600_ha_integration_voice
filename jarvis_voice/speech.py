@@ -96,7 +96,10 @@ class SpeechKit:
                     language_restriction=stt.LanguageRestrictionOptions(
                         restriction_type=stt.LanguageRestrictionOptions.WHITELIST,
                         language_code=["ru-RU"]),
-                    audio_processing_type=stt.RecognitionModelOptions.REAL_TIME))
+                    audio_processing_type=stt.RecognitionModelOptions.REAL_TIME),
+                # SpeechKit's own end-of-utterance detector answers faster than a fixed local pause.
+                eou_classifier=stt.EouClassifierOptions(default_classifier=stt.DefaultEouClassifier(
+                    type=stt.DefaultEouClassifier.HIGH, max_pause_between_words_hint_ms=600)))
             yield stt.StreamingRequest(session_options=options)
             for frame in preroll:
                 yield stt.StreamingRequest(chunk=stt.AudioChunk(data=frame))
@@ -115,11 +118,18 @@ class SpeechKit:
 
         final = {}
         refined = {}
-        async for response in self.stt_stub.RecognizeStreaming(requests(),metadata=self.auth,timeout=35):
-            kind=response.WhichOneof("Event")
-            if kind=="partial" and on_partial and response.partial.alternatives:
-                on_partial(response.partial.alternatives[0].text)
-            update_transcript(response, kind, final, refined)
+        call = self.stt_stub.RecognizeStreaming(requests(), metadata=self.auth, timeout=35)
+        try:
+            async for response in call:
+                kind = response.WhichOneof("Event")
+                if kind == "partial" and on_partial and response.partial.alternatives:
+                    on_partial(response.partial.alternatives[0].text)
+                update_transcript(response, kind, final, refined)
+                # Stop as soon as SpeechKit decides the phrase is over; the local pause is only a fallback.
+                if kind == "eou_update" and transcript_text(final, refined):
+                    break
+        finally:
+            call.cancel()
         return transcript_text(final, refined)
 
     async def synthesize(self, text):

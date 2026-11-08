@@ -174,3 +174,59 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(2):
             await run_dialog(Speech(), reply, asyncio.Queue(), play, AsyncMock(), greeting)
         self.assertEqual([call.args[0] for call in reply.await_args_list], [greeting, "До свидания"])
+
+    async def test_farewell_survives_a_later_phrase(self):
+        release = asyncio.Event()
+        heard = []
+
+        async def play(text):
+            heard.append(text)
+
+        class Speech:
+            turn = 0
+
+            async def recognize_live(self, _source, **kwargs):
+                self.turn += 1
+                if self.turn == 1:
+                    return "Всё, спасибо, пока"
+                if self.turn == 2:
+                    await asyncio.sleep(0.05)
+                    release.set()
+                    return "угу ладно"
+                await asyncio.Future()
+
+        async def reply(phrase, **kwargs):
+            if phrase.startswith("Всё"):
+                await release.wait()
+                return CallOutput("Хорошего дня!", True)
+            return "Хорошо."
+
+        hangup = AsyncMock()
+        async with asyncio.timeout(2):
+            await run_dialog(Speech(), reply, asyncio.Queue(), play, hangup, "Привет",
+                             background_tools=True)
+        self.assertIn("Хорошего дня!", heard)
+        hangup.assert_awaited_once()
+
+    async def test_live_call_turns_run_concurrently(self):
+        from brain import Brain
+        brain = Brain({}, None, None)
+        running = 0
+        peak = 0
+        gate = asyncio.Event()
+
+        async def slow_reply(*args):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await gate.wait()
+            running -= 1
+            return "ok"
+
+        brain._reply = slow_reply
+        first = asyncio.create_task(brain.reply("раз", on_progress=lambda _text: None))
+        second = asyncio.create_task(brain.reply("два", on_progress=lambda _text: None))
+        await asyncio.sleep(0.05)
+        gate.set()
+        await asyncio.gather(first, second)
+        self.assertEqual(peak, 2)
