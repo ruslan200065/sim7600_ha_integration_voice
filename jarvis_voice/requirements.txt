@@ -1,6 +1,5 @@
 aiohttp>=3.10,<4
 pyserial>=3.5,<4
 grpcio>=1.66,<2
-grpcio-tools>=1.66,<2
 protobuf>=5,<7
 python-gsmmodem-new==0.13.0

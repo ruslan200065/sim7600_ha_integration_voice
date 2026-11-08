@@ -1,0 +1,4 @@
+# Build-time only: used in the Docker builder stage to generate the Yandex
+# SpeechKit gRPC stubs. Removed from the venv before it is copied to runtime.
+# Install together with requirements.txt so pip resolves one consistent set.
+grpcio-tools>=1.66,<2

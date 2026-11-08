@@ -10,6 +10,11 @@ on:
     branches:
       - main
       - develop
+  # Snapshot releases are created manually only (no auto-commits to branches).
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -41,11 +46,13 @@ jobs:
       - name: Mypy Check
         run: MYPYPATH=. mypy --config-file .mypy.ini custom_components/sim7600
 
-      # - name: Vulnerability Check
-      #   run: safety check --no-policy-file
+      - name: Vulnerability Check (advisory)
+        continue-on-error: true
+        run: safety check --no-policy-file
 
-      # - name: License Check
-      #   run: pip-licenses --summary --allow-only "MIT;Apache-2.0;BSD-3-Clause;BSD-2-Clause;Python-2.0;LGPL-2.1;LGPL-3.0;MPL-2.0"
+      - name: License Check (advisory)
+        continue-on-error: true
+        run: pip-licenses --summary --allow-only "MIT;Apache-2.0;BSD-3-Clause;BSD-2-Clause;Python-2.0;LGPL-2.1;LGPL-3.0;MPL-2.0"
 
       - name: Run Tests
         run: PYTHONPATH=. pytest --import-mode=importlib
@@ -53,10 +60,8 @@ jobs:
   snapshot:
     name: Create Snapshot Release
     needs: test
-    if: |
-      success() &&
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/heads/feature/'))
+    # Manual only: Actions -> CI/CD Pipeline -> Run workflow (pick develop or a feature branch).
+    if: success() && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -83,14 +88,15 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
 
+      # The version-bump commit is reachable only through the tag; the branch is not updated.
       - name: Tag and Push
         run: |
           VERSION=${{ steps.versioning.outputs.snapshot_version }}
+          git checkout --detach
           git add custom_components/sim7600/manifest.json
-          git commit -m "chore: bump snapshot version to ${VERSION}"
-          git tag ${VERSION}
-          git push origin ${VERSION}
-          git push origin HEAD:${{ github.ref_name }}
+          git commit -m "chore: snapshot ${VERSION}"
+          git tag "${VERSION}"
+          git push origin "refs/tags/${VERSION}"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

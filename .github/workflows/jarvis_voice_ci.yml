@@ -16,9 +16,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m compileall -q jarvis_voice
-      - run: python -m pip install pyserial pytest aiohttp python-gsmmodem-new==0.13.0
-      - run: pytest -q jarvis_voice/tests
+          cache: "pip"
+          cache-dependency-path: jarvis_voice/requirements.txt
+      - name: Compile all sources
+        run: python -m compileall -q jarvis_voice
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r jarvis_voice/requirements.txt pytest pytest-asyncio ruff
+      - name: Ruff (syntax, undefined names, unused imports)
+        run: ruff check jarvis_voice --target-version py312 --select E9,F63,F7,F82,F841,F401
+      - name: Run tests
+        run: pytest -q jarvis_voice/tests
   container-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -27,6 +36,12 @@ jobs:
         run: |
           base=$(awk '$1 == "amd64:" { print $2 }' jarvis_voice/build.yaml)
           docker build --build-arg BUILD_FROM="$base" -t jarvis-voice-test jarvis_voice
+      - name: Check runtime image contents
+        run: |
+          docker run --rm --entrypoint /opt/venv/bin/python jarvis-voice-test -c \
+            "import importlib.util, sys; sys.exit(importlib.util.find_spec('grpc_tools') is not None)"
+          docker run --rm --entrypoint /bin/sh jarvis-voice-test -c \
+            'for b in ffmpeg aplay arecord pactl v4l2-ctl; do command -v "$b" >/dev/null || { echo "missing $b"; exit 1; }; done'
       - name: Start through s6 and check health
         run: |
           printf '%s\n' '{"auto_install_integration":false,"at_port":"/dev/missing","api_token":"smoke-test","yandex_api_key":"smoke-test"}' > "$RUNNER_TEMP/jarvis-options.json"
