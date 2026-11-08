@@ -1,3 +1,9 @@
+from autonomy import Autonomy
+from rules import Rules
+from family_inbox import FamilyInbox
+from event_journal import EventJournal
+from escalation import EscalationPolicies
+from resilience import SpeechRouter, OpenAICompatibleSpeech
 from knowledge import Knowledge
 from notifications import NotificationPolicies
 from timeline import Timeline
@@ -113,6 +119,12 @@ class Server:
         self.knowledge = Knowledge(data_dir / "knowledge.sqlite3")
         self.policies = NotificationPolicies(data_dir / "notifications.sqlite3")
         self.timeline = Timeline(data_dir / "timeline.sqlite3")
+        self.autonomy = Autonomy(data_dir / "autonomy.sqlite3")
+        self.test_rules = Rules(data_dir / "simulations.sqlite3")
+        self.inbox = FamilyInbox(data_dir / "family_inbox.sqlite3")
+        self.events_journal = EventJournal(data_dir / "events.sqlite3")
+        self.escalation = EscalationPolicies(data_dir / "escalation.sqlite3")
+        self.events_task = None
         self.speech_cache = SpeechCache(data_dir / "speech_cache")
         self.microphone = MicrophoneMonitor(options.get("q1_mic_device", ""), self.mic_lock,
                                             data_dir / "microphone_monitor")
@@ -134,6 +146,9 @@ class Server:
         self.reminder_numbers = {member["key"]: member["number"] for member in self.family.values()}
         if self.owner_key:
             self.reminder_numbers[self.owner_key] = owner
+        self.contacts = {member["key"]: member["name"] for member in self.family.values()}
+        if self.owner_key:
+            self.contacts[self.owner_key] = options.get("owner_name") or "Владелец"
         self.sms_task = None
         self.sms_wake = asyncio.Event()
         self.sms_status = {}
@@ -157,6 +172,7 @@ class Server:
         self.http = ClientSession()
         self.brain = Brain(self.o, self.http, self.capture_camera, self.listen_room, self.share_photo,
                            knowledge=self.knowledge, policies=self.policies, timeline=self.timeline,
+                           autonomy=self.autonomy, test_rules=self.test_rules, inbox=self.inbox, events=self.events_journal, contacts=self.contacts,
                            personal=self.personal, profile=self.owner_key or "local",
                            profile_name=self.o.get("owner_name") or "Владелец",
                            restricted_entities=self.gates)
@@ -175,11 +191,18 @@ class Server:
                 self.o.get("yandex_role", "neutral"),
                 cache=self.speech_cache if self.o.get("speech_cache_enabled", True) else None,
             )
+        if self.o.get("speech_fallback_enabled"):
+            fallback = OpenAICompatibleSpeech(self.http, {key:self.o.get("speech_fallback_"+key, "") for key in ("base_url","api_key","stt_model","tts_model","voice")})
+            self.speech = SpeechRouter(self.speech, fallback, self.speech_fallback_used) if self.speech else fallback
+        self.events_task = asyncio.create_task(self.watch_home_events())
         self.microphone_task = asyncio.create_task(self.microphone.run())
         await self.modem.start()
         self.sms_task = asyncio.create_task(self.sync_sms())
 
     async def close(self):
+        if self.events_task:
+            self.events_task.cancel()
+            await asyncio.gather(self.events_task, return_exceptions=True)
         if self.registry_task:
             self.registry_task.cancel()
             await asyncio.gather(self.registry_task, return_exceptions=True)
@@ -325,6 +348,7 @@ class Server:
             )
         if name == "call_connected" and self.speech and self.caller_allowed():
             call_id = self.modem.call_id
+            await self.trace_current_call("connection", "connected")
             prompt, camera = "", None
             if self.next_prompt and self.next_prompt[0] == call_id:
                 _, prompt, camera = self.next_prompt
@@ -400,6 +424,7 @@ class Server:
                 try:
                     await self.sample_reminder_conditions()
                     await self.run_due_actions()
+                    await self.escalate_undelivered_events()
                 except Exception as exc:
                     LOG.warning("Reminder condition check failed: %s", type(exc).__name__)
             if self.modem.call_state == "idle":
@@ -510,6 +535,7 @@ class Server:
                                observe_all_entities=access == "read_all", control_all_entities=False)
             self.family_brains[key] = Brain(
                 options, self.http, None, share_photo=self.share_photo, knowledge=self.knowledge, policies=self.policies, timeline=self.timeline,
+                           autonomy=self.autonomy, test_rules=self.test_rules, inbox=self.inbox, events=self.events_journal, contacts=self.contacts,
                            personal=self.personal, profile=key,
                 profile_name=member["name"], timezone_name=self.brain.timezone.key,
                 restricted_entities=self.gates, registry_cache=self.brain.registry_cache,
@@ -528,6 +554,7 @@ class Server:
             }
             self._room_brain = Brain(
                 options, self.http, None, share_photo=self.share_photo, knowledge=self.knowledge, policies=self.policies, timeline=self.timeline,
+                           autonomy=self.autonomy, test_rules=self.test_rules, inbox=self.inbox, events=self.events_journal, contacts=self.contacts,
                            personal=self.personal, profile="room",
                 profile_name="Комната", timezone_name=self.brain.timezone.key,
                 restricted_entities=self.gates, registry_cache=self.brain.registry_cache,
@@ -557,9 +584,11 @@ class Server:
                 await self.modem.enable_pcm()
                 await self.audio.wait_ready()
                 LOG.info("Call USB PCM verified in both directions")
+                await self.trace_current_call("audio_rx", "ready")
                 return
             except (RuntimeError, OSError, TimeoutError) as exc:
                 LOG.warning("Call audio setup attempt %d: %s", attempt + 1, type(exc).__name__)
+                await self.trace_current_call("audio_rx", "failed", {"attempt": attempt + 1, "error": type(exc).__name__})
                 await self.audio.stop()
                 if attempt == 2:
                     raise
@@ -574,7 +603,19 @@ class Server:
                 if (self.modem.call_id, self.modem.call_state) != (call_id, "connected"):
                     return
                 try:
-                    async with aclosing(self.speech.synthesize(text)) as chunks:
+                    async def traced_chunks():
+                        emitted = False
+                        try:
+                            async with aclosing(self.speech.synthesize(text)) as source:
+                                async for chunk in source:
+                                    if chunk and not emitted:
+                                        emitted = True
+                                        await self.trace_current_call("tts", "ready")
+                                    yield chunk
+                        except Exception as exc:
+                            await self.trace_current_call("tts", "failed", {"error": type(exc).__name__})
+                            raise
+                    async with aclosing(traced_chunks()) as chunks:
                         await self.audio.write_stream(chunks)
                     return
                 except Exception as exc:
@@ -609,10 +650,13 @@ class Server:
                 reset()
                 brain.session_call = self.modem.call_id
             pending_pin = 0.0
+            pending_family_message = None
+            family_messages = await asyncio.to_thread(self.inbox.pending, brain.profile) if getattr(brain, "profile", None) else []
             digits = ""
             allowed_locks = member["locks"] if member else self.owner_locks
             gate = ""
             gate_name = ""
+            gate_confirmed = False
             pin = self.o.get("gate_pin", "")
             clock = asyncio.get_running_loop().time
             call_id = self.modem.call_id
@@ -623,6 +667,9 @@ class Server:
                 if (self.modem.call_id, self.modem.call_state) != (call_id, "connected"):
                     return ""
                 domain = gate.split(".", 1)[0]
+                policy = await asyncio.to_thread(self.autonomy.evaluate, member["key"] if member else self.owner_key or "local", gate, GATE_ACTIONS[domain], {"entity_id":gate})
+                if policy["decision"] == "deny" or (policy["decision"] == "confirm" and not gate_confirmed):
+                    return "Открытие ограничено вашими правилами самостоятельности."
                 try:
                     await self.brain._ha("POST", f"/api/services/{domain}/{GATE_ACTIONS[domain]}",
                                          {"entity_id": gate})
@@ -665,6 +712,18 @@ class Server:
                 goodbye = args.get("goodbye")
                 goodbye = " ".join(goodbye.split())[:160] if isinstance(goodbye, str) else ""
                 return CallOutput(goodbye or "До связи.", end_call=True)
+
+            async def list_family_messages(_args):
+                return {"messages": await asyncio.to_thread(self.inbox.pending, brain.profile)}
+
+            async def read_family_message(args):
+                nonlocal pending_family_message
+                rows = await asyncio.to_thread(self.inbox.pending, brain.profile)
+                message = next((row for row in rows if row["id"] == args.get("id")), None)
+                if message is None:
+                    return {"error": "Сообщение уже обработано или недоступно."}
+                pending_family_message = (message["id"], message["text"])
+                return CallOutput(message["text"])
 
             async def read_reminder(_args):
                 if not reminder_id:
@@ -711,7 +770,7 @@ class Server:
                     return {"locks": devices}
 
                 async def request_gate(args):
-                    nonlocal pending_pin, digits, gate, gate_name
+                    nonlocal pending_pin, digits, gate, gate_name, gate_confirmed
                     selected = args.get("entity_id") or (allowed_locks[0] if len(allowed_locks) == 1 else "")
                     if not isinstance(selected, str) or selected not in allowed_locks:
                         return {"error": "Выбери назначенный замок по названию из списка.", **await list_locks({})}
@@ -720,6 +779,16 @@ class Server:
                         return "Выбранный замок сейчас недоступен."
                     if pending_pin > clock() and gate != selected:
                         return "Сначала заверши ввод кода для уже выбранного замка."
+                    policy = await asyncio.to_thread(self.autonomy.evaluate, member["key"] if member else self.owner_key or "local", selected, GATE_ACTIONS[selected.split(".",1)[0]], {"entity_id":selected})
+                    if policy["decision"] == "deny":
+                        return {"error":policy["reason"]}
+                    if policy["decision"] == "confirm":
+                        ask = brain._needs_confirmation(("gate",selected),args,"Подтвердите открытие выбранного замка.",required=True)
+                        if ask:
+                            return ask
+                        gate_confirmed = True
+                    else:
+                        gate_confirmed = False
                     gate = selected
                     gate_name = row.get("attributes", {}).get("friendly_name") or "назначенный замок"
                     if not pin:
@@ -736,7 +805,7 @@ class Server:
                 if pending_pin > clock() and re.fullmatch(r"[0-9][0-9 ,\-]*", phrase.strip().rstrip(".!?")):
                     # Spoken digits would be sent to cloud STT and the LLM: accept the PIN only via DTMF.
                     return "Код нужно набрать на клавиатуре телефона и нажать решётку."
-                actions = {"end_phone_call": end_call}
+                actions = {"end_phone_call": end_call, "list_family_messages": list_family_messages, "read_family_message": read_family_message}
                 if reminder_id:
                     actions["read_call_reminder"] = read_reminder
                     actions["handle_call_reminder"] = handle_call_reminder
@@ -750,7 +819,7 @@ class Server:
                 return answer
 
             async def play(text):
-                nonlocal reminder_id
+                nonlocal reminder_id, pending_family_message
                 if initial_reminder and text == prompt and not reminder_id:
                     return
                 started = clock()
@@ -760,6 +829,9 @@ class Server:
                     await self.record_trace(member["key"] if member else self.owner_key or "local", call_id, "playback", "failed", duration_ms=(clock()-started)*1000)
                     raise
                 await self.record_trace(member["key"] if member else self.owner_key or "local", call_id, "playback", "sent", duration_ms=(clock()-started)*1000)
+                if pending_family_message and text == pending_family_message[1] and (self.modem.call_id,self.modem.call_state)==(call_id,"connected"):
+                    await asyncio.to_thread(self.inbox.delivered, brain.profile, pending_family_message[0])
+                    pending_family_message = None
                 if (reminder_id and text == prompt
                     and (self.modem.call_id, self.modem.call_state) == (call_id, "connected")):
                     self.personal.delivered(reminder_id)
@@ -768,7 +840,7 @@ class Server:
             await run_dialog(
                 self.speech, reply, self.audio.queue, play, self.modem.hangup,
                 ("У меня для вас напоминание. Можно озвучить?"
-                 if reminder_id else prompt or "Здравствуйте. Это Джарвис. Слушаю вас."),
+                 if reminder_id else prompt or ("Здравствуйте. Это Джарвис. Для вас есть сообщения от семьи. Озвучить?" if family_messages else "Здравствуйте. Это Джарвис. Слушаю вас.")),
                 background_tools=True, keypad=keypad, on_key=press,
                 echo_filter=self.o.get("call_echo_filter", False),
             )
@@ -818,6 +890,45 @@ class Server:
         tasks.add(task)
         task.add_done_callback(tasks.discard)
 
+    async def trace_current_call(self, stage, status, details=None):
+        profile = self.family.get(self.caller_key(), {}).get("key") or self.owner_key or "local"
+        await self.record_trace(profile, self.modem.call_id, stage, status, details)
+
+    def speech_fallback_used(self, stage):
+        task = asyncio.create_task(self.trace_current_call(stage, "fallback"))
+        task.add_done_callback(lambda finished: finished.exception() if not finished.cancelled() else None)
+
+    async def watch_home_events(self):
+        previous = {}
+        while True:
+            try:
+                rows = await self.brain._ha("GET", "/api/states")
+                for row in rows:
+                    entity, value = row.get("entity_id"), row.get("state")
+                    if entity in previous and previous[entity] != value:
+                        await asyncio.to_thread(self.events_journal.record, entity, str(value), "home_assistant", previous=previous[entity], attributes=row.get("attributes", {}))
+                    previous[entity] = value
+            except Exception:
+                LOG.warning("Home event observation temporarily unavailable")
+            await asyncio.sleep(15)
+
+    async def escalate_undelivered_events(self):
+        rows = await asyncio.to_thread(self.personal.claim_failed_events)
+        for identifier, profile, text, context in rows:
+            decision = await asyncio.to_thread(self.escalation.advance, context.get("event_id",identifier), context.get("source",""), profile,
+                                              not context.get("notification_shared",False), context.get("escalation_attempt",0))
+            target = decision.get("recipient")
+            if not decision.get("escalate") or target not in self.reminder_numbers:
+                continue
+            member = next((row for row in self.family.values() if row["key"]==target),None)
+            camera = context.get("camera")
+            if camera and not self.caller_brain(member).camera_allowed(camera):
+                context["camera"] = None
+            context.pop("escalation_checked",None)
+            context["escalation_attempt"] = decision["attempt"]
+            await asyncio.to_thread(self.personal.reminder,target,self.contacts.get(target,""),text,datetime.now(timezone.utc),context)
+            await self.record_trace(target,"event:"+context.get("event_id",identifier),"escalation","queued",{"source":context.get("source")})
+
     async def record_trace(self, profile, call_id, stage, status, details=None, duration_ms=None):
         try:
             await asyncio.to_thread(self.timeline.record, profile, str(call_id), stage, status, duration_ms, details)
@@ -850,6 +961,9 @@ class Server:
             if not isinstance(camera, str) or not self.caller_brain(selected_member).camera_allowed(camera):
                 raise web.HTTPBadRequest(text="Camera is not allowed for this recipient")
         urgent = data.get("urgent", False)
+        shared = data.get("shared", False)
+        if type(shared) is not bool:
+            raise web.HTTPBadRequest(text="shared must be boolean")
         if type(urgent) is not bool:
             raise web.HTTPBadRequest(text="urgent must be boolean")
         try:
@@ -863,7 +977,7 @@ class Server:
         decision = await asyncio.to_thread(self.policies.decide, profile, now, urgent)
         if not decision["allowed"] or decision["channel"] == "call":
             due = datetime.fromisoformat(decision["defer_until"]) if decision["defer_until"] else now
-            context = {"kind": "time", "notification_urgent": urgent, "source": source, "camera": data.get("camera")}
+            context = {"kind": "time", "notification_urgent": urgent, "notification_shared": shared, "notification_event": True, "event_id": incident["id"], "source": source, "camera": data.get("camera")}
             identifier = await asyncio.to_thread(self.personal.reminder, profile, member or "Владелец", text, due, context)
             return web.json_response({"queued": True, "id": identifier, "incident": incident["id"]})
         try:
@@ -871,7 +985,7 @@ class Server:
         except (RuntimeError, ClientError, TimeoutError):
             # Preserve a failed delivery as a bounded requester-scoped reminder.
             identifier = await asyncio.to_thread(self.personal.reminder, profile, member or "Владелец", text, now,
-                {"kind": "time", "notification_urgent": urgent, "source": source, "camera": data.get("camera")})
+                {"kind": "time", "notification_urgent": urgent, "notification_shared": shared, "notification_event": True, "event_id": incident["id"], "source": source, "camera": data.get("camera")})
             return web.json_response({"queued": True, "id": identifier})
         return web.json_response({"sent": True, "channel": decision["channel"], "incident": incident["id"]})
 

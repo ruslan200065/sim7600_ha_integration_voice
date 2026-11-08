@@ -1,3 +1,14 @@
+## 0.7.0 (experimental)
+
+- Learn device corrections only after explicit next-turn consent.
+- Enforce per-profile observation/confirmation/action rules and numeric ranges.
+- Add simulation-only rules with current-state previews and zero physical effects.
+- Record factual home state changes with timestamps and current permission filtering.
+- Add opt-in event escalation chains; private reminders never escalate.
+- Leave scoped family messages with expiry and acknowledge only after complete playback.
+- Add configured LLM failover before tools/speech and optional OpenAI-compatible speech backup.
+- Add per-call diagnostics, autonomous-rule editors and family-message UI.
+
 ## 0.6.0 (experimental)
 
 - Verify observable device postconditions without retrying physical commands.

@@ -1,6 +1,7 @@
 """Administrator-only Home Assistant ingress for settings and hardware checks."""
 
 import asyncio
+from intelligence_panel import register_intelligence
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -21,6 +22,7 @@ from modem import NUMBER
 from workflows import validate_steps
 from brain import SAFE_SERVICES
 from family import family_profiles, lock_entities
+from resilience import validate_speech_fallback
 from llm import DEEPSEEK_URL, EFFORTS, active_profile, base_url, list_models, merge_profiles
 from q1_audio import capture_pcm, play_pcm
 from q1_hardware import VIDEO_LINK, VIDEO_PATH, list_serial, list_video, probe_audio
@@ -28,7 +30,7 @@ from q1_protocol import gps_status
 
 LOG = logging.getLogger(__name__)
 ASSETS = Path(__file__).with_name("web")
-SECRET_KEYS = {"yandex_api_key", "deepseek_api_key", "gate_pin"}
+SECRET_KEYS = {"yandex_api_key", "deepseek_api_key", "gate_pin", "speech_fallback_api_key"}
 TEXT_FIELDS = {
     "at_port": 256,
     "pcm_port": 256,
@@ -51,6 +53,10 @@ TEXT_FIELDS = {
     "country_code": 3,
     "room_agent": 16,
     "assist_agent_id": 256,
+    "speech_fallback_base_url": 512,
+    "speech_fallback_stt_model": 256,
+    "speech_fallback_tts_model": 256,
+    "speech_fallback_voice": 256,
 }
 INTEGER_FIELDS = {
     "serial_baud": (1200, 921600),
@@ -59,7 +65,7 @@ INTEGER_FIELDS = {
     "llm_daily_token_limit": (0, 10_000_000),
 }
 BOOLEAN_FIELDS = {"auto_answer", "observe_all_entities", "control_all_entities", "speech_cache_enabled", "call_echo_filter",
-                  "confirm_risky_actions", "ha_events", "call_summary", "stream_replies"}
+                  "confirm_risky_actions", "ha_events", "call_summary", "stream_replies", "speech_fallback_enabled"}
 OPTION_FIELDS = (
     set(TEXT_FIELDS)
     | set(INTEGER_FIELDS)
@@ -71,7 +77,7 @@ OPTION_FIELDS = (
         "room_entities",
         "allow_domains",
         "family_members",
-        "llm_profiles",
+        "llm_profiles", "llm_fallback_ids",
     }
 )
 AUDIO_FIELDS = ("audio_input", "audio_output")
@@ -102,6 +108,10 @@ def validate_changes(changes, current):
             raise ValueError(f"Неверное значение поля {key}.")
         elif key == "owner_locks":
             value = lock_entities(value)
+        elif key == "llm_fallback_ids":
+            if not isinstance(value,list) or len(value)>4 or any(not isinstance(item,str) for item in value):
+                raise ValueError("Выберите до четырёх резервных профилей.")
+            value=list(dict.fromkeys(value))
         elif key == "llm_profiles":
             value = merge_profiles(value, current.get("llm_profiles", []))
         elif key == "family_members":
@@ -166,6 +176,15 @@ def validate_changes(changes, current):
     pin = options.get("gate_pin", "")
     if pin and not re.fullmatch(r"[0-9]+", pin):
         raise ValueError("Код замка должен состоять из цифр; оставьте пустым для открытия без кода.")
+    profile_ids={"deepseek", *[row["id"] for row in options.get("llm_profiles",[])]}
+    if any(item not in profile_ids for item in options.get("llm_fallback_ids",[])):
+        raise ValueError("Резервный профиль LLM не найден.")
+    if options.get("speech_fallback_base_url"):
+        options["speech_fallback_base_url"] = base_url(options["speech_fallback_base_url"])
+    if current.get("speech_fallback_api_key") and "speech_fallback_api_key" not in changes and options.get("speech_fallback_base_url") != current.get("speech_fallback_base_url"):
+        raise ValueError("При смене сервера речи введите новый ключ или явно удалите старый.")
+    if options.get("speech_fallback_enabled"):
+        validate_speech_fallback({key:options.get("speech_fallback_"+key,"") for key in ("base_url","api_key","stt_model","tts_model","voice")})
     calendar = options.get("reminder_calendar", "")
     if calendar and (not ENTITY_ID.fullmatch(calendar) or not calendar.startswith("calendar.")):
         raise ValueError("Укажите календарь Home Assistant вида calendar.name.")
@@ -857,6 +876,7 @@ class SetupPanel:
 
     def app(self):
         app = web.Application(middlewares=[self.authorize], client_max_size=32 * 1024)
+        register_intelligence(app, self)
         app.router.add_post("/sandbox", self.sandbox)
         app.router.add_post("/sandbox/{mode:speak}", self.sandbox)
         app.router.add_get("/", self.home)

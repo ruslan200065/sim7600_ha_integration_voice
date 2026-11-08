@@ -11,6 +11,7 @@ const routes = [
 ];
 const secrets = [
   {field: "gate_pin", clear: "#clear-gate-pin"},
+  {field: "speech_fallback_api_key", clear: "#clear-fallback-speech"},
   {field: "yandex_api_key", clear: "#clear-speech"},
   {field: "deepseek_api_key", clear: "#clear-deepseek"},
 ];
@@ -371,7 +372,7 @@ function setTab(key) {
     else tab.removeAttribute("aria-current");
   }
   for (const view of views) view.hidden = view.dataset.view !== key;
-  form.hidden = key === "history" || key === "personal" || key === "audit" || key === "knowledge" || key === "operations";
+  form.hidden = key === "history" || key === "personal" || key === "audit" || key === "knowledge" || key === "operations" || key === "intelligence";
   if (key === "personal") loadPersonal();
   if (key === "knowledge") loadKnowledge();
   if (key === "audit") loadAudit();
@@ -727,6 +728,7 @@ function setRoute(route, state) {
 }
 
 function fieldValue(key, element) {
+  if (key === "llm_fallback_ids") return [...element.selectedOptions].map(option=>option.value);
   if (key === "family_members") return element.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (["allowed_entities", "observed_entities", "room_entities", "allow_domains", "owner_locks"].includes(key)) {
     return element.value.split(/\s+/).filter(Boolean);
@@ -752,6 +754,12 @@ function render(state) {
     document.querySelector(secret.clear).disabled = !state.keys[secret.field];
   }
   renderLLM(state);
+  const fallback = document.querySelector("#fallback-profiles");
+  fallback.replaceChildren(...[{id:"deepseek",name:"DeepSeek"},...(state.llm_profiles || [])].map(profile=>new Option(profile.name,profile.id)));
+  for (const id of [...(state.options.llm_fallback_ids || [])].reverse()) {
+    const option=[...fallback.options].find(item=>item.value===id);
+    if(option){option.selected=true;fallback.prepend(option);}
+  }
   addChoices("#serial-ports", state.devices.serial);
   addChoices("#video-nodes", state.devices.video);
   routes.forEach(route => setRoute(route, state));
@@ -1227,3 +1235,15 @@ document.querySelector("#knowledge-search").addEventListener("input",renderKnowl
 document.querySelector("#knowledge-refresh").addEventListener("click",loadKnowledge);
 document.querySelector("#knowledge-save").addEventListener("click",()=>updateKnowledge());
 document.querySelector("#knowledge-remove").addEventListener("click",()=>updateKnowledge(true));
+
+for(const [id,direction] of [["fallback-up",-1],["fallback-down",1]]){
+ document.querySelector("#"+id)?.addEventListener("click",()=>{
+  const select=document.querySelector("#fallback-profiles");
+  const selected=[...select.selectedOptions];
+  for(const option of direction<0?selected:selected.reverse()){
+   if(direction<0&&option.previousElementSibling)select.insertBefore(option,option.previousElementSibling);
+   if(direction>0&&option.nextElementSibling)select.insertBefore(option.nextElementSibling,option);
+  }
+  select.dispatchEvent(new Event("input",{bubbles:true}));
+ });
+}

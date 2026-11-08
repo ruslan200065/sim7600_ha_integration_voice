@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="assets/panel.css">
   <script src="assets/panel.js" defer></script>
   <script src="assets/operations.js" defer></script>
+  <script src="assets/intelligence.js" defer></script>
 </head>
 <body>
   <main class="shell">
@@ -24,6 +25,7 @@
         <button type="button" data-tab="devices">Устройства</button>
         <button type="button" data-tab="knowledge">Карта дома</button>
         <button type="button" data-tab="operations">Задачи и уведомления</button>
+        <button type="button" data-tab="intelligence">Понимание и надёжность</button>
         <button type="button" data-tab="voice">Голос и интеграции</button>
         <button type="button" data-tab="personal">Память и правила</button>
         <button type="button" data-tab="history">Журнал</button>
@@ -148,6 +150,21 @@
                 </template>
               </section>
               <section class="card">
+                <h3>Резервные сервисы</h3>
+                <p class="hint">Резервная LLM выбирается до выполнения инструментов и начала озвучки. Уже отправленные команды не повторяются. Укажите ID сохранённых профилей в порядке переключения.</p>
+                <label>Резервные профили LLM<select name="llm_fallback_ids" id="fallback-profiles" multiple size="4"></select></label><div class="actions"><button type="button" id="fallback-up">Выше</button><button type="button" id="fallback-down">Ниже</button></div>
+                <label class="check"><input type="checkbox" name="speech_fallback_enabled">Включить резерв речи через совместимый OpenAI API</label>
+                <div class="fields">
+                  <label>Адрес API<input name="speech_fallback_base_url" placeholder="https://example.com/v1"></label>
+                  <label>Ключ API<input name="speech_fallback_api_key" type="password" autocomplete="new-password"></label>
+                  <label class="check"><input type="checkbox" id="clear-fallback-speech">Удалить ключ резервной речи</label>
+                  <label>Модель распознавания<input name="speech_fallback_stt_model"></label>
+                  <label>Модель синтеза<input name="speech_fallback_tts_model"></label>
+                  <label>Голос<input name="speech_fallback_voice"></label>
+                </div>
+                <p class="hint">Сервер должен поддерживать /audio/transcriptions с WAV и /audio/speech с PCM 24 кГц. Переключение синтеза возможно до первого фрагмента звука.</p>
+              </section>
+              <section class="card">
                 <h3>Манера общения</h3>
                 <label>Системная инструкция<textarea name="system_prompt" rows="6" maxlength="6000"
                   placeholder="По умолчанию: уважительно, дружелюбно и на «вы»."></textarea></label>
@@ -228,6 +245,7 @@
             </div>
           </fieldset>
         </form>
+    <section class="view" data-view="intelligence" hidden><div id="intelligence-content"></div></section>
     <section class="view" data-view="operations" hidden><div id="operations-content"></div></section>
     <section class="view" data-view="knowledge" hidden>
       <div class="section-heading"><div><p class="eyebrow">Как Джарвис понимает дом</p><h2>Карта дома</h2></div><button type="button" id="knowledge-refresh">Обновить</button></div>
