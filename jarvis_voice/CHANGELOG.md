@@ -1,3 +1,11 @@
+## 0.5.2 (experimental)
+
+- Keep concurrent replies fast while retaining completed background actions and per-turn confirmations.
+- Recover playback failures through the voice-session retry path; preserve normal caller interruptions.
+- Bound reminder delivery to three attempts 15 minutes apart and expire reminders after 24 hours; support caller refusal and rescheduling.
+- Restore optional keypad PINs without the 4–12 digit restriction.
+- Paginate device search with room/class filters and current availability.
+
 ## 0.5.1
 
 Live conversation fixes:

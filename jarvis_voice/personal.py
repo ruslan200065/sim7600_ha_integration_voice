@@ -4,19 +4,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import json
+import threading
 from math import asin, cos, radians, sin, sqrt
 from uuid import uuid4
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+MAX_DELIVERY_ATTEMPTS = 3
+DELIVERY_RETRY_SECONDS = 15 * 60
+DELIVERY_LIFETIME_SECONDS = 24 * 60 * 60
 
 
 class Personal:
     def __init__(self, path):
         self.path = Path(path)
         self._migrated = False
+        self._migration_lock = threading.Lock()
 
     def migrate(self):
+        # Concurrent LLM turns may be the first callers after startup.
+        with self._migration_lock:
+            self._migrate()
+
+    def _migrate(self):
         """Create tables once per process instead of running DDL on every query."""
         if self._migrated:
             return
@@ -48,6 +58,14 @@ class Personal:
                 CREATE TABLE IF NOT EXISTS pin_failures (
                     caller TEXT PRIMARY KEY, failures INTEGER, locked_until REAL);
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(reminders)")}
+            for name, declaration in (("delivery_attempts", "INTEGER DEFAULT 0"),
+                                      ("expires_at", "REAL"),
+                                      ("delivery_status", "TEXT DEFAULT 'pending'")):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE reminders ADD COLUMN {name} {declaration}")
+            db.execute("UPDATE reminders SET expires_at=due+? WHERE due IS NOT NULL AND expires_at IS NULL AND json_type(condition, '$.action') IS NULL", (DELIVERY_LIFETIME_SECONDS,))
+            db.execute("UPDATE reminders SET delivery_status='delivered' WHERE delivered=1 AND delivery_status='pending' AND json_type(condition, '$.action') IS NULL")
             db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.path.chmod(0o600)
         self._migrated = True
@@ -138,9 +156,10 @@ class Personal:
 
     def reminder(self, profile, name, text, due=None, condition=None):
         identifier = uuid4().hex
-        self.query("INSERT INTO reminders (id,profile,name,text,due,condition) VALUES (?, ?, ?, ?, ?, ?)",
+        self.query("INSERT INTO reminders (id,profile,name,text,due,condition,expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                    (identifier, profile, name, text, due.timestamp() if due else None,
-                    json.dumps(condition, ensure_ascii=False) if condition else None))
+                    json.dumps(condition, ensure_ascii=False) if condition else None,
+                    due.timestamp() + DELIVERY_LIFETIME_SECONDS if due and not (condition or {}).get("action") else None))
         return identifier
 
     def dashboard(self, profile):
@@ -150,9 +169,9 @@ class Personal:
                        for i, phrase, entity, count in self.query(
             "SELECT rowid,phrase,entity,count FROM device_choices WHERE profile=? ORDER BY count DESC", (profile,))]
         reminders = [{"id": i, "text": text, "due": due, "completed": bool(delivered),
-                      "condition": json.loads(condition) if condition else None, "status": status}
-                     for i, text, due, delivered, condition, status in self.query(
-            """SELECT reminders.id,text,due,delivered,condition,status FROM reminders
+                      "condition": json.loads(condition) if condition else None, "status": status or delivery_status, "delivery_attempts": attempts, "expires_at": expires}
+                     for i, text, due, delivered, condition, status, delivery_status, attempts, expires in self.query(
+            """SELECT reminders.id,text,due,delivered,condition,status,delivery_status,delivery_attempts,expires_at FROM reminders
             LEFT JOIN action_runs USING(id) WHERE profile=? ORDER BY delivered, due, reminders.rowid DESC""",
             (profile,))]
         return {"notes": notes, "preferences": preferences, "reminders": reminders}
@@ -167,12 +186,12 @@ class Personal:
 
     def edit_reminder(self, profile, identifier, text, due, condition_value):
         if due is not None:
-            return bool(self.query("""UPDATE reminders SET text=?,due=?,retry_at=0
+            return bool(self.query("""UPDATE reminders SET text=?,due=?,retry_at=0,delivery_attempts=0,delivery_status='pending',expires_at=?
                 WHERE profile=? AND id=? AND delivered=0 AND due IS NOT NULL
                 AND (condition IS NULL OR json_extract(condition,'$.kind')='time') RETURNING id""",
-                (text, due, profile, identifier)))
+                (text, due, due + DELIVERY_LIFETIME_SECONDS, profile, identifier)))
         if condition_value is not None:
-            return bool(self.query("""UPDATE reminders SET text=?,armed=0,due=NULL,retry_at=0,
+            return bool(self.query("""UPDATE reminders SET text=?,armed=0,due=NULL,retry_at=0,expires_at=NULL,delivery_attempts=0,delivery_status='pending',
                 condition=json_set(condition,'$.value',?)
                 WHERE profile=? AND id=? AND delivered=0 AND json_extract(condition,'$.kind')='state'
                 RETURNING id""", (text, condition_value, profile, identifier)))
@@ -200,6 +219,11 @@ class Personal:
     def due(self, now, profiles):
         if not profiles:
             return []
+        self.query("""UPDATE reminders SET delivered=1, delivery_status=CASE
+            WHEN expires_at<=? THEN 'expired' ELSE 'undelivered' END
+            WHERE delivered=0 AND due<=? AND retry_at<=? AND json_type(condition, '$.action') IS NULL
+            AND (expires_at<=? OR delivery_attempts>=?)""",
+            (now.timestamp(), now.timestamp(), now.timestamp(), now.timestamp(), MAX_DELIVERY_ATTEMPTS))
         placeholders = ",".join("?" for _ in profiles)
         return self.query(f"""SELECT id,profile,text FROM reminders
             WHERE delivered=0 AND due<=? AND retry_at<=? AND profile IN ({placeholders})
@@ -232,13 +256,36 @@ class Personal:
         if matched is False and not armed:
             self.query("UPDATE reminders SET armed=1 WHERE id=? AND due IS NULL", (identifier,))
         elif matched is True and armed:
-            self.query("UPDATE reminders SET due=? WHERE id=? AND due IS NULL", (now.timestamp(), identifier))
+            self.query("UPDATE reminders SET due=?,expires_at=? WHERE id=? AND due IS NULL",
+                       (now.timestamp(), now.timestamp() + DELIVERY_LIFETIME_SECONDS, identifier))
+
+    def reserve_delivery(self, identifier, profile, now):
+        """Claim one bounded delivery attempt before dialing, scoped to its recipient."""
+        stamp = now.timestamp()
+        return bool(self.query("""UPDATE reminders SET delivery_attempts=delivery_attempts+1,
+            retry_at=?,expires_at=COALESCE(expires_at,due+?),delivery_status='attempting'
+            WHERE id=? AND profile=? AND delivered=0 AND due<=? AND retry_at<=?
+            AND delivery_attempts<? AND COALESCE(expires_at,due+?)>?
+            AND json_type(condition, '$.action') IS NULL RETURNING id""",
+            (stamp + DELIVERY_RETRY_SECONDS, DELIVERY_LIFETIME_SECONDS, identifier, profile,
+             stamp, stamp, MAX_DELIVERY_ATTEMPTS, DELIVERY_LIFETIME_SECONDS, stamp)))
+
+    def decline_reminder(self, profile, identifier):
+        return bool(self.query("""UPDATE reminders SET delivered=1,delivery_status='declined'
+            WHERE id=? AND profile=? AND delivered=0 AND json_type(condition, '$.action') IS NULL
+            RETURNING id""", (identifier, profile)))
+
+    def defer_reminder(self, profile, identifier, due):
+        return bool(self.query("""UPDATE reminders SET due=?,retry_at=0,delivery_attempts=0,
+            expires_at=?,delivery_status='pending'
+            WHERE id=? AND profile=? AND delivered=0 AND json_type(condition, '$.action') IS NULL
+            RETURNING id""", (due.timestamp(), due.timestamp() + DELIVERY_LIFETIME_SECONDS, identifier, profile)))
 
     def retry_after(self, identifier, time):
         self.query("UPDATE reminders SET retry_at=? WHERE id=?", (time.timestamp(), identifier))
 
     def delivered(self, identifier):
-        self.query("UPDATE reminders SET delivered=1 WHERE id=?", (identifier,))
+        self.query("UPDATE reminders SET delivered=1,delivery_status='delivered' WHERE id=? AND delivered=0", (identifier,))
 
 def condition_matches(condition, states):
     row = states.get(condition["entity"], {})

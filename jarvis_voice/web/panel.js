@@ -209,12 +209,14 @@ function personalRecord(kind, record, profile) {
     details.className = "hint";
     const condition = record.condition;
     const label = condition?.action ? "Одноразовое действие" : "Личное напоминание";
-    const state = record.completed ? "Завершено" : "Ожидает";
+    const deliveryStates = {pending:"Ожидает", attempting:"Попытка доставки", delivered:"Озвучено", declined:"Получатель отказался", expired:"Срок истёк", undelivered:"Не доставлено"};
+    const state = deliveryStates[record.status] || (record.completed ? "Завершено" : "Ожидает");
     const action = condition?.action ? [condition.action.entity_id, condition.action.service].join(" · ") : "";
     const trigger = condition?.zone || condition?.entity || "";
     const runStatus = {accepted:"Команда принята", blocked:"Заблокировано", unconfirmed:"Нет подтверждения",
       started:"Запуск начат", profile_removed:"Профиль удалён"};
-    details.textContent = [label, state, trigger, action, runStatus[record.status]].filter(Boolean).join(" · ");
+    details.textContent = [label, state, trigger, action, runStatus[record.status],
+      !condition?.action && record.delivery_attempts ? "Попыток: " + record.delivery_attempts : ""].filter(Boolean).join(" · ");
     card.append(details);
     if (record.due && (!condition || condition.kind === "time")) {
       due = document.createElement("input");

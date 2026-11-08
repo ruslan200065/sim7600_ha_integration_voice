@@ -3,7 +3,7 @@ import asyncio
 import json
 import hmac
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import logging
 import os
@@ -398,7 +398,8 @@ class Server:
                     due = await asyncio.to_thread(self.personal.due, now, self.reminder_numbers)
                     if due:
                         identifier, profile, text = due[0]
-                        await asyncio.to_thread(self.personal.retry_after, identifier, now + timedelta(minutes=15))
+                        if not await asyncio.to_thread(self.personal.reserve_delivery, identifier, profile, now):
+                            continue
                         self.reminder_call = (self.modem.call_id + 1, identifier, self.reminder_numbers[profile])
                         try:
                             await self.dial_number(self.reminder_numbers[profile], "Напоминание. " + text)
@@ -570,6 +571,7 @@ class Server:
     async def _dialog(self, prompt, camera, reminder_id=None):
         brain = None
         caller = ""
+        initial_reminder = reminder_id
         call_id = self.modem.call_id
         try:
             self.mode="starting_audio"
@@ -645,6 +647,30 @@ class Server:
                     return "Это напоминание уже озвучено."
                 return CallOutput(prompt)
 
+            async def handle_call_reminder(args):
+                nonlocal reminder_id
+                if not reminder_id:
+                    return {"error": "Это напоминание уже обработано."}
+                profile = member["key"] if member else self.owner_key
+                action = args.get("action")
+                if action == "decline":
+                    changed = await asyncio.to_thread(self.personal.decline_reminder, profile, reminder_id)
+                elif action == "defer":
+                    when = args.get("when")
+                    if not isinstance(when, str):
+                        return {"error": "Уточни новое время напоминания."}
+                    try:
+                        due = brain.future_time(when)
+                    except (ValueError, TypeError, OverflowError):
+                        return {"error": "Уточни будущее время напоминания."}
+                    changed = await asyncio.to_thread(self.personal.defer_reminder, profile, reminder_id, due)
+                else:
+                    return {"error": "Выбери decline или defer по смыслу просьбы."}
+                if not changed:
+                    return {"error": "Напоминание уже обработано или принадлежит другому участнику."}
+                reminder_id = None
+                return {"ok": True, "action": action}
+
             async def reply(phrase, *, on_progress):
                 async def list_locks(_args):
                     devices = []
@@ -669,9 +695,11 @@ class Server:
                         return "Сначала заверши ввод кода для уже выбранного замка."
                     gate = selected
                     gate_name = row.get("attributes", {}).get("friendly_name") or "назначенный замок"
-                    # Caller ID can be spoofed, so a gate never opens without a keypad PIN.
-                    if not re.fullmatch(r"[0-9]{4,12}", pin or ""):
-                        return "Открытие по телефону недоступно: в настройках не задан код из 4–12 цифр."
+                    if not pin:
+                        on_progress(f"Открываю «{gate_name}».")
+                        return await open_gate()
+                    if not re.fullmatch(r"[0-9]+", pin):
+                        return "Открытие по телефону недоступно: код должен состоять из цифр."
                     if await asyncio.to_thread(self.personal.pin_locked, caller, datetime.now(timezone.utc)):
                         return "Открытие по телефону временно заблокировано после неверных кодов."
                     digits = ""
@@ -684,6 +712,7 @@ class Server:
                 actions = {"end_phone_call": end_call}
                 if reminder_id:
                     actions["read_call_reminder"] = read_reminder
+                    actions["handle_call_reminder"] = handle_call_reminder
                 if allowed_locks:
                     actions["list_assigned_locks"] = list_locks
                     actions["open_assigned_gate"] = request_gate
@@ -692,6 +721,8 @@ class Server:
 
             async def play(text):
                 nonlocal reminder_id
+                if initial_reminder and text == prompt and not reminder_id:
+                    return
                 await self._say(text)
                 if (reminder_id and text == prompt
                     and (self.modem.call_id, self.modem.call_state) == (call_id, "connected")):

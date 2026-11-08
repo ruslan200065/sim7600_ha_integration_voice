@@ -12,6 +12,7 @@ LOG = logging.getLogger(__name__)
 class CallOutput:
     text: str
     end_call: bool = False
+    background_result: bool = False
 
 
 class CallFinished(Exception):
@@ -71,13 +72,16 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
             message, turn = await output.get()
             await audio_ready.wait()
             farewell = isinstance(message, CallOutput) and message.end_call
-            if turn == generation or farewell:
+            background = isinstance(message, CallOutput) and message.background_result
+            if turn == generation or farewell or background:
                 text = message.text if isinstance(message, CallOutput) else message
                 playing = asyncio.create_task(speak(text))
                 try:
                     result, = await asyncio.gather(playing, return_exceptions=True)
                     if isinstance(result, Exception):
                         LOG.warning("Playback failed: %s", type(result).__name__)
+                        # _say has already exhausted its retries. Let the session restore audio.
+                        raise result
                     if farewell:
                         # The caller already said goodbye; echo or a late phrase must not keep the line open.
                         await hangup()
@@ -113,7 +117,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
             await asyncio.gather(fallback, return_exceptions=True)
         LOG.info("LLM answer length=%d", len(text.text if isinstance(text, CallOutput) else text or ""))
         # A streamed reply may already be fully spoken through progress; then the tail is empty.
-        if isinstance(text, CallOutput) and text.end_call:
+        if isinstance(text, CallOutput) and (text.end_call or text.background_result):
             output.put_nowait((text, generation))
         elif turn == generation and (text or not spoke):
             output.put_nowait((text or "Не получилось ответить. Попробуй ещё раз.", turn))

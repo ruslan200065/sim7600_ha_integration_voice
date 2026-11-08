@@ -1,6 +1,7 @@
 """An accepted modem dial must return success to both HTTP entry points."""
 
 import json
+from datetime import datetime, timedelta, timezone
 import pathlib
 import sys
 import tempfile
@@ -75,19 +76,52 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
     def posted(service):
         return [c for c in service.brain._ha.await_args_list if c.args[0] == "POST"]
 
-    async def test_gate_never_opens_without_valid_pin(self):
-        # Caller ID can be spoofed, so an empty or too short PIN disables phone opening entirely.
-        for pin in ("", "7", "1234567890123"):
+    async def test_gate_opens_without_optional_pin(self):
+        service = self.gate_service("")
+        async def dialog(_speech, reply, *_args, on_key, **_):
+            text = await reply("Открой калитку", on_progress=lambda text: None)
+            self.assertIn("отправлена", text)
+            self.assertEqual(await on_key("#"), "")
+        with patch.object(server_module, "run_dialog", dialog):
+            await service._dialog("", None)
+        self.assertEqual(len(self.posted(service)), 1)
+
+    async def test_pin_has_no_four_to_twelve_digit_restriction(self):
+        for pin in ("7", "001234567890123456789"):
             with self.subTest(pin_length=len(pin)):
                 service = self.gate_service(pin)
-
                 async def dialog(_speech, reply, *_args, on_key, **_):
                     text = await reply("Открой калитку", on_progress=lambda text: None)
-                    self.assertIn("недоступно", text)
-                    self.assertEqual(await on_key("#"), "")
+                    self.assertIn("решётку", text)
+                    self.assertEqual(self.posted(service), [])
+                    for digit in pin + "#":
+                        result = await on_key(digit)
+                    self.assertIn("отправлена", result)
                 with patch.object(server_module, "run_dialog", dialog):
                     await service._dialog("", None)
-                self.assertEqual(self.posted(service), [])
+                self.assertEqual(len(self.posted(service)), 1)
+
+    async def test_call_reminder_decline_and_defer_are_scoped_and_not_marked_spoken(self):
+        for action in ("decline", "defer"):
+            with self.subTest(action=action):
+                service = self.gate_service("")
+                profile = next(iter(service.family.values()))["key"]
+                due = datetime.now(timezone.utc) + timedelta(hours=1)
+                identifier = service.personal.reminder(profile, "Member", "private", due)
+                service._say = AsyncMock()
+                async def decide(_phrase, *, phone_actions, **_):
+                    return await phone_actions["handle_call_reminder"]({"action": action, "when": due.isoformat()})
+                service.caller_brain = lambda member: SimpleNamespace(reply=decide, future_time=lambda when: due)
+                async def dialog(_speech, reply, _source, play, *_args, **_):
+                    result = await reply("Потом" if action == "defer" else "Не надо", on_progress=lambda text: None)
+                    self.assertTrue(result["ok"])
+                    await play("private")
+                with patch.object(server_module, "run_dialog", dialog):
+                    await service._dialog("private", None, identifier)
+                rows = service.personal.dashboard(profile)["reminders"]
+                row = next(row for row in rows if row["id"] == identifier)
+                self.assertEqual(row["status"], "declined" if action == "decline" else "pending")
+                self.assertEqual(row["completed"], action == "decline")
 
     async def test_gate_opens_with_keypad_pin(self):
         service = self.gate_service("00123456")

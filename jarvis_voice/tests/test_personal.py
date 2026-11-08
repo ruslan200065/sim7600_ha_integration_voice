@@ -55,6 +55,63 @@ class PersonalTests(unittest.TestCase):
             store.delivered(reminder)
             self.assertEqual(store.due(now + timedelta(hours=1), [first]), [])
 
+    def test_legacy_reminders_migrate_with_delivery_status_and_expiry(self):
+        import sqlite3
+        from contextlib import closing
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "data.sqlite3"
+            now = datetime.now(timezone.utc)
+            with closing(sqlite3.connect(path)) as db, db:
+                db.execute("CREATE TABLE reminders (id TEXT PRIMARY KEY, profile TEXT, name TEXT, text TEXT, due REAL, delivered INTEGER DEFAULT 0, retry_at REAL DEFAULT 0, condition TEXT, armed INTEGER DEFAULT 0)")
+                db.execute("INSERT INTO reminders(id,profile,name,text,due,delivered) VALUES ('old','first','First','old',?,1)", (now.timestamp(),))
+            store = Personal(path)
+            row = store.dashboard("first")["reminders"][0]
+            self.assertEqual(row["status"], "delivered")
+            self.assertEqual(row["delivery_attempts"], 0)
+            self.assertGreater(row["expires_at"], now.timestamp())
+            self.assertEqual(store.due(now, ["first"]), [])
+
+    def test_delivery_attempts_are_bounded_persistent_and_recipient_scoped(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "data.sqlite3"
+            store = Personal(path)
+            now = datetime.now(timezone.utc)
+            identifier = store.reminder("first", "First", "private", now)
+            self.assertFalse(store.reserve_delivery(identifier, "second", now))
+            for attempt in range(3):
+                current = now + timedelta(minutes=15 * attempt)
+                self.assertEqual(store.due(current, ["first"]), [(identifier, "first", "private")])
+                self.assertTrue(store.reserve_delivery(identifier, "first", current))
+                self.assertFalse(store.reserve_delivery(identifier, "first", current))
+                store = Personal(path)
+            self.assertEqual(store.due(now + timedelta(minutes=45), ["first"]), [])
+            item = store.dashboard("first")["reminders"][0]
+            self.assertEqual(item["status"], "undelivered")
+            self.assertEqual(item["delivery_attempts"], 3)
+            self.assertTrue(item["completed"])
+
+    def test_expiry_decline_and_defer_do_not_create_repeat_tasks(self):
+        with TemporaryDirectory() as directory:
+            store = Personal(Path(directory) / "data.sqlite3")
+            now = datetime.now(timezone.utc)
+            store.reminder("first", "First", "stale", now - timedelta(days=2))
+            self.assertEqual(store.due(now, ["first"]), [])
+            self.assertEqual(store.dashboard("first")["reminders"][0]["status"], "expired")
+            identifier = store.reminder("first", "First", "later", now)
+            self.assertTrue(store.reserve_delivery(identifier, "first", now))
+            later = now + timedelta(hours=2)
+            self.assertFalse(store.defer_reminder("second", identifier, later))
+            self.assertTrue(store.defer_reminder("first", identifier, later))
+            self.assertEqual(store.due(now + timedelta(minutes=30), ["first"]), [])
+            self.assertEqual(store.due(later, ["first"]), [(identifier, "first", "later")])
+            self.assertFalse(store.decline_reminder("second", identifier))
+            self.assertTrue(store.decline_reminder("first", identifier))
+            self.assertEqual(store.due(later, ["first"]), [])
+            row = next(r for r in store.dashboard("first")["reminders"] if r["id"] == identifier)
+            self.assertEqual(row["status"], "declined")
+            store.delivered(identifier)
+            self.assertEqual(next(r for r in store.dashboard("first")["reminders"] if r["id"] == identifier)["status"], "declined")
+
     def test_action_can_only_be_claimed_once_and_never_dials(self):
         with TemporaryDirectory() as directory:
             store = Personal(Path(directory) / "data.sqlite3")
@@ -66,6 +123,8 @@ class PersonalTests(unittest.TestCase):
             self.assertTrue(store.claim_action(identifier))
             self.assertFalse(store.claim_action(identifier))
             self.assertEqual(store.due_actions(now), [])
+            store.action_status(identifier, "completed")
+            self.assertEqual(store.action_history("first"), [{"id": identifier, "text": "Action", "status": "completed"}])
 
     def test_dashboard_edits_are_scoped_and_finished_rules_are_immutable(self):
         with TemporaryDirectory() as directory:

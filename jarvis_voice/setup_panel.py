@@ -163,8 +163,8 @@ def validate_changes(changes, current):
     if agent and not re.fullmatch(r"[A-Za-z0-9_.\-]{1,256}", agent):
         raise ValueError("ID агента Assist: например conversation.home_assistant.")
     pin = options.get("gate_pin", "")
-    if pin and not re.fullmatch(r"[0-9]{4,12}", pin):
-        raise ValueError("Код калитки: от 4 до 12 цифр.")
+    if pin and not re.fullmatch(r"[0-9]+", pin):
+        raise ValueError("Код замка должен состоять из цифр; оставьте пустым для открытия без кода.")
     calendar = options.get("reminder_calendar", "")
     if calendar and (not ENTITY_ID.fullmatch(calendar) or not calendar.startswith("calendar.")):
         raise ValueError("Укажите календарь Home Assistant вида calendar.name.")
