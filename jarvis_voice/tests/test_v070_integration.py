@@ -67,3 +67,18 @@ class V070IntegrationTests(unittest.IsolatedAsyncioTestCase):
  def test_new_secret_not_forwarded_on_url_change(self):
   current={'speech_fallback_api_key':'private','speech_fallback_base_url':'https://old.test/v1'}
   with self.assertRaises(ValueError):validate_changes({'speech_fallback_base_url':'https://new.test/v1'},current)
+
+ async def test_stt_failure_is_reported_to_call_diagnostics(self):
+  import asyncio
+  from voice_dialog import run_dialog, CallOutput
+  class Speech:
+   turn=0
+   async def recognize_live(self,*args,**kwargs):
+    self.turn+=1
+    if self.turn==1:raise RuntimeError('STT unavailable')
+    if self.turn==2:return 'До связи'
+    await asyncio.Future()
+  diagnostic=AsyncMock()
+  async with asyncio.timeout(3):
+   await run_dialog(Speech(),AsyncMock(return_value=CallOutput('Пока',True)),asyncio.Queue(),AsyncMock(),AsyncMock(),'Привет',on_diagnostic=diagnostic)
+  self.assertEqual(diagnostic.await_args_list[0].args[:2],('stt','failed'))

@@ -39,7 +39,7 @@ def echoes_playback(phrase, outputs):
 
 
 async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, background_tools=False,
-                     keypad=None, on_key=None, idle_seconds=75, echo_filter=False):
+                     keypad=None, on_key=None, idle_seconds=75, echo_filter=False, on_diagnostic=None):
     """Listen throughout a reply and interrupt once the caller is recognized."""
     clock = asyncio.get_running_loop().time
     last_spoken = []
@@ -157,6 +157,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                             if playing and not playing.done():
                                 playing.cancel()
 
+                    recognition_started = clock()
                     try:
                         async with asyncio.timeout(idle_seconds) as idle:
                             def voice_started():
@@ -179,6 +180,8 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                     except Exception as exc:
                         audio_ready.set()
                         LOG.warning("STT failed: %s", type(exc).__name__)
+                        if on_diagnostic:
+                            await on_diagnostic("stt", "failed", {"error":type(exc).__name__}, (clock()-recognition_started)*1000)
                         if clock() - last_recovery >= 10:
                             output.put_nowait(("Не получилось расслышать. Скажи ещё раз.", generation))
                             last_recovery = clock()
@@ -195,6 +198,8 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                             last_recovery = clock()
                         continue
                     LOG.info("Live STT recognized %d chars", len(phrase))
+                    if on_diagnostic:
+                        await on_diagnostic("stt", "ready", {}, (clock()-recognition_started)*1000)
                     generation += 1
                     if playing and not playing.done():
                         playing.cancel()

@@ -843,6 +843,7 @@ class Server:
                  if reminder_id else prompt or ("Здравствуйте. Это Джарвис. Для вас есть сообщения от семьи. Озвучить?" if family_messages else "Здравствуйте. Это Джарвис. Слушаю вас.")),
                 background_tools=True, keypad=keypad, on_key=press,
                 echo_filter=self.o.get("call_echo_filter", False),
+                on_diagnostic=lambda stage,status,details,duration: self.record_trace(member["key"] if member else self.owner_key or "local",call_id,stage,status,details,duration),
             )
         except asyncio.CancelledError:
             raise

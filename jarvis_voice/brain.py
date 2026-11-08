@@ -1198,6 +1198,11 @@ class Brain:
             except (RuntimeError,ValueError,TimeoutError,aiohttp.ClientError) as exc:
                 last_error = exc
                 LOG.warning("LLM provider attempt failed: %s",type(exc).__name__)
+                if self.timeline:
+                    try:
+                        await asyncio.to_thread(self.timeline.record,self.profile,str(getattr(self,"session_call","room")),"llm","failed",details={"error":type(exc).__name__,"provider_id":candidate["id"]})
+                    except Exception:
+                        LOG.warning("Could not persist provider diagnostics")
         raise RuntimeError("Configured LLM providers unavailable") from last_error
 
     async def _reply(self, phrase, camera_entity, on_progress, phone_actions):
