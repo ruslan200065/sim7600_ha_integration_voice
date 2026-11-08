@@ -3,22 +3,160 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect JARVIS Q1",
+        "title": "Connect to JARVIS Q1",
+        "description": "Connect to the local JARVIS Voice App.",
         "data": {
-          "host": "App hostname",
-          "port": "Port",
-          "token": "API token"
+          "host": "App hostname or IP",
+          "port": "HTTP port",
+          "token": "App API token"
         }
       },
       "hassio_confirm": {
-        "title": "JARVIS Q1 discovered",
-        "description": "Configure camera, speaker, microphone and SIM7600 in Home Assistant?"
+        "title": "JARVIS Q1 detected",
+        "description": "Set up JARVIS Q1 with camera, speaker, microphone and SIM7600 controls?"
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate JARVIS Q1",
+        "description": "The App at {host} rejected the API token. Enter the current token from the App configuration.",
+        "data": {
+          "token": "App API token"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure JARVIS Q1",
+        "description": "Change the App address. Leave the token empty to keep the current one.",
+        "data": {
+          "host": "App hostname or IP",
+          "port": "HTTP port",
+          "token": "App API token"
+        }
       }
     },
     "error": {
-      "cannot_connect": "Cannot connect to App",
-      "invalid_host": "Invalid hostname",
-      "invalid_response": "Unexpected response"
+      "cannot_connect": "Cannot connect to the App. Check its configuration and restart it.",
+      "invalid_auth": "The App rejected the API token.",
+      "invalid_host": "Invalid host. Use an IPv4/IPv6 address or a hostname.",
+      "invalid_port": "Invalid port.",
+      "invalid_response": "Unexpected response from App"
+    },
+    "abort": {
+      "already_configured": "JARVIS Q1 is already configured.",
+      "invalid_discovery_info": "The App sent incomplete discovery information.",
+      "reauth_successful": "Re-authentication was successful.",
+      "reauth_failed": "The config entry to re-authenticate no longer exists.",
+      "reconfigure_successful": "Reconfiguration was successful.",
+      "reconfigure_failed": "The config entry to reconfigure no longer exists."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "call_state": { "name": "Call state" },
+      "signal": { "name": "Cellular signal (CSQ)" },
+      "signal_dbm": { "name": "Cellular signal" },
+      "gps_latitude": { "name": "GPS latitude" },
+      "gps_longitude": { "name": "GPS longitude" },
+      "last_transcript": {
+        "name": "Last microphone transcript",
+        "state_attributes": {
+          "full_text": { "name": "Full text" },
+          "response": { "name": "Assistant response" },
+          "truncated": { "name": "Truncated" }
+        }
+      },
+      "microphone_level": { "name": "Microphone level" }
+    },
+    "binary_sensor": {
+      "gps_fix": { "name": "GPS fix" },
+      "q1_mic": { "name": "Microphone configured" },
+      "microphone_sound": { "name": "Microphone sound" }
+    },
+    "button": {
+      "listen": { "name": "Listen and respond" },
+      "gps_start": { "name": "Start GPS" },
+      "hangup": { "name": "Hang up call" }
+    },
+    "camera": {
+      "camera": { "name": "Camera" }
+    },
+    "media_player": {
+      "speaker": { "name": "Speaker" }
+    },
+    "switch": {
+      "microphone_monitor": { "name": "Microphone monitor" }
+    }
+  },
+  "services": {
+    "speak": {
+      "name": "Speak on Q1",
+      "description": "Play Yandex LiveTTS through the configured Q1 speaker.",
+      "fields": {
+        "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." },
+        "text": { "name": "Text", "description": "Phrase to speak (1-2000 characters)." }
+      }
+    },
+    "listen": {
+      "name": "Listen and reply",
+      "description": "Capture speech on Q1, ask the assistant, optionally speak the answer and fire the jarvis_q1_transcript event.",
+      "fields": {
+        "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." },
+        "seconds": { "name": "Timeout", "description": "Maximum listening time in seconds." }
+      }
+    },
+    "transcribe": {
+      "name": "Transcribe microphone",
+      "description": "Stream microphone audio to Yandex STT without using the assistant. Fires the jarvis_q1_transcript event.",
+      "fields": {
+        "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." },
+        "seconds": { "name": "Timeout", "description": "Maximum listening time in seconds." }
+      }
+    },
+    "call": {
+      "name": "Call an owner or family member",
+      "description": "Dial the configured recipient and read the question once connected.",
+      "fields": {
+        "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." },
+        "member": { "name": "Family member", "description": "Profile name exactly as configured in JARVIS. Leave empty for the owner." },
+        "prompt": { "name": "Question", "description": "Text read to the recipient once the call is connected (up to 1200 characters)." },
+        "camera_entity": { "name": "Event camera", "description": "Optional permitted camera carried into the conversation." }
+      }
+    },
+    "send_dtmf": {
+      "name": "Send phone keypad tones",
+      "description": "Transmit DTMF in the current connected call.",
+      "fields": {
+        "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." },
+        "digits": { "name": "Digits", "description": "1-16 characters from 0-9, *, # and A-D." }
+      }
+    },
+    "hangup": {
+      "name": "End phone call",
+      "description": "Hang up the current cellular call.",
+      "fields": {
+        "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." }
+      }
+    },
+    "set_led": {
+      "name": "Set Q1 indicator color",
+      "description": "Change the Q1 status LED color or turn it off.",
+      "fields": {
+        "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." },
+        "color": { "name": "Color", "description": "LED color." }
+      }
+    },
+    "gps_start": {
+      "name": "Activate GPS",
+      "description": "Start the SIM7600 GNSS receiver.",
+      "fields": {
+        "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." },
+        "assisted": { "name": "A-GPS mode", "description": "Use assisted GPS (requires mobile data) for a faster first fix." }
+      }
+    },
+    "probe": {
+      "name": "Inspect Q1 hardware",
+      "description": "Return detected camera, serial devices and audio sources/sinks.",
+      "fields": {
+        "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." }
+      }
     }
   }
 }

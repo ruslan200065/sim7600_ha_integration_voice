@@ -2,18 +2,36 @@ speak:
   name: Speak on Q1
   description: Play Yandex LiveTTS through the configured Q1 speaker.
   fields:
+    entry_id:
+      name: Gateway
+      description: JARVIS Q1 config entry. Optional when only one gateway is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: jarvis_q1
     text:
       name: Text
+      description: Phrase to speak (1-2000 characters).
       required: true
       example: "Дверь открыта"
       selector:
         text:
+          multiline: true
 listen:
   name: Listen and reply
-  description: Capture speech on Q1, ask DeepSeek, optionally speak the answer and fire jarvis_q1_transcript event.
+  description: Capture speech on Q1, ask the assistant, optionally speak the answer and fire the jarvis_q1_transcript event.
   fields:
+    entry_id:
+      name: Gateway
+      description: JARVIS Q1 config entry. Optional when only one gateway is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: jarvis_q1
     seconds:
       name: Timeout
+      description: Maximum listening time in seconds.
+      required: false
       default: 12
       selector:
         number:
@@ -23,10 +41,19 @@ listen:
           unit_of_measurement: s
 transcribe:
   name: Transcribe microphone
-  description: Stream microphone audio to Yandex STT without using DeepSeek. Fires jarvis_q1_transcript event.
+  description: Stream microphone audio to Yandex STT without using the assistant. Fires the jarvis_q1_transcript event.
   fields:
+    entry_id:
+      name: Gateway
+      description: JARVIS Q1 config entry. Optional when only one gateway is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: jarvis_q1
     seconds:
       name: Timeout
+      description: Maximum listening time in seconds.
+      required: false
       default: 12
       selector:
         number:
@@ -38,18 +65,30 @@ call:
   name: Call an owner or family member
   description: Dial the configured recipient and read the question once connected.
   fields:
+    entry_id:
+      name: Gateway
+      description: JARVIS Q1 config entry. Optional when only one gateway is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: jarvis_q1
     member:
       name: Family member
-      description: Enter the profile name exactly as configured in JARVIS. Leave empty for the owner.
+      description: Profile name exactly as configured in JARVIS. Leave empty for the owner.
+      required: false
       selector:
         text:
     prompt:
       name: Question
+      description: Text read to the recipient once the call is connected (up to 1200 characters).
+      required: false
       selector:
         text:
+          multiline: true
     camera_entity:
       name: Event camera
       description: Optional permitted camera carried into the conversation.
+      required: false
       selector:
         entity:
           filter:
@@ -58,8 +97,16 @@ send_dtmf:
   name: Send phone keypad tones
   description: Transmit DTMF in the current connected call.
   fields:
+    entry_id:
+      name: Gateway
+      description: JARVIS Q1 config entry. Optional when only one gateway is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: jarvis_q1
     digits:
       name: Digits
+      description: 1-16 characters from 0-9, *, # and A-D.
       required: true
       example: "12#"
       selector:
@@ -67,11 +114,28 @@ send_dtmf:
 hangup:
   name: End phone call
   description: Hang up the current cellular call.
+  fields:
+    entry_id:
+      name: Gateway
+      description: JARVIS Q1 config entry. Optional when only one gateway is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: jarvis_q1
 set_led:
   name: Set Q1 indicator color
+  description: Change the Q1 status LED color or turn it off.
   fields:
+    entry_id:
+      name: Gateway
+      description: JARVIS Q1 config entry. Optional when only one gateway is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: jarvis_q1
     color:
       name: Color
+      description: LED color.
       required: true
       selector:
         select:
@@ -86,11 +150,30 @@ set_led:
             - "off"
 gps_start:
   name: Activate GPS
+  description: Start the SIM7600 GNSS receiver.
   fields:
+    entry_id:
+      name: Gateway
+      description: JARVIS Q1 config entry. Optional when only one gateway is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: jarvis_q1
     assisted:
       name: A-GPS mode
+      description: Use assisted GPS (requires mobile data) for a faster first fix.
+      required: false
+      default: false
       selector:
         boolean:
 probe:
   name: Inspect Q1 hardware
   description: Return detected camera, serial devices and audio sources/sinks.
+  fields:
+    entry_id:
+      name: Gateway
+      description: JARVIS Q1 config entry. Optional when only one gateway is configured.
+      required: false
+      selector:
+        config_entry:
+          integration: jarvis_q1

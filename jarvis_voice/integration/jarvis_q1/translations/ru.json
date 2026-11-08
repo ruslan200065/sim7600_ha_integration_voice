@@ -4,8 +4,9 @@
     "step": {
       "user": {
         "title": "Подключение JARVIS Q1",
+        "description": "Подключение к локальному приложению JARVIS Voice.",
         "data": {
-          "host": "Имя хоста приложения",
+          "host": "Имя хоста или IP приложения",
           "port": "Порт",
           "token": "Токен API"
         }
@@ -13,12 +14,149 @@
       "hassio_confirm": {
         "title": "Обнаружено приложение JARVIS Q1",
         "description": "Подключить камеру, динамик, микрофон и SIM7600 к Home Assistant?"
+      },
+      "reauth_confirm": {
+        "title": "Повторная авторизация JARVIS Q1",
+        "description": "Приложение по адресу {host} отклонило токен API. Введите актуальный токен из настроек приложения.",
+        "data": {
+          "token": "Токен API"
+        }
+      },
+      "reconfigure": {
+        "title": "Изменение настроек JARVIS Q1",
+        "description": "Измените адрес приложения. Оставьте токен пустым, чтобы сохранить текущий.",
+        "data": {
+          "host": "Имя хоста или IP приложения",
+          "port": "Порт",
+          "token": "Токен API"
+        }
       }
     },
     "error": {
       "cannot_connect": "Не удалось подключиться к приложению",
-      "invalid_host": "Неверный хост",
+      "invalid_auth": "Приложение отклонило токен API",
+      "invalid_host": "Неверный хост. Укажите адрес IPv4/IPv6 или имя хоста.",
+      "invalid_port": "Неверный порт",
       "invalid_response": "Некорректный ответ приложения"
+    },
+    "abort": {
+      "already_configured": "JARVIS Q1 уже настроен.",
+      "invalid_discovery_info": "Приложение передало неполные данные обнаружения.",
+      "reauth_successful": "Повторная авторизация выполнена.",
+      "reauth_failed": "Запись конфигурации для повторной авторизации больше не существует.",
+      "reconfigure_successful": "Настройки успешно изменены.",
+      "reconfigure_failed": "Запись конфигурации больше не существует."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "call_state": { "name": "Состояние звонка" },
+      "signal": { "name": "Уровень сигнала (CSQ)" },
+      "signal_dbm": { "name": "Уровень сигнала" },
+      "gps_latitude": { "name": "Широта GPS" },
+      "gps_longitude": { "name": "Долгота GPS" },
+      "last_transcript": {
+        "name": "Последняя распознанная фраза",
+        "state_attributes": {
+          "full_text": { "name": "Полный текст" },
+          "response": { "name": "Ответ ассистента" },
+          "truncated": { "name": "Обрезано" }
+        }
+      },
+      "microphone_level": { "name": "Уровень микрофона" }
+    },
+    "binary_sensor": {
+      "gps_fix": { "name": "Фиксация GPS" },
+      "q1_mic": { "name": "Микрофон настроен" },
+      "microphone_sound": { "name": "Звук на микрофоне" }
+    },
+    "button": {
+      "listen": { "name": "Слушать и ответить" },
+      "gps_start": { "name": "Запустить GPS" },
+      "hangup": { "name": "Завершить звонок" }
+    },
+    "camera": {
+      "camera": { "name": "Камера" }
+    },
+    "media_player": {
+      "speaker": { "name": "Динамик" }
+    },
+    "switch": {
+      "microphone_monitor": { "name": "Мониторинг микрофона" }
+    }
+  },
+  "services": {
+    "speak": {
+      "name": "Произнести на Q1",
+      "description": "Воспроизвести Yandex LiveTTS через динамик Q1.",
+      "fields": {
+        "entry_id": { "name": "Шлюз", "description": "Запись JARVIS Q1. Необязательно, если настроен один шлюз." },
+        "text": { "name": "Текст", "description": "Фраза для произнесения (1–2000 символов)." }
+      }
+    },
+    "listen": {
+      "name": "Слушать и ответить",
+      "description": "Распознать речь на Q1, спросить ассистента, озвучить ответ и отправить событие jarvis_q1_transcript.",
+      "fields": {
+        "entry_id": { "name": "Шлюз", "description": "Запись JARVIS Q1. Необязательно, если настроен один шлюз." },
+        "seconds": { "name": "Тайм-аут", "description": "Максимальное время прослушивания в секундах." }
+      }
+    },
+    "transcribe": {
+      "name": "Распознать речь с микрофона",
+      "description": "Передать звук микрофона в Yandex STT без ассистента. Отправляет событие jarvis_q1_transcript.",
+      "fields": {
+        "entry_id": { "name": "Шлюз", "description": "Запись JARVIS Q1. Необязательно, если настроен один шлюз." },
+        "seconds": { "name": "Тайм-аут", "description": "Максимальное время прослушивания в секундах." }
+      }
+    },
+    "call": {
+      "name": "Позвонить владельцу или члену семьи",
+      "description": "Набрать номер получателя и зачитать вопрос после соединения.",
+      "fields": {
+        "entry_id": { "name": "Шлюз", "description": "Запись JARVIS Q1. Необязательно, если настроен один шлюз." },
+        "member": { "name": "Член семьи", "description": "Имя профиля точно как в JARVIS. Оставьте пустым для владельца." },
+        "prompt": { "name": "Вопрос", "description": "Текст, который будет зачитан после соединения (до 1200 символов)." },
+        "camera_entity": { "name": "Камера события", "description": "Разрешённая камера, передаваемая в разговор (необязательно)." }
+      }
+    },
+    "send_dtmf": {
+      "name": "Отправить тоны DTMF",
+      "description": "Передать тоны клавиатуры в текущем звонке.",
+      "fields": {
+        "entry_id": { "name": "Шлюз", "description": "Запись JARVIS Q1. Необязательно, если настроен один шлюз." },
+        "digits": { "name": "Цифры", "description": "1–16 символов из 0–9, *, # и A–D." }
+      }
+    },
+    "hangup": {
+      "name": "Завершить звонок",
+      "description": "Положить трубку в текущем сотовом звонке.",
+      "fields": {
+        "entry_id": { "name": "Шлюз", "description": "Запись JARVIS Q1. Необязательно, если настроен один шлюз." }
+      }
+    },
+    "set_led": {
+      "name": "Цвет индикатора Q1",
+      "description": "Изменить цвет светодиода Q1 или выключить его.",
+      "fields": {
+        "entry_id": { "name": "Шлюз", "description": "Запись JARVIS Q1. Необязательно, если настроен один шлюз." },
+        "color": { "name": "Цвет", "description": "Цвет светодиода." }
+      }
+    },
+    "gps_start": {
+      "name": "Включить GPS",
+      "description": "Запустить приёмник GNSS модема SIM7600.",
+      "fields": {
+        "entry_id": { "name": "Шлюз", "description": "Запись JARVIS Q1. Необязательно, если настроен один шлюз." },
+        "assisted": { "name": "Режим A-GPS", "description": "Использовать A-GPS (нужен мобильный интернет) для быстрой первой фиксации." }
+      }
+    },
+    "probe": {
+      "name": "Проверить оборудование Q1",
+      "description": "Вернуть найденные камеру, последовательные порты и аудиоустройства.",
+      "fields": {
+        "entry_id": { "name": "Шлюз", "description": "Запись JARVIS Q1. Необязательно, если настроен один шлюз." }
+      }
     }
   }
 }

@@ -1,10 +1,12 @@
 """Enable local microphone monitoring in Home Assistant."""
 from homeassistant.components.switch import SwitchEntity
+
+from .const import DOMAIN
 from .entity import JarvisEntity
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    coordinator = hass.data["jarvis_q1"][entry.entry_id].microphone
+    coordinator = hass.data[DOMAIN][entry.entry_id].microphone
     async_add_entities([MicrophoneSwitch(coordinator)])
 
 
@@ -12,7 +14,7 @@ class MicrophoneSwitch(JarvisEntity, SwitchEntity):
     _attr_icon = "mdi:microphone"
 
     def __init__(self, coordinator):
-        super().__init__(coordinator, "microphone_monitor", "Microphone monitor")
+        super().__init__(coordinator, "microphone_monitor")
 
     @property
     def available(self):

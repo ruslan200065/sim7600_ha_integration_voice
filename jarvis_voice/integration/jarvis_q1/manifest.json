@@ -1,13 +1,18 @@
 {
   "domain": "jarvis_q1",
   "name": "JARVIS Q1 Voice Gateway",
-  "version": "0.4.4",
-  "config_flow": true,
-  "documentation": "https://github.com/ruslan200065/sim7600_ha_integration_voice/blob/develop/jarvis_voice/README.md",
+  "after_dependencies": [
+    "media_source"
+  ],
   "codeowners": [
     "@ruslan200065"
   ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/ruslan200065/sim7600_ha_integration_voice/blob/develop/jarvis_voice/README.md",
+  "integration_type": "device",
   "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/ruslan200065/sim7600_ha_integration_voice/issues",
   "requirements": [],
-  "dependencies": []
+  "version": "0.5.0"
 }
