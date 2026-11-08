@@ -47,13 +47,18 @@ TEXT_FIELDS = {
     "telegram_photo_target": 256,
     "reminder_calendar": 256,
     "reminder_person": 256,
+    "country_code": 3,
+    "room_agent": 16,
+    "assist_agent_id": 256,
 }
 INTEGER_FIELDS = {
     "serial_baud": (1200, 921600),
     "max_calls_per_hour": (1, 20),
     "call_playback_volume": (10, 100),
+    "llm_daily_token_limit": (0, 10_000_000),
 }
-BOOLEAN_FIELDS = {"auto_answer", "observe_all_entities", "control_all_entities", "speech_cache_enabled", "call_echo_filter"}
+BOOLEAN_FIELDS = {"auto_answer", "observe_all_entities", "control_all_entities", "speech_cache_enabled", "call_echo_filter",
+                  "confirm_risky_actions", "ha_events", "call_summary", "stream_replies"}
 OPTION_FIELDS = (
     set(TEXT_FIELDS)
     | set(INTEGER_FIELDS)
@@ -62,6 +67,7 @@ OPTION_FIELDS = (
         "allowed_entities",
         "owner_locks",
         "observed_entities",
+        "room_entities",
         "allow_domains",
         "family_members",
         "llm_profiles",
@@ -99,7 +105,7 @@ def validate_changes(changes, current):
             value = merge_profiles(value, current.get("llm_profiles", []))
         elif key == "family_members":
             family_profiles(value)
-        elif key in {"allowed_entities", "observed_entities"}:
+        elif key in {"allowed_entities", "observed_entities", "room_entities"}:
             if (
                 not isinstance(value, list)
                 or len(value) > 100
@@ -148,9 +154,17 @@ def validate_changes(changes, current):
     family = family_profiles(options.get("family_members", []))
     if number and number.lstrip("+") in family:
         raise ValueError("Номер владельца уже добавлен отдельно.")
+    country = options.get("country_code", "7") or ""
+    if not re.fullmatch(r"[0-9]{0,3}", str(country)):
+        raise ValueError("Код страны: до 3 цифр без плюса, например 7.")
+    if (options.get("room_agent") or "jarvis") not in ("jarvis", "assist"):
+        raise ValueError("Агент для голоса из комнаты: jarvis или assist.")
+    agent = options.get("assist_agent_id", "") or ""
+    if agent and not re.fullmatch(r"[A-Za-z0-9_.\-]{1,256}", agent):
+        raise ValueError("ID агента Assist: например conversation.home_assistant.")
     pin = options.get("gate_pin", "")
-    if pin and not re.fullmatch(r"[0-9]+", pin):
-        raise ValueError("Код калитки должен содержать только цифры.")
+    if pin and not re.fullmatch(r"[0-9]{4,12}", pin):
+        raise ValueError("Код калитки: от 4 до 12 цифр.")
     calendar = options.get("reminder_calendar", "")
     if calendar and (not ENTITY_ID.fullmatch(calendar) or not calendar.startswith("calendar.")):
         raise ValueError("Укажите календарь Home Assistant вида calendar.name.")
@@ -208,15 +222,32 @@ class SetupPanel:
             or request.headers.get("Sec-Fetch-Site") == "cross-site"
         ):
             raise web.HTTPForbidden()
-        response = await handler(request)
+        try:
+            response = await handler(request)
+        except web.HTTPException as exc:
+            self.secure_headers(exc)
+            raise
+        return self.secure_headers(response)
+
+    @staticmethod
+    def secure_headers(response):
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = (
             "default-src 'none'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' blob:; connect-src 'self'; frame-ancestors 'self'; "
-            "base-uri 'none'"
+            "img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'; "
+            "frame-ancestors 'self'; base-uri 'self'"
         )
         return response
+
+    def call_active(self):
+        service = self.service
+        return (
+            service.modem.call_state not in {"idle", "offline"}
+            or service.mic_lock.locked()
+            or service.speaker_lock.locked()
+            or service.media.playing
+        )
 
     async def supervisor(self, method, path, data=None, timeout=10):
         if not self.token:
@@ -247,8 +278,13 @@ class SetupPanel:
 
     async def state(self, _request):
         info, audio = await asyncio.gather(
-            self.supervisor("GET", "info"), probe_audio()
+            self.supervisor("GET", "info"), probe_audio(), return_exceptions=True
         )
+        if isinstance(info, BaseException):
+            raise info
+        if isinstance(audio, BaseException):
+            LOG.warning("Audio probe failed: %s", audio)
+            audio = {}
         options = info["options"]
         active = self.service.o
         return web.json_response(
@@ -319,13 +355,7 @@ class SetupPanel:
 
     async def restart(self, _request):
         async with self.lock:
-            service = self.service
-            if (
-                service.modem.call_state not in {"idle", "offline"}
-                or service.mic_lock.locked()
-                or service.speaker_lock.locked()
-                or service.media.playing
-            ):
+            if self.call_active():
                 raise web.HTTPConflict(
                     text="Дождитесь окончания звонка или работы со звуком."
                 )
@@ -335,6 +365,10 @@ class SetupPanel:
 
     async def restart_addon(self):
         await asyncio.sleep(0.5)
+        async with self.lock:
+            if self.call_active():
+                LOG.warning("Restart postponed: a call or audio session started")
+                return
         try:
             await self.supervisor("POST", "restart", timeout=45)
         except web.HTTPException as exc:
@@ -365,7 +399,10 @@ class SetupPanel:
         if request.method == "DELETE":
             changed = await asyncio.to_thread(store.remove_record, profile, kind, identifier)
         else:
-            data = await request.json()
+            try:
+                data = await request.json()
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise web.HTTPBadRequest(text="Неверные данные записи.") from exc
             if not isinstance(data, dict):
                 raise web.HTTPBadRequest(text="Неверные данные записи.")
             text = data.get("text")
@@ -455,7 +492,8 @@ class SetupPanel:
     async def phone_state(self, _request):
         service = self.service
         state = service.modem.call_state
-        recipients = [member["name"] for member in getattr(service, "family", {}).values()]
+        recipients = [{"key": member["key"], "name": member["name"]}
+                      for member in getattr(service, "family", {}).values()]
         owner = bool(service.o.get("allowed_number"))
         return web.json_response(
             {
@@ -518,6 +556,26 @@ class SetupPanel:
             raise web.HTTPBadRequest(text="Неверная страница журнала.") from exc
         result = await self.service.history.page(kind, offset)
         return web.json_response({**result, "sms": self.service.sms_status})
+
+    async def audit(self, request):
+        try:
+            limit = int(request.query.get("limit", 100))
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text="Неверный размер журнала.") from exc
+        store = self.service.personal
+        timezone_ = self.service.brain.timezone
+        today = datetime.now(timezone_).date().isoformat()
+        log, usage, used = await asyncio.gather(
+            asyncio.to_thread(store.audit_log, max(1, min(limit, 500))),
+            asyncio.to_thread(store.usage),
+            asyncio.to_thread(store.tokens_today, today))
+        names = self.personal_profiles()
+        names.setdefault("room", "Комната")
+        for row in (*log, *usage):
+            row["profile_name"] = names.get(row["profile"], row["profile"])
+        return web.json_response({
+            "log": log, "usage": usage, "today": today, "tokens_today": used,
+            "daily_limit": int(self.service.o.get("llm_daily_token_limit") or 0)})
 
     async def refresh_sms(self, _request):
         if self.service.modem.call_state != "idle":
@@ -652,8 +710,51 @@ class SetupPanel:
         except (RuntimeError, ValueError, OSError) as exc:
             raise web.HTTPConflict(text=str(exc)[:250]) from exc
 
+    async def sandbox(self, request):
+        """Persona sandbox: a tool-free reply from the active LLM, optionally spoken as WAV."""
+        try:
+            data = await request.json()
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise web.HTTPBadRequest(text="Body must be JSON") from exc
+        if not isinstance(data, dict):
+            raise web.HTTPBadRequest(text="Body must be a JSON object")
+        text = data.get("text")
+        prompt = data.get("prompt")
+        if not isinstance(text, str) or not text.strip() or len(text) > 1000:
+            raise web.HTTPBadRequest(text="Введите фразу до 1000 символов.")
+        if prompt is not None and (not isinstance(prompt, str) or len(prompt) > 6000):
+            raise web.HTTPBadRequest(text="Манера общения: до 6000 символов.")
+        service = self.service
+        try:
+            if request.match_info.get("mode") == "speak":
+                if not service.speech:
+                    raise RuntimeError("Добавьте и примените ключ SpeechKit.")
+                from grpc import RpcError
+
+                pcm = bytearray()
+                try:
+                    async for chunk in service.speech.synthesize(text.strip()[:500]):
+                        pcm.extend(chunk)
+                except RpcError as exc:
+                    raise RuntimeError(f"SpeechKit вернул {exc.code().name}.") from exc
+                if not pcm:
+                    raise RuntimeError("SpeechKit не вернул звук.")
+                buffer = io.BytesIO()
+                with wave.open(buffer, "wb") as recording:
+                    recording.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                    recording.writeframes(bytes(pcm))
+                return web.Response(body=buffer.getvalue(), content_type="audio/wav")
+            reply = await service.brain.sandbox(text.strip(), prompt)
+            return web.json_response({"reply": reply})
+        except (ClientError, TimeoutError) as exc:
+            raise web.HTTPBadGateway(text="Модель не ответила.") from exc
+        except (RuntimeError, ValueError) as exc:
+            raise web.HTTPConflict(text=str(exc)[:250]) from exc
+
     def app(self):
         app = web.Application(middlewares=[self.authorize], client_max_size=32 * 1024)
+        app.router.add_post("/sandbox", self.sandbox)
+        app.router.add_post("/sandbox/{mode:speak}", self.sandbox)
         app.router.add_get("/", self.home)
         app.router.add_static("/assets", ASSETS)
         app.router.add_get("/state", self.state)
@@ -667,6 +768,7 @@ class SetupPanel:
         app.router.add_get("/phone", self.phone_state)
         app.router.add_post("/phone/{action}", self.phone_action)
         app.router.add_get("/history", self.history)
+        app.router.add_get("/audit", self.audit)
         app.router.add_post("/history/refresh", self.refresh_sms)
         app.router.add_post("/checks/{check}", self.check)
         return app

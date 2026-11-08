@@ -10,6 +10,8 @@ from yarl import URL
 from q1_audio import audio_route
 
 LOG = logging.getLogger(__name__)
+# Audio containers only: no playlists (hls, concat) that could pull other inputs.
+FORMAT_WHITELIST = "mp3,ogg,flac,wav,aac,mov,mp4,m4a,3gp,3g2,mj2,matroska,webm"
 
 class Q1Media:
     def __init__(self):
@@ -22,7 +24,16 @@ class Q1Media:
             host = parts.host or ""
             if parts.scheme not in ("http", "https") or not host:
                 raise ValueError("Only HTTP(S) audio URLs are allowed")
-            if parts.user is not None or host.lower() not in {x.lower() for x in allowed_hosts}:
+            if parts.user is not None or parts.password is not None:
+                raise ValueError("Credentials in audio URLs are not allowed")
+            allowed = {str(x).strip().lower() for x in allowed_hosts}
+            host = host.lower()
+            if parts.is_default_port():
+                permitted = host in allowed
+            else:
+                # Non-standard ports must be listed explicitly as host:port.
+                permitted = f"{host}:{parts.port}" in allowed
+            if not permitted:
                 raise ValueError("Audio URL host not in media_allowed_hosts")
         except ValueError as exc:
             raise ValueError(f"Invalid media URL: {exc}") from exc
@@ -32,9 +43,11 @@ class Q1Media:
         self.validate(url, allowed_hosts)
         if not sink:
             raise RuntimeError("Q1 speaker not configured")
+        # Resolve the sink before reporting success, so a bad sink fails the API call.
+        route = audio_route(sink, "playback")
         await self.stop()
         self.playing = True
-        self.task = asyncio.create_task(self._play(session, url, sink, allowed_hosts))
+        self.task = asyncio.create_task(self._play(session, url, route, allowed_hosts))
 
     async def stop(self):
         if self.task and not self.task.done():
@@ -65,17 +78,18 @@ class Q1Media:
         finally:
             stdin.close()
 
-    async def _play(self, session, url, sink, allowed_hosts):
+    async def _play(self, session, url, route, allowed_hosts):
         source = dest = feed = None
         try:
             source = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
                 "-protocol_whitelist", "pipe",
+                "-format_whitelist", FORMAT_WHITELIST,
                 "-i", "pipe:0", "-vn", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL)
             feed = asyncio.create_task(self._download(session, url, allowed_hosts, source.stdin))
-            sink, env = audio_route(sink, "playback")
+            sink, env = route
             dest = await asyncio.create_subprocess_exec(
                 "aplay","-q","-D",sink,"-t","raw","-f","S16_LE","-r","16000","-c","1",
                 stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env)

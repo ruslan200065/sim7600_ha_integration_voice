@@ -7,9 +7,18 @@ import re
 LOG = logging.getLogger(__name__)
 
 
+# Plain hardware/default PCMs only: ALSA strings can otherwise describe plugins
+# such as file:FILE=... that write arbitrary files.
+ALSA_DEVICE = re.compile(
+    r"(?:default|pulse|(?:plughw|hw|sysdefault|front|dmix|dsnoop):[A-Za-z0-9_,=.-]+)"
+)
+
+
 def audio_route(device, direction):
     """Use a specific Pulse source or sink while keeping ALSA device support."""
     if not device.startswith("pulse:"):
+        if not ALSA_DEVICE.fullmatch(device):
+            raise ValueError("Unsupported ALSA device name")
         return device, None
     name = device.removeprefix("pulse:")
     if not re.fullmatch(r"[A-Za-z0-9_.+-]+", name):
@@ -126,5 +135,8 @@ async def recognize_microphone_live(speech, device, timeout=12):
         except asyncio.CancelledError:
             pass
         if proc.returncode is None:
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         await proc.communicate()

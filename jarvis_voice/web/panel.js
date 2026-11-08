@@ -11,8 +11,8 @@ const routes = [
 ];
 const secrets = [
   {field: "gate_pin", clear: "#clear-gate-pin"},
-  {field: "yandex_api_key", hint: "#speech-key-hint", clear: "#clear-speech"},
-  {field: "deepseek_api_key", hint: "#deepseek-key-hint", clear: "#clear-deepseek"},
+  {field: "yandex_api_key", clear: "#clear-speech"},
+  {field: "deepseek_api_key", clear: "#clear-deepseek"},
 ];
 let current;
 let snapshotUrl;
@@ -261,7 +261,7 @@ function personalRecord(kind, record, profile) {
     const data = {text: text.value.trim()};
     if (entity) data.entity = entity.value.trim();
     if (due && due.value && due.value !== localDate(record.due)) data.due = new Date(due.value).toISOString();
-    if (threshold && threshold.value !== record.condition.value) data.value = threshold.value.trim();
+    if (threshold && threshold.value.trim() !== String(record.condition.value ?? "")) data.value = threshold.value.trim();
     update("PATCH", data);
   });
   remove.addEventListener("click", () => {
@@ -314,6 +314,45 @@ async function loadPersonal() {
 personalProfile.addEventListener("change", loadPersonal);
 document.querySelector("#personal-refresh").addEventListener("click", loadPersonal);
 
+const auditStatus = document.querySelector("#audit-status");
+let auditTicket = 0;
+
+function auditLine(text) {
+  const item = document.createElement("li");
+  item.textContent = text;
+  return item;
+}
+
+async function loadAudit() {
+  const ticket = ++auditTicket;
+  auditStatus.textContent = "Загрузка…";
+  auditStatus.dataset.error = "false";
+  try {
+    const data = await (await request("audit?limit=200")).json();
+    if (ticket !== auditTicket) return;
+    const limit = Number(data.daily_limit) || 0;
+    document.querySelector("#audit-today").textContent =
+      `Сегодня (${data.today}): ${Number(data.tokens_today).toLocaleString("ru-RU")} токенов` +
+      (limit ? ` из ${limit.toLocaleString("ru-RU")}` : ", лимит не задан");
+    const usage = document.querySelector("#audit-usage");
+    usage.replaceChildren(...data.usage.map(row => auditLine(
+      `${row.day} · ${row.profile_name}: запросов ${row.requests}, ` +
+      `токенов ${row.prompt_tokens} + ${row.completion_tokens}`)));
+    if (!data.usage.length) usage.replaceChildren(auditLine("Запросов к модели ещё не было."));
+    const items = document.querySelector("#audit-items");
+    items.replaceChildren(...data.log.map(row => auditLine(
+      `${new Date(row.at).toLocaleString("ru-RU")} · ${row.profile_name} · ${row.tool} ` +
+      `${row.arguments} → ${row.result}`)));
+    if (!data.log.length) items.replaceChildren(auditLine("Инструменты ещё не вызывались."));
+    auditStatus.textContent = "";
+  } catch (error) {
+    if (ticket !== auditTicket) return;
+    auditStatus.textContent = error.message;
+    auditStatus.dataset.error = "true";
+  }
+}
+document.querySelector("#audit-refresh").addEventListener("click", loadAudit);
+
 function setTab(key) {
   if (!tabs.some(tab => tab.dataset.tab === key)) key = "calls";
   for (const tab of tabs) {
@@ -321,14 +360,20 @@ function setTab(key) {
     else tab.removeAttribute("aria-current");
   }
   for (const view of views) view.hidden = view.dataset.view !== key;
-  form.hidden = key === "history" || key === "personal";
+  form.hidden = key === "history" || key === "personal" || key === "audit";
   if (key === "personal") loadPersonal();
+  if (key === "audit") loadAudit();
   if (key === "calls" || key === "hardware") refreshPhone();
   if (key === "voice" && current) loadActiveModels();
 }
 for (const tab of tabs) tab.addEventListener("click", () => {
-  location.hash = tab.dataset.tab;
-  setTab(tab.dataset.tab);
+  if (location.hash.slice(1) === tab.dataset.tab) setTab(tab.dataset.tab);
+  else location.hash = tab.dataset.tab;
+});
+window.addEventListener("beforeunload", event => {
+  if (!dirty) return;
+  event.preventDefault();
+  event.returnValue = "";
 });
 window.addEventListener("hashchange", () => setTab(location.hash.slice(1)));
 
@@ -347,6 +392,7 @@ function updateVolume() {
   volumeValue.textContent = form.elements.namedItem("call_playback_volume").value + "%";
 }
 form.addEventListener("input", event => {
+  if (event.target === phoneRecipient || event.target.closest("#sandbox")) return;
   if (familyList.contains(event.target)) syncFamily();
   updateVolume();
   changed();
@@ -454,7 +500,7 @@ function makePicker(host, accessibleName, roomSelection = false) {
     if (!host.contains(event.relatedTarget)) results.hidden = true;
   });
   host.addEventListener("keydown", event => {
-    if (event.key === "Escape") { results.hidden = true; search.focus(); results.hidden = true; }
+    if (event.key === "Escape") { results.hidden = true; search.focus(); }
     if (event.target === search && event.key === "Enter") {
       event.preventDefault();
       results.querySelector("button")?.click();
@@ -479,7 +525,7 @@ function makePicker(host, accessibleName, roomSelection = false) {
 function syncFamily() {
   familyValue.value = [...familyList.querySelectorAll("[data-profile]")].map(card => {
     const fields = [...card.querySelectorAll("[data-profile-value]")];
-    return fields.map(input => input.value.trim().replace(/\s*\n\s*/g, " ")).join(" | ");
+    return fields.map(input => input.value.trim().replace(/\s*\n\s*/g, " ").replaceAll("|", "/")).join(" | ");
   }).join("\n");
 }
 
@@ -591,21 +637,40 @@ function renderDomains() {
 for (const host of document.querySelectorAll("[data-entity]")) {
   makePicker(host, host.parentElement.firstChild.textContent.trim() || "Найти устройство");
 }
-request("entities").then(response => response.json()).then(data => {
-  catalog = data.entities.sort((a,b) => a.name.localeCompare(b.name, "ru"));
-  controlDomains = data.control_domains;
-  for (const update of pickers.values()) update();
-  renderDomains();
-}).catch(() => { catalogError = true; });
+async function loadCatalog(attempt = 0) {
+  try {
+    const data = await (await request("entities")).json();
+    catalog = data.entities.sort((a,b) => a.name.localeCompare(b.name, "ru"));
+    controlDomains = data.control_domains;
+    catalogError = false;
+    for (const update of pickers.values()) update();
+    renderDomains();
+    const personalEntities = document.querySelector("#personal-entities");
+    personalEntities?.replaceChildren(...catalog.map(row => new Option(row.name, row.id)));
+  } catch {
+    catalogError = true;
+    for (const update of pickers.values()) update();
+    if (attempt < 5) setTimeout(() => loadCatalog(attempt + 1), 3000 * (attempt + 1));
+  }
+}
+loadCatalog();
 
 
 async function request(path, method = "GET", data) {
-  const response = await fetch(path, {
-    method,
-    cache: "no-store",
-    headers: {"Content-Type": "application/json", "X-Jarvis-Setup": "1"},
-    body: data === undefined ? undefined : JSON.stringify(data),
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      cache: "no-store",
+      headers: {"Content-Type": "application/json", "X-Jarvis-Setup": "1"},
+      body: data === undefined ? undefined : JSON.stringify(data),
+    });
+  } catch {
+    throw new Error("Нет связи с аддоном. Проверьте, что он запущен.");
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new Error("Сессия Home Assistant истекла. Обновите страницу.");
+  }
   if (!response.ok) {
     const detail = response.headers.get("Content-Type")?.startsWith("text/plain")
       ? (await response.text()).slice(0, 250)
@@ -651,7 +716,7 @@ function setRoute(route, state) {
 
 function fieldValue(key, element) {
   if (key === "family_members") return element.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  if (["allowed_entities", "observed_entities", "allow_domains", "owner_locks"].includes(key)) {
+  if (["allowed_entities", "observed_entities", "room_entities", "allow_domains", "owner_locks"].includes(key)) {
     return element.value.split(/\s+/).filter(Boolean);
   }
   if (element.type === "checkbox") return element.checked;
@@ -760,7 +825,8 @@ restart.addEventListener("click", async () => {
   showNotice("Аддон перезапускается…");
   try {
     await request("restart", "POST");
-    for (let attempt = 0; attempt < 24; attempt += 1) {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      showNotice("Аддон перезапускается… " + Math.round(attempt * 1.5) + " с");
       await new Promise(resolve => setTimeout(resolve, 1500));
       try {
         const state = await (await request("state")).json();
@@ -782,8 +848,7 @@ restart.addEventListener("click", async () => {
 const microphoneSample = document.querySelector("#microphone-sample");
 let microphoneSampleUrl;
 
-for (const button of document.querySelectorAll("[data-check]")) {
-  button.addEventListener("click", async () => {
+async function runCheck(button) {
     const output = button.nextElementSibling;
     output.textContent = "Проверка…";
     output.dataset.error = "false";
@@ -808,14 +873,101 @@ for (const button of document.querySelectorAll("[data-check]")) {
       } else {
         output.textContent = (await response.json()).message;
       }
+      return true;
     } catch (error) {
       output.textContent = error.message;
       output.dataset.error = "true";
+      return false;
     } finally {
       button.disabled = false;
     }
-  });
 }
+
+for (const button of document.querySelectorAll("[data-check]")) {
+  button.addEventListener("click", () => runCheck(button));
+}
+
+// Checks that are quick and silent; the 5-second recording and the speaker tone stay manual.
+const CHECK_ALL = ["network", "modem", "gps", "camera", "microphone", "speech", "deepseek"];
+const checkAllButton = document.querySelector("#check-all");
+const checkAllResult = document.querySelector("#check-all-result");
+checkAllButton.addEventListener("click", async () => {
+  checkAllButton.disabled = true;
+  checkAllResult.dataset.error = "false";
+  const failed = [];
+  let passed = 0;
+  for (const name of CHECK_ALL) {
+    const button = document.querySelector(`[data-check="${name}"]`);
+    if (!button) continue;
+    checkAllResult.textContent = "Проверяю: " + button.textContent + "…";
+    if (await runCheck(button)) passed += 1;
+    else failed.push(button.textContent);
+  }
+  checkAllResult.textContent = failed.length
+    ? `✓ ${passed}, ✗ ${failed.length}: ${failed.join(", ")}`
+    : `✓ Все ${passed} проверок пройдены.`;
+  checkAllResult.dataset.error = failed.length ? "true" : "false";
+  checkAllButton.disabled = false;
+});
+
+const sandboxText = document.querySelector("#sandbox-text");
+const sandboxAsk = document.querySelector("#sandbox-ask");
+const sandboxSpeak = document.querySelector("#sandbox-speak");
+const sandboxStatus = document.querySelector("#sandbox-status");
+const sandboxReply = document.querySelector("#sandbox-reply");
+const sandboxAudio = document.querySelector("#sandbox-audio");
+let sandboxAudioUrl;
+
+function sandboxError(error) {
+  sandboxStatus.textContent = error.message;
+  sandboxStatus.dataset.error = "true";
+}
+
+sandboxText.addEventListener("keydown", event => {
+  if (event.key === "Enter") { event.preventDefault(); sandboxAsk.click(); }
+});
+
+sandboxAsk.addEventListener("click", async () => {
+  const text = sandboxText.value.trim();
+  if (!text) { sandboxText.focus(); return; }
+  sandboxAsk.disabled = true;
+  sandboxSpeak.disabled = true;
+  sandboxStatus.dataset.error = "false";
+  sandboxStatus.textContent = "Модель думает…";
+  sandboxReply.textContent = "";
+  try {
+    const prompt = form.elements.namedItem("system_prompt").value;
+    const response = await request("sandbox", "POST", {text, prompt});
+    sandboxReply.textContent = (await response.json()).reply;
+    sandboxStatus.textContent = "";
+    sandboxSpeak.disabled = false;
+  } catch (error) {
+    sandboxError(error);
+  } finally {
+    sandboxAsk.disabled = false;
+  }
+});
+
+sandboxSpeak.addEventListener("click", async () => {
+  const text = sandboxReply.textContent.trim();
+  if (!text) return;
+  sandboxSpeak.disabled = true;
+  sandboxStatus.dataset.error = "false";
+  sandboxStatus.textContent = "Озвучиваю…";
+  try {
+    const response = await request("sandbox/speak", "POST", {text});
+    if (sandboxAudioUrl) URL.revokeObjectURL(sandboxAudioUrl);
+    sandboxAudioUrl = URL.createObjectURL(await response.blob());
+    sandboxAudio.src = sandboxAudioUrl;
+    sandboxAudio.hidden = false;
+    sandboxStatus.textContent = "";
+    sandboxAudio.play().catch(() => {});
+  } catch (error) {
+    sandboxError(error);
+  } finally {
+    sandboxSpeak.disabled = false;
+  }
+});
 
 const phone = document.querySelector("#phone");
 const phoneStatus = document.querySelector("#phone-status");
@@ -831,17 +983,23 @@ const phoneStates = {
   connected: "Разговор",
 };
 let phoneBusy = false;
+let phoneTicket = 0;
+let phoneInFlight = false;
 
 async function refreshPhone() {
-  if ((phone.hidden && document.querySelector('[data-view="hardware"]').hidden) || phoneBusy || document.hidden) return;
+  if ((phone.hidden && document.querySelector('[data-view="hardware"]').hidden) || phoneBusy || phoneInFlight || document.hidden) return;
+  const ticket = ++phoneTicket;
+  phoneInFlight = true;
   try {
     const state = await (await request("phone")).json();
+    if (ticket !== phoneTicket) return;
     phoneStatus.textContent = (phoneStates[state.state] || state.state)
       + " · автоответ " + (state.auto_answer ? "включён" : "выключен");
     const previous = phoneRecipient.value;
     const choices = [
       ...(state.owner_available ? [new Option("Владелец", "")] : []),
-      ...state.recipients.map(name => new Option(name, name)),
+      ...state.recipients.map(item => typeof item === "string"
+        ? new Option(item, item) : new Option(item.name, item.key)),
     ];
     if (!choices.length) choices.push(new Option("Добавьте номер в настройках", ""));
     const signature = choices.map(option => option.textContent).join("\n");
@@ -853,9 +1011,12 @@ async function refreshPhone() {
     for (const button of phoneButtons) button.disabled = !state["can_" + button.dataset.phone];
     volteButton.disabled = state.state !== "idle";
   } catch {
+    if (ticket !== phoneTicket) return;
     phoneStatus.textContent = "Состояние модема недоступно.";
     for (const button of phoneButtons) button.disabled = true;
     volteButton.disabled = true;
+  } finally {
+    phoneInFlight = false;
   }
 }
 
@@ -916,7 +1077,7 @@ async function loadHistory(offset = 0) {
       const heading = document.createElement("strong");
       const time = new Date(item.created_at * 1000).toLocaleString();
       const direction = item.direction === "incoming" ? "Входящий звонок" : "Исходящий звонок";
-      const state = historyStates[item.state] || ("Частей " + item.state);
+      const state = historyStates[item.state] || item.state || "";
       const duration = item.connected_at && item.ended_at
         ? " · " + Math.max(0, Math.round(item.ended_at - item.connected_at)) + " с"
         : "";

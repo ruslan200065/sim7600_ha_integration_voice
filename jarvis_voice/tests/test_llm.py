@@ -27,10 +27,19 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(merge_profiles([{**public[0], "api_key": ""}], saved)[0]["api_key"], "")
 
     def test_effort_and_endpoint_validation(self):
-        self.assertEqual(completion_options({"id": "custom", "effort": "default"}), {})
-        self.assertEqual(completion_options({"id": "custom", "effort": "off"}), {"reasoning_effort": "none"})
+        self.assertEqual(completion_options({"id": "custom", "effort": "default"}), {"max_tokens": 1024})
+        self.assertEqual(completion_options({"id": "custom", "effort": "off"}), {"max_tokens": 1024})
+        self.assertEqual(completion_options({"id": "custom", "effort": "max"}),
+                         {"reasoning_effort": "high", "max_tokens": 4096})
+        self.assertEqual(completion_options({"id": "custom", "effort": "low"})["reasoning_effort"], "low")
         self.assertEqual(completion_options({"id": "deepseek", "effort": "off"})["thinking"], {"type": "disabled"})
         self.assertEqual(completion_options({"id": "deepseek", "effort": "max"})["reasoning_effort"], "max")
-        for url in ("ftp://example.org", "https://user@example.org", "https://example.org/?token=x", "https://example.org/#x"):
+        for url in ("ftp://example.org", "https://user@example.org", "https://example.org/?token=x",
+                    "https://example.org/#x", "http://api.example.org/v1", "http://8.8.8.8/v1",
+                    "https://example.org:99999/v1"):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 base_url(url)
+        for url in ("http://192.168.1.10:11434/v1", "http://localhost:8080/v1", "http://ollama:11434/v1",
+                    "http://llm.local/v1", "https://api.example.org/v1/"):
+            with self.subTest(url=url):
+                self.assertEqual(base_url(url), url.rstrip("/"))

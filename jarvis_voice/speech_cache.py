@@ -6,6 +6,10 @@ from contextlib import aclosing
 from pathlib import Path
 from uuid import uuid4
 
+# 16 kHz mono s16 = 32000 B/s; even very fast speech stays under ~40 chars/s.
+# A stream shorter than this is treated as truncated and never cached.
+MIN_BYTES_PER_CHAR = 32000 // 40
+
 
 class SpeechCache:
     def __init__(self, directory, limit=64 * 1024 * 1024):
@@ -29,7 +33,7 @@ class SpeechCache:
                 if len(chunks) <= 512 * 1024:
                     chunks.extend(chunk)
                 yield chunk
-        if 0 < len(chunks) <= 512 * 1024:
+        if MIN_BYTES_PER_CHAR * len(text.strip()) <= len(chunks) <= 512 * 1024 and chunks:
             try:
                 await asyncio.to_thread(self.write, path, bytes(chunks))
             except OSError:

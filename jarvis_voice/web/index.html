@@ -24,31 +24,35 @@
         <button type="button" data-tab="voice">Голос и интеграции</button>
         <button type="button" data-tab="personal">Память и правила</button>
         <button type="button" data-tab="history">Журнал</button>
+        <button type="button" data-tab="audit">Аудит и расход</button>
         <button type="button" data-tab="hardware">Оборудование</button>
       </nav>
       <div class="workspace-content">
         <p id="notice" class="notice" role="status">Загрузка настроек…</p>
+        <section class="view" id="phone" data-view="calls">
+          <div class="section-heading"><div><p class="eyebrow">Телефония</p><h2>Звонки</h2></div><output id="phone-status" class="badge" aria-live="polite"></output></div>
+          <section class="card">
+            <h3>Позвонить</h3>
+            <div class="fields">
+              <label>Кому<select id="phone-recipient"><option value="">Владелец</option></select></label>
+            </div>
+            <div class="phone-actions actions">
+              <button type="button" class="primary" data-phone="dial" disabled>Позвонить</button>
+              <button type="button" data-phone="answer" disabled>Ответить</button>
+              <button type="button" data-phone="hangup" disabled>Завершить</button>
+            </div>
+            <output id="phone-result" aria-live="polite"></output>
+          </section>
+        </section>
         <form id="settings" autocomplete="off">
           <fieldset id="controls" disabled>
-            <section class="view" id="phone" data-view="calls">
-              <div class="section-heading"><div><p class="eyebrow">Телефония</p><h2>Звонки</h2></div><output id="phone-status" class="badge" aria-live="polite"></output></div>
-              <section class="card">
-                <h3>Позвонить</h3>
-                <div class="fields">
-                  <label>Кому<select id="phone-recipient"><option value="">Владелец</option></select></label>
-                </div>
-                <div class="phone-actions actions">
-                  <button type="button" class="primary" data-phone="dial" disabled>Позвонить</button>
-                  <button type="button" data-phone="answer" disabled>Ответить</button>
-                  <button type="button" data-phone="hangup" disabled>Завершить</button>
-                </div>
-                <output id="phone-result" aria-live="polite"></output>
-              </section>
+            <section class="view" data-view="calls">
               <section class="card">
                 <h3>Настройки вызова</h3>
                 <div class="fields">
                   <label>Имя владельца<input name="owner_name" placeholder="Как к тебе обращаться"></label>
                   <label>Номер владельца<input name="allowed_number" type="tel" placeholder="+7…"></label>
+                  <label>Код страны<input name="country_code" inputmode="numeric" maxlength="3" placeholder="7"><span class="hint">Чтобы 8XXX и +7XXX считались одним номером.</span></label>
                   <label>Громкость JARVIS <output id="volume-value"></output><input name="call_playback_volume" type="range" min="10" max="100"></label>
                   <label class="check"><input name="call_echo_filter" type="checkbox"> Фильтровать эхо в звонке</label>
                   <label class="check"><input name="auto_answer" type="checkbox"> Автоответ владельцу и семье</label>
@@ -90,6 +94,9 @@
                 <div class="fields">
                   <div><p class="field-title">Для чтения</p><div data-entity="" data-multiple><textarea name="observed_entities" hidden></textarea></div></div>
                   <div><p class="field-title">Для управления</p><div data-entity="control" data-multiple><textarea name="allowed_entities" hidden></textarea></div></div>
+                  <div><p class="field-title">Для голоса из комнаты (микрофон Q1)</p><div data-entity="control" data-multiple><textarea name="room_entities" hidden></textarea></div></div>
+                  <label>Кто отвечает голосу из комнаты<select name="room_agent"><option value="jarvis">JARVIS (профиль «Комната»)</option><option value="assist">Home Assistant Assist</option></select></label>
+                  <label>ID агента Assist<input name="assist_agent_id" maxlength="256" placeholder="conversation.home_assistant"><span class="hint">Пусто — агент по умолчанию.</span></label>
                   <div class="entity-field"><span>Камера по умолчанию</span><div data-entity="camera"><input name="camera_entity"></div></div>
                 </div>
                 <details><summary>Типы устройств для ручного доступа</summary><textarea name="allow_domains" hidden></textarea><div id="domain-choices" class="toggle-stack"></div></details>
@@ -102,6 +109,7 @@
                 <h3>Языковая модель</h3>
                 <div class="fields">
                   <label>Активный профиль<select name="llm_active"><option value="deepseek">DeepSeek</option></select></label>
+                  <label>Дневной лимит токенов<input name="llm_daily_token_limit" type="number" min="0" max="10000000" step="1000"><span class="hint">На каждый профиль. 0 — без ограничения.</span></label>
                 </div>
                 <details id="llm-deepseek" open><summary>DeepSeek</summary>
                   <div class="fields">
@@ -141,6 +149,13 @@
                 <label>Системная инструкция<textarea name="system_prompt" rows="6" maxlength="6000"
                   placeholder="По умолчанию: уважительно, дружелюбно и на «вы»."></textarea></label>
                 <p class="hint">Укажи, как обращаться, каким тоном отвечать и насколько подробно. Пустое поле возвращает стандартный стиль.</p>
+                <details id="sandbox"><summary>Песочница: проверить манеру до сохранения</summary>
+                  <p class="hint">Ответ строится по тексту инструкции выше и активному профилю LLM, без доступа к дому и без звонка.</p>
+                  <label>Фраза собеседника<input id="sandbox-text" maxlength="1000" placeholder="Привет, как дела дома?"></label>
+                  <div class="phone-actions"><button type="button" id="sandbox-ask">Спросить</button><button type="button" id="sandbox-speak" disabled>Озвучить ответ</button><output id="sandbox-status" role="status"></output></div>
+                  <p id="sandbox-reply"></p>
+                  <audio id="sandbox-audio" controls hidden></audio>
+                </details>
               </section>
               <section class="card">
                 <h3>Подключения</h3>
@@ -150,6 +165,10 @@
                   <div class="entity-field"><span>Получатель снимков в Telegram</span><div data-entity="notify"><input name="telegram_photo_target"></div></div>
                   <div class="entity-field"><span>Синтез речи для домашних динамиков</span><div data-entity="tts"><input name="home_tts_entity"></div></div>
                   <label class="check"><input type="checkbox" name="speech_cache_enabled"> Кэшировать озвучку</label>
+                  <label class="check"><input type="checkbox" name="confirm_risky_actions"> Переспрашивать перед рискованными действиями</label>
+                  <label class="check"><input type="checkbox" name="ha_events"> Отправлять события звонков, DTMF и SMS в Home Assistant</label>
+                  <label class="check"><input type="checkbox" name="call_summary"> Итог разговора в уведомление (расходует токены)</label>
+                  <label class="check"><input type="checkbox" name="stream_replies"> Начинать говорить, пока модель дописывает ответ</label>
                 </div>
                 <details><summary>Голос SpeechKit</summary><div class="fields">
                   <label>Голос SpeechKit<input name="yandex_voice" placeholder="denis"></label>
@@ -181,6 +200,7 @@
               </section>
               <section class="card">
                 <h3>Диагностика</h3>
+                <div class="phone-actions"><button type="button" id="check-all">Проверить всё</button><output id="check-all-result" role="status"></output></div>
                 <ul class="checks">
                   <li><button type="button" data-check="network">SIM и сеть</button><output></output></li>
                   <li><button type="button" data-check="modem">Модем и сигнал</button><output></output></li>
@@ -234,6 +254,18 @@
         <output id="history-page" aria-live="polite">Страница 1</output>
         <button type="button" id="history-older" disabled>Далее</button>
       </nav>
+    </section>
+    <section class="card view" data-view="audit" hidden aria-labelledby="audit-title">
+      <h2 id="audit-title">Аудит действий и расход LLM</h2>
+      <div class="actions">
+        <button type="button" id="audit-refresh">Обновить</button>
+      </div>
+      <output id="audit-status" aria-live="polite"></output>
+      <h3>Расход токенов</h3>
+      <p id="audit-today"></p>
+      <ul id="audit-usage"></ul>
+      <h3>Вызовы инструментов (30 дней)</h3>
+      <ul id="audit-items"></ul>
     </section>
       </div>
     </div>

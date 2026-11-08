@@ -1,7 +1,9 @@
 """SIM7600 raw S16LE, 16kHz/mono transport. Modem firmware must expose USB PCM."""
+import array
 import asyncio
 import logging
 import struct
+import sys
 import time
 import serial
 
@@ -33,7 +35,7 @@ async def playback_frames(chunks):
 
 
 class PCMTransport:
-    def __init__(self, port, playback_volume=100):
+    def __init__(self, port, playback_volume=100, on_lost=None):
         self.port = port
         self.playback_gain = playback_volume / 100
         self.serial = None
@@ -41,12 +43,17 @@ class PCMTransport:
         self.queue = asyncio.Queue(maxsize=40)
         self.running = False
         self.first_frame = asyncio.Event()
+        # Set when the USB PCM device disappears mid-call; on_lost lets the
+        # owner end the call immediately instead of waiting for the idle timeout.
+        self.lost = asyncio.Event()
+        self.on_lost = on_lost
 
     async def start(self):
         if self.running:
             return
         self.serial = serial.Serial(self.port, baudrate=115200, timeout=0.1, write_timeout=0.75)
         self.first_frame.clear()
+        self.lost.clear()
         while not self.queue.empty():
             self.queue.get_nowait()
         self.running = True
@@ -82,7 +89,18 @@ class PCMTransport:
     async def _reader(self):
         pending = bytearray()
         while self.running:
-            chunk = await asyncio.to_thread(self.serial.read, FRAME - len(pending))
+            port = self.serial
+            if port is None:
+                return
+            try:
+                chunk = await asyncio.to_thread(port.read, FRAME - len(pending))
+            except (serial.SerialException, OSError) as exc:
+                LOG.warning("USB PCM lost: %s", type(exc).__name__)
+                self.running = False
+                self.lost.set()
+                if self.on_lost is not None:
+                    self.on_lost()
+                return
             if not chunk:
                 continue
             pending.extend(chunk)
@@ -107,10 +125,7 @@ class PCMTransport:
             try:
                 async for frame in playback_frames(chunks):
                     if self.playback_gain != 1:
-                        samples = PLAYBACK_SAMPLES.unpack(frame)
-                        frame = PLAYBACK_SAMPLES.pack(
-                            *(int(sample * self.playback_gain) for sample in samples)
-                        )
+                        frame = scale_pcm(frame, self.playback_gain)
                     await frames.put(frame)
                     if frames.qsize() == PLAYBACK_PREFILL:
                         ready.set()
@@ -149,6 +164,19 @@ class PCMTransport:
             if not sent:
                 raise RuntimeError("Speech synthesis returned no PCM")
             await asyncio.sleep(max(0, deadline - clock()))
+
+
+def scale_pcm(frame, gain):
+    """Scale little-endian S16 PCM with clipping, without per-call struct formats."""
+    samples = array.array("h", frame)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    samples = array.array(
+        "h", [max(-32768, min(32767, int(s * gain))) for s in samples]
+    )
+    if sys.byteorder != "little":
+        samples.byteswap()
+    return samples.tobytes()
 
 
 def rms(chunk):

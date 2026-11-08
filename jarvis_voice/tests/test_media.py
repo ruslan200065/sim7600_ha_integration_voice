@@ -26,8 +26,9 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         async with TestServer(app) as server, ClientSession() as session:
             media = Q1Media()
             stdin = Mock(drain=AsyncMock())
+            allowed = [f"{server.host}:{server.port}"]
             good = server.make_url("/redirect").with_query(to="/audio")
-            await media._download(session, good, [server.host], stdin)
+            await media._download(session, good, allowed, stdin)
             stdin.write.assert_called_once_with(b"test audio")
             stdin.close.assert_called_once()
 
@@ -36,6 +37,31 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
                 to=str(server.make_url("/audio").with_host("localhost"))
             )
             with self.assertRaisesRegex(ValueError, "host not in media_allowed_hosts"):
-                await media._download(session, bad, [server.host], stdin)
+                await media._download(session, bad, allowed, stdin)
             stdin.write.assert_not_called()
             stdin.close.assert_called_once()
+
+    def test_validate_rejects_credentials_and_unlisted_ports(self):
+        media = Q1Media()
+        media.validate("http://homeassistant/a.mp3", ["homeassistant"])
+        media.validate("https://homeassistant/a.mp3", ["homeassistant"])
+        media.validate("http://homeassistant:8123/a.mp3", ["homeassistant:8123"])
+        for url in (
+            "http://homeassistant:22/a.mp3",
+            "http://user@homeassistant/a.mp3",
+            "http://:pw@homeassistant/a.mp3",
+            "file:///etc/passwd",
+            "http://supervisor/a.mp3",
+        ):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                media.validate(url, ["homeassistant"])
+
+    def test_alsa_device_names_are_restricted(self):
+        from q1_audio import audio_route
+
+        for device in ("default", "hw:1,0", "plughw:CARD=Q1,DEV=0", "pulse"):
+            self.assertEqual(audio_route(device, "playback"), (device, None))
+        self.assertEqual(audio_route("pulse:q1_sink", "playback")[0], "pulse")
+        for device in ("file:FILE=/data/x", "hw:1;rm", "plug:{type file}"):
+            with self.subTest(device=device), self.assertRaises(ValueError):
+                audio_route(device, "playback")

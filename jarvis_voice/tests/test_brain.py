@@ -70,6 +70,29 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
         await brain._tool("call_ha_service", {"entity_id": "lock.front", "service": "unlock"})
         brain._ha.assert_not_awaited()
 
+    async def test_risky_action_requires_confirmation_in_next_turn(self):
+        cover = {"entity_id": "cover.blinds", "state": "closed", "last_updated": "t1",
+                 "attributes": {"friendly_name": "Шторы", "device_class": "curtain"}}
+        brain = Brain({"allowed_entities": ["cover.blinds"], "allow_domains": ["cover"]}, None, None)
+        brain._ha = AsyncMock(return_value=cover)
+        args = {"entity_id": "cover.blinds", "service": "open_cover"}
+        brain.turn = 1
+        first = await brain._tool("call_ha_service", dict(args))
+        self.assertTrue(first["needs_confirmation"])
+        # The model cannot approve its own request within the same turn.
+        same_turn = await brain._tool("call_ha_service", {**args, "confirmed": True})
+        self.assertTrue(same_turn["needs_confirmation"])
+        posted = [call for call in brain._ha.await_args_list if call.args[0] == "POST"]
+        self.assertEqual(posted, [])
+        brain.turn = 2
+        done = await brain._tool("call_ha_service", {**args, "confirmed": True})
+        self.assertTrue(done["accepted"])
+        brain._ha.assert_any_await("POST", "/api/services/cover/open_cover", {"entity_id": "cover.blinds"})
+        # Scheduled rules were confirmed when created.
+        brain._ha.reset_mock()
+        scheduled = await brain._tool("call_ha_service", dict(args), preconfirmed=True)
+        self.assertTrue(scheduled["accepted"])
+
     async def test_snapshot_uses_event_camera_and_configured_photo_recipient(self):
         photo = AsyncMock()
         brain = Brain({

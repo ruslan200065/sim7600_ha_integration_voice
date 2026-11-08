@@ -111,7 +111,8 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
             fallback.cancel()
             await asyncio.gather(fallback, return_exceptions=True)
         LOG.info("LLM answer length=%d", len(text.text if isinstance(text, CallOutput) else text or ""))
-        if turn == generation:
+        # A streamed reply may already be fully spoken through progress; then the tail is empty.
+        if turn == generation and (text or not spoke):
             output.put_nowait((text or "Не получилось ответить. Попробуй ещё раз.", turn))
 
     async def listen_keypad():

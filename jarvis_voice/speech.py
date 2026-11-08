@@ -19,6 +19,16 @@ def update_transcript(response, kind, finals, refinements):
         refinements[update.final_index] = update.normalized_text.alternatives[0].text
 
 
+# Keep idle channels alive so the first request after a long pause does not
+# hit a silently dropped connection (UNAVAILABLE).
+GRPC_OPTIONS = (
+    ("grpc.keepalive_time_ms", 60_000),
+    ("grpc.keepalive_timeout_ms", 10_000),
+    ("grpc.keepalive_permit_without_calls", 1),
+    ("grpc.http2.max_pings_without_data", 0),
+)
+
+
 def transcript_text(finals, refinements):
     return " ".join(refinements.get(index) or finals.get(index, "")
                     for index in sorted(finals.keys() | refinements.keys())).strip()
@@ -30,8 +40,10 @@ class SpeechKit:
         self.voice = voice
         self.role = role
         self.cache = cache
-        self.stt_channel = grpc.aio.secure_channel("stt.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
-        self.tts_channel = grpc.aio.secure_channel("tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials())
+        self.stt_channel = grpc.aio.secure_channel(
+            "stt.api.cloud.yandex.net:443", grpc.ssl_channel_credentials(), options=GRPC_OPTIONS)
+        self.tts_channel = grpc.aio.secure_channel(
+            "tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials(), options=GRPC_OPTIONS)
         self.stt_stub = stt_grpc.RecognizerStub(self.stt_channel)
         self.tts_stub = tts_grpc.SynthesizerStub(self.tts_channel)
 
@@ -125,6 +137,8 @@ class SpeechKit:
             yield tts.StreamSynthesisRequest(options=options)
             yield tts.StreamSynthesisRequest(synthesis_input=tts.SynthesisInput(text=text.strip()+" "))
             yield tts.StreamSynthesisRequest(force_synthesis=tts.ForceSynthesisEvent())
-        async for response in self.tts_stub.StreamSynthesis(requests(), metadata=self.auth, timeout=30):
+        # Playback paces the stream in real time, so long phrases need a longer deadline.
+        deadline = 30 + len(text) * 0.12
+        async for response in self.tts_stub.StreamSynthesis(requests(), metadata=self.auth, timeout=deadline):
             if response.audio_chunk.data:
                 yield response.audio_chunk.data

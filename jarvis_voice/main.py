@@ -9,10 +9,11 @@ import logging
 import os
 import secrets
 import socket
+import time
 from contextlib import aclosing
-from functools import partial
 from pathlib import Path
-from aiohttp import web, ClientError, ClientSession
+import signal
+from aiohttp import web, ClientError, ClientSession, ClientTimeout
 
 from modem import Modem
 from audio import PCMPlaybackError, PCMTransport, rms
@@ -34,6 +35,27 @@ from llm import active_profile
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 LOG = logging.getLogger(__name__)
 
+def phone_key(number, country="7"):
+    """Normalise caller numbers so 8XXXXXXXXXX, +7XXXXXXXXXX and 7XXXXXXXXXX compare equal."""
+    digits = re.sub(r"[^0-9]", "", number or "")
+    if country == "7" and len(digits) == 11 and digits.startswith("8"):
+        digits = "7" + digits[1:]
+    elif country and len(digits) == 10 and not digits.startswith(country):
+        digits = country + digits
+    return digits
+
+
+async def read_json(request):
+    """Parse a JSON object body or answer 400 instead of a 500 traceback."""
+    try:
+        data = await request.json()
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise web.HTTPBadRequest(text="Body must be JSON") from exc
+    if not isinstance(data, dict):
+        raise web.HTTPBadRequest(text="Body must be a JSON object")
+    return data
+
+
 def load_options():
     path = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
     if path.exists():
@@ -52,7 +74,9 @@ class Server:
         self.audio = PCMTransport(
             options.get("pcm_port", "/dev/ttyUSB4"),
             playback_volume=options.get("call_playback_volume", 50),
+            on_lost=self.pcm_lost,
         )
+        self.pcm_lost_task = None
         self.speech = None
         self.brain = None
         self.session = None
@@ -87,8 +111,10 @@ class Server:
         self.microphone = MicrophoneMonitor(options.get("q1_mic_device", ""), self.mic_lock,
                                             data_dir / "microphone_monitor")
         self.microphone_task = None
-        self.family = family_profiles(options.get("family_members", []))
-        self.family.pop((options.get("allowed_number") or "").lstrip("+"), None)
+        self.country = str(options.get("country_code", "7") or "")
+        self.family = {phone_key(number, self.country): member for number, member in
+                       family_profiles(options.get("family_members", [])).items()}
+        self.family.pop(phone_key(options.get("allowed_number"), self.country), None)
         self.owner_locks = lock_entities(options.get("owner_locks", []))
         self.gates = frozenset(self.owner_locks + [
             entity for member in self.family.values() for entity in member["locks"]
@@ -105,9 +131,23 @@ class Server:
         self.sms_task = None
         self.sms_wake = asyncio.Event()
         self.sms_status = {}
+        # The modem reader must never wait for SQLite: history is written in the background.
+        self.history_queue = asyncio.Queue()
+        self.history_task = None
+
+    async def write_history(self):
+        while True:
+            name, data = await self.history_queue.get()
+            try:
+                await self.history.call(name, data)
+            except Exception:
+                LOG.exception("Could not save call history")
+            finally:
+                self.history_queue.task_done()
 
     async def setup(self):
         await self.history.start()
+        self.history_task = asyncio.create_task(self.write_history())
         self.http = ClientSession()
         self.brain = Brain(self.o, self.http, self.capture_camera, self.listen_room, self.share_photo,
                            personal=self.personal, profile=self.owner_key or "local",
@@ -154,15 +194,98 @@ class Server:
                 await self.session
             except asyncio.CancelledError:
                 pass
+        if self.modem.call_state not in ("idle", "offline"):
+            try:
+                await asyncio.wait_for(self.modem.hangup(), 5)
+            except Exception as exc:
+                LOG.warning("Hangup on shutdown failed: %s", exc)
         await self.audio.stop()
         await self.media.stop()
         await self.modem.stop()
+        if self.history_task:
+            try:
+                await asyncio.wait_for(self.history_queue.join(), 3)
+            except TimeoutError:
+                LOG.warning("Some call history was not saved before shutdown")
+            self.history_task.cancel()
+            await asyncio.gather(self.history_task, return_exceptions=True)
         if self.speech:
             await self.speech.close()
         if self.http:
             await self.http.close()
 
+    def pcm_lost(self):
+        """USB PCM vanished mid-call: stop the dialog and release the call now."""
+        if self.pcm_lost_task and not self.pcm_lost_task.done():
+            return
+        self.pcm_lost_task = asyncio.create_task(self._end_call_without_audio())
+
+    async def _end_call_without_audio(self):
+        session = self.session
+        if session and not session.done():
+            session.cancel()
+            await asyncio.gather(session, return_exceptions=True)
+        if self.modem.call_state not in ("idle", "offline"):
+            try:
+                await asyncio.wait_for(self.modem.hangup(), 5)
+            except Exception as exc:
+                LOG.warning("Hangup after PCM loss failed: %s", exc)
+
+    def known_number(self, number):
+        key = phone_key(number, self.country)
+        if not key:
+            return False
+        owner = phone_key(self.o.get("allowed_number"), self.country)
+        return key in self.family or (bool(owner) and key == owner)
+
+    def fire_ha_event(self, name, data):
+        """Send an event to the Home Assistant bus without blocking the caller."""
+        if self.o.get("ha_events", True) is False or not getattr(self.brain, "hass_token", ""):
+            return
+        tasks = self.__dict__.setdefault("ha_event_tasks", set())
+
+        async def send():
+            try:
+                await self.brain._ha("POST", "/api/events/" + name, data, timeout=5)
+            except Exception as exc:
+                LOG.warning("Could not send %s to Home Assistant: %s", name, exc)
+
+        task = asyncio.create_task(send())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    def _telephony_event(self, name, data):
+        if name in ("incoming_call", "outgoing_call", "caller_id", "call_connected"):
+            number = data.get("number") or self.modem.active_number
+            if number:
+                self.event_number = number
+        if name == "incoming_call":
+            self.event_number = data.get("number") or ""
+        if name == "caller_id":
+            number = getattr(self, "event_number", "")
+            self.fire_ha_event("jarvis_call_incoming", {
+                "number": number,
+                "known": self.known_number(number),
+                "call_id": self.modem.call_id,
+            })
+        elif name in ("call_ended", "call_failed"):
+            self.fire_ha_event("jarvis_call_ended", {
+                "number": getattr(self, "event_number", ""),
+                "reason": data.get("reason") or name,
+                "call_id": data.get("call_id"),
+            })
+            self.event_number = ""
+        elif name == "dtmf_received" and not (
+            self.keypad and self.keypad[0] == data.get("call_id")
+        ):
+            # Keys typed into an active JARVIS dialog may be the gate PIN:
+            # never copy them to the Home Assistant event bus and logbook.
+            self.fire_ha_event("jarvis_dtmf", {
+                "digit": data.get("digit"), "call_id": data.get("call_id"),
+            })
+
     async def event(self, name, data):
+        self._telephony_event(name, data)
         if name == "dtmf_received":
             keypad = self.keypad
             if keypad and keypad[0] == data["call_id"]:
@@ -174,6 +297,8 @@ class Server:
                 else:
                     keys.put_nowait(data["digit"])
             return
+        if name == "sms_received":
+            self.sms_wake.set()
         self.events.append({"name":name,"data":data})
         self.events=self.events[-25:]
         LOG.info("JARVIS event: %s",name)
@@ -197,7 +322,7 @@ class Server:
             reminder_id = None
             if self.reminder_call and self.reminder_call[0] == call_id:
                 _, identifier, number = self.reminder_call
-                if number.lstrip("+") == self.modem.active_number.lstrip("+"):
+                if phone_key(number, self.country) == self.caller_key():
                     reminder_id = identifier
                 else:
                     prompt = ""
@@ -212,17 +337,26 @@ class Server:
             "incoming_call", "outgoing_call", "caller_id", "call_connected",
             "call_ended", "call_failed", "modem_offline",
         }:
-            try:
-                await self.history.call(name, data)
-            except Exception:
-                LOG.exception("Could not save call history")
+            self.history_queue.put_nowait((name, dict(data)))
+
+    async def import_sms(self, lines):
+        completed = await self.history.import_sms(lines) or []
+        for message in completed:
+            self.fire_ha_event("jarvis_sms_received", {
+                "number": message["number"],
+                "text": message["text"],
+                "received_at": message["received_at"],
+                "parts": message["parts"],
+                "known": self.known_number(message["number"]),
+            })
+        return completed
 
     async def sync_sms(self):
         while True:
             self.sms_wake.clear()
             if self.modem.call_state == "idle":
                 try:
-                    usage = await self.modem.read_sms(self.history.import_sms)
+                    usage = await self.modem.read_sms(self.import_sms)
                     self.sms_status = {"storage": usage}
                 except (RuntimeError, OSError) as exc:
                     if self.modem.call_state == "idle":
@@ -261,10 +395,10 @@ class Server:
             if self.modem.call_state == "idle":
                 try:
                     now = datetime.now(timezone.utc)
-                    due = self.personal.due(now, self.reminder_numbers)
+                    due = await asyncio.to_thread(self.personal.due, now, self.reminder_numbers)
                     if due:
                         identifier, profile, text = due[0]
-                        self.personal.retry_after(identifier, now + timedelta(minutes=15))
+                        await asyncio.to_thread(self.personal.retry_after, identifier, now + timedelta(minutes=15))
                         self.reminder_call = (self.modem.call_id + 1, identifier, self.reminder_numbers[profile])
                         try:
                             await self.dial_number(self.reminder_numbers[profile], "Напоминание. " + text)
@@ -277,12 +411,15 @@ class Server:
 
     async def run_due_actions(self):
         profiles = {member["key"]: member for member in self.family.values()}
-        for identifier, profile, condition in self.personal.due_actions(datetime.now(timezone.utc)):
-            if not self.personal.claim_action(identifier):
+        personal = self.personal
+        status = lambda identifier, value: asyncio.to_thread(personal.action_status, identifier, value)  # noqa: E731
+        due = await asyncio.to_thread(personal.due_actions, datetime.now(timezone.utc))
+        for identifier, profile, condition in due:
+            if not await asyncio.to_thread(personal.claim_action, identifier):
                 continue
-            self.personal.action_status(identifier, "started")
+            await status(identifier, "started")
             if profile not in self.reminder_numbers:
-                self.personal.action_status(identifier, "profile_removed")
+                await status(identifier, "profile_removed")
                 continue
             brain = self.caller_brain(profiles.get(profile))
             condition_allowed = (
@@ -291,19 +428,23 @@ class Server:
                 or (condition["kind"] == "state" and brain._visible(condition["entity"]))
             )
             if not condition_allowed:
-                self.personal.action_status(identifier, "blocked")
+                await status(identifier, "blocked")
                 continue
             try:
                 async with brain.action_lock:
-                    result = await brain._tool("call_ha_service", condition["action"])
+                    result = await brain._tool("call_ha_service", condition["action"], preconfirmed=True)
             except (ClientError, TimeoutError, RuntimeError, ValueError):
-                self.personal.action_status(identifier, "unconfirmed")
+                await status(identifier, "unconfirmed")
+                continue
+            except Exception:
+                LOG.exception("Scheduled action failed")
+                await status(identifier, "failed")
                 continue
             accepted = isinstance(result, dict) and result.get("accepted")
-            self.personal.action_status(identifier, "accepted" if accepted else "blocked")
+            await status(identifier, "accepted" if accepted else "blocked")
 
     async def sample_reminder_conditions(self):
-        watches = self.personal.watches()
+        watches = await asyncio.to_thread(self.personal.watches)
         if not watches:
             return
         profiles = {member["key"]: member for member in self.family.values()}
@@ -320,11 +461,14 @@ class Server:
                 permitted = brain._visible(condition["entity"])
             if permitted:
                 matched = condition_matches(condition, states)
-                self.personal.sample(identifier, matched, armed, now)
+                await asyncio.to_thread(self.personal.sample, identifier, matched, armed, now)
+
+    def caller_key(self):
+        return phone_key(self.modem.active_number, self.country)
 
     def caller_allowed(self):
-        caller = (self.modem.active_number or "").removeprefix("+")
-        owner = (self.o.get("allowed_number") or "").removeprefix("+")
+        caller = self.caller_key()
+        owner = phone_key(self.o.get("allowed_number"), self.country)
         return bool(caller and (caller == owner or caller in self.family))
 
     def caller_brain(self, member):
@@ -348,6 +492,23 @@ class Server:
                 caller_number=member["number"], owner=False,
             )
         return self.family_brains[key]
+
+    def room_brain(self):
+        """Restricted profile for unauthenticated room speech (/chat, Q1 microphone)."""
+        if getattr(self, "_room_brain", None) is None:
+            entities = list(self.o.get("room_entities") or [])
+            options = {
+                **self.o, "camera_entity": "", "reminder_calendar": "", "reminder_person": "",
+                "allowed_entities": entities, "observed_entities": entities,
+                "observe_all_entities": False, "control_all_entities": False,
+            }
+            self._room_brain = Brain(
+                options, self.http, None, personal=self.personal, profile="room",
+                profile_name="Комната", timezone_name=self.brain.timezone.key,
+                restricted_entities=self.gates, registry_cache=self.brain.registry_cache,
+                caller_number="", owner=False,
+            )
+        return self._room_brain
 
     async def _start_session(self, call_id, prompt, camera, reminder_id=None):
         async with self.session_lock:
@@ -407,14 +568,21 @@ class Server:
                         await self.start_call_audio(call_id)
 
     async def _dialog(self, prompt, camera, reminder_id=None):
+        brain = None
+        caller = ""
+        call_id = self.modem.call_id
         try:
             self.mode="starting_audio"
             await self.start_call_audio(self.modem.call_id)
             self.mode="talking"
-            member = self.family.get((self.modem.active_number or "").removeprefix("+"))
+            caller = self.caller_key()
+            member = self.family.get(caller)
             brain = self.caller_brain(member)
+            reset = getattr(brain, "reset_history", None)
+            if callable(reset) and getattr(brain, "session_call", None) != self.modem.call_id:
+                reset()
+                brain.session_call = self.modem.call_id
             pending_pin = 0.0
-            attempts = 0
             digits = ""
             allowed_locks = member["locks"] if member else self.owner_locks
             gate = ""
@@ -437,12 +605,18 @@ class Server:
                 return "Команда открытия отправлена."
 
             async def check_pin(candidate):
-                nonlocal pending_pin, attempts, digits
+                nonlocal pending_pin, digits
                 pending_pin = 0.0
                 digits = ""
-                attempts += 1
-                if not hmac.compare_digest(candidate, pin):
+                now = datetime.now(timezone.utc)
+                # Failures persist in /data, so brute force across calls or restarts is locked out.
+                if await asyncio.to_thread(self.personal.pin_locked, caller, now):
+                    return "Открытие по телефону временно заблокировано."
+                if not hmac.compare_digest(candidate.encode(), pin.encode()):
+                    await asyncio.to_thread(self.personal.pin_failed, caller, now)
+                    LOG.warning("Wrong gate PIN from caller")
                     return "Код не подошёл."
+                await asyncio.to_thread(self.personal.pin_succeeded, caller)
                 return await open_gate()
 
             async def press(key):
@@ -495,19 +669,18 @@ class Server:
                         return "Сначала заверши ввод кода для уже выбранного замка."
                     gate = selected
                     gate_name = row.get("attributes", {}).get("friendly_name") or "назначенный замок"
-                    if not pin:
-                        on_progress(f"Открываю «{gate_name}».")
-                        return await open_gate()
-                    if not re.fullmatch(r"[0-9]+", pin) or attempts >= 3:
-                        return "Открытие по телефону недоступно."
+                    # Caller ID can be spoofed, so a gate never opens without a keypad PIN.
+                    if not re.fullmatch(r"[0-9]{4,12}", pin or ""):
+                        return "Открытие по телефону недоступно: в настройках не задан код из 4–12 цифр."
+                    if await asyncio.to_thread(self.personal.pin_locked, caller, datetime.now(timezone.utc)):
+                        return "Открытие по телефону временно заблокировано после неверных кодов."
                     digits = ""
                     pending_pin = clock() + 30
                     return {"lock": gate_name, "instruction": "Для открытия нужен код. Попроси набрать его на клавиатуре и нажать решётку."}
 
-                if pending_pin > clock():
-                    spoken = phrase.strip().rstrip(".!?")
-                    if not digits and re.fullmatch(r"[0-9][0-9 ,\-]*", spoken):
-                        return await check_pin(re.sub(r"[^0-9]", "", spoken))
+                if pending_pin > clock() and re.fullmatch(r"[0-9][0-9 ,\-]*", phrase.strip().rstrip(".!?")):
+                    # Spoken digits would be sent to cloud STT and the LLM: accept the PIN only via DTMF.
+                    return "Код нужно набрать на клавиатуре телефона и нажать решётку."
                 actions = {"end_phone_call": end_call}
                 if reminder_id:
                     actions["read_call_reminder"] = read_reminder
@@ -542,7 +715,41 @@ class Server:
             # Do not hang up just because the speech service fails: leave the call under user control.
         finally:
             self.keypad = None
+            if brain is not None:
+                self.schedule_call_summary(brain, caller, call_id)
             await self.audio.stop()
+
+    def schedule_call_summary(self, brain, caller, call_id):
+        """After a call, ask the LLM for a short summary and post it to HA in the background."""
+        if not self.o.get("call_summary", False) or not callable(getattr(brain, "summarize", None)):
+            return
+        if not getattr(self.brain, "hass_token", None):
+            return
+
+        async def run():
+            try:
+                summary = await brain.summarize()
+            except Exception:
+                LOG.exception("Call summary failed")
+                return
+            if not summary:
+                return
+            member = self.family.get(caller)
+            who = member["name"] if member else ("Владелец" if caller == phone_key(self.o.get("allowed_number", ""), self.country) else caller or "неизвестный")
+            try:
+                await self.brain._ha("POST", "/api/services/persistent_notification/create", {
+                    "title": f"JARVIS: звонок ({who})",
+                    "message": summary,
+                    "notification_id": f"jarvis_call_{call_id}",
+                }, timeout=8)
+            except (RuntimeError, TimeoutError, ClientError) as exc:
+                LOG.warning("Could not post call summary: %s", exc)
+            self.fire_ha_event("jarvis_call_summary", {"call_id": call_id, "caller": who, "summary": summary})
+
+        tasks = self.__dict__.setdefault("summary_tasks", set())
+        task = asyncio.create_task(run())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
 
     @web.middleware
     async def auth(self, request, handler):
@@ -585,13 +792,17 @@ class Server:
         if member:
             if not isinstance(member, str) or number:
                 raise web.HTTPBadRequest(text="Select one family recipient")
-            profile = next((entry for entry in family.values() if entry["name"].casefold() == member.strip().casefold()), None)
+            wanted = member.strip()
+            # Prefer the stable profile key; names are kept as a fallback for older clients.
+            profile = next((entry for entry in family.values() if entry.get("key") == wanted), None) or next(
+                (entry for entry in family.values() if entry["name"].casefold() == wanted.casefold()), None)
             if not profile:
                 raise web.HTTPBadRequest(text="Unknown family recipient")
             number = profile["number"]
         number = number or owner
+        country = getattr(self, "country", "7")
         if not isinstance(number, str) or not number or (
-            number.removeprefix("+") != owner.removeprefix("+") and number.removeprefix("+") not in family
+            phone_key(number, country) != phone_key(owner, country) and phone_key(number, country) not in family
         ):
             raise web.HTTPForbidden(text="Number not allowlisted")
         prompt=str(prompt).strip()
@@ -643,12 +854,35 @@ class Server:
         return web.json_response({"ok":True})
 
     async def chat(self, request):
-        data=await request.json()
+        data=await read_json(request)
         text=str(data.get("text","")).strip()
         if not text or len(text)>2000:
             raise web.HTTPBadRequest(text="text must be 1..2000 chars")
-        response=await self.brain.reply(text)
+        response=await self.room_reply(text)
         return web.json_response({"response":response})
+
+    async def room_reply(self, text):
+        """Answer a room phrase with JARVIS (room profile) or Home Assistant Assist."""
+        if str(self.o.get("room_agent") or "jarvis") != "assist":
+            return await self.room_brain().reply(text)
+        payload={"text":text,"language":"ru"}
+        agent=str(self.o.get("assist_agent_id") or "").strip()
+        if agent:
+            payload["agent_id"]=agent
+        conversation=getattr(self, "assist_conversation", None)
+        if conversation and time.monotonic()-conversation[1] < 300:
+            payload["conversation_id"]=conversation[0]
+        try:
+            result=await self.brain._ha("POST","/api/conversation/process",payload,timeout=30)
+        except (ClientError, TimeoutError, RuntimeError, ValueError) as exc:
+            LOG.warning("Assist request failed: %s",exc)
+            return "Home Assistant Assist сейчас недоступен."
+        if not isinstance(result, dict):
+            return "Assist не вернул ответ."
+        if result.get("conversation_id"):
+            self.assist_conversation=(result["conversation_id"],time.monotonic())
+        speech=((result.get("response") or {}).get("speech") or {}).get("plain") or {}
+        return str(speech.get("speech") or "").strip()[:2000] or "Готово."
 
     async def speak(self, request):
         data=await request.json()
@@ -699,13 +933,16 @@ class Server:
             raise web.HTTPConflict(text="SpeechKit API key missing")
         if not self.o.get("q1_mic_device"):
             raise web.HTTPConflict(text="No Q1 microphone ALSA device configured")
-        data=await request.json()
-        seconds=min(30,max(3,int(data.get("seconds",12))))
+        data=await read_json(request)
+        try:
+            seconds=min(30,max(3,int(data.get("seconds",12))))
+        except (TypeError, ValueError) as exc:
+            raise web.HTTPBadRequest(text="seconds must be an integer") from exc
         async with self.mic_lock:
             phrase=await recognize_microphone_live(self.speech,self.o["q1_mic_device"],seconds)
         if not phrase:
             return web.json_response({"recognized":"","response":""})
-        answer=await self.brain.reply(phrase)
+        answer=await self.room_reply(phrase)
         if self.o.get("q1_speaker_device"):
             async with self.speaker_lock:
                 await self.media.stop()
@@ -791,7 +1028,7 @@ class Server:
             async with self.speaker_lock:
                 await self.media.play(self.http, str(data.get("url","")),
                     self.o.get("q1_speaker_device",""),
-                    self.o.get("media_allowed_hosts",["homeassistant","supervisor","homeassistant.local"]))
+                    self.o.get("media_allowed_hosts",["homeassistant","homeassistant.local"]))
         except (ValueError,RuntimeError) as exc:
             raise web.HTTPBadRequest(text=str(exc))
         return web.json_response({"ok":True,"playing":True})
@@ -869,8 +1106,11 @@ class Server:
             raise web.HTTPConflict(text="Configure SpeechKit API key")
         if not self.o.get("q1_mic_device"):
             raise web.HTTPConflict(text="Configure Q1 microphone device")
-        data=await request.json()
-        seconds=min(30,max(3,int(data.get("seconds",12))))
+        data=await read_json(request)
+        try:
+            seconds=min(30,max(3,int(data.get("seconds",12))))
+        except (TypeError, ValueError) as exc:
+            raise web.HTTPBadRequest(text="seconds must be an integer") from exc
         if self.mic_lock.locked() and not self.microphone.sampling:
             raise web.HTTPConflict(text="Microphone is already in use")
         async with self.mic_lock:
@@ -887,7 +1127,7 @@ class Server:
         try:
             async with self.http.post("http://supervisor/discovery",json=payload,
                 headers={"Authorization":"Bearer "+supervisor_token},
-                timeout=__import__("aiohttp").ClientTimeout(total=8)) as resp:
+                timeout=ClientTimeout(total=8)) as resp:
                 if resp.status not in (200,201):
                     LOG.warning("Supervisor discovery HTTP %s: %s",resp.status,(await resp.text())[:100])
                 else:
@@ -934,7 +1174,15 @@ async def main():
         await web.TCPSite(panel, host="0.0.0.0", port=8098).start()
         await service.discover_companion()
         LOG.info("JARVIS API listening on 8099 and HA ingress on 8098")
-        await asyncio.Event().wait()
+        stop=asyncio.Event()
+        loop=asyncio.get_running_loop()
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(signum, stop.set)
+            except (NotImplementedError, RuntimeError):
+                pass
+        await stop.wait()
+        LOG.info("Shutdown requested, releasing modem and audio")
     finally:
         await panel.cleanup()
         await runner.cleanup()

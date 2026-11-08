@@ -1,3 +1,40 @@
+## 0.5.0 (experimental)
+
+Security:
+- Gates and locks open only with a 4–12 digit keypad PIN; spoken PINs are rejected and failed attempts are locked out across calls (stored in /data).
+- Blanket device control no longer covers scenes or gate/garage/door covers; family read-all access excludes cameras, people and trackers.
+- Room microphone and /chat use a separate restricted "room" profile instead of the owner's.
+- Saved notes are passed to the model as data, not system instructions; pending rules are capped at 20 per profile.
+- Caller numbers are normalised (8xxx / +7xxx) via the new country code option.
+- External LLM servers require https; media URLs reject credentials and unlisted ports; ALSA device names are restricted.
+
+Telephony:
+- Graceful SIGTERM shutdown hangs up active calls and releases PCM.
+- Missed calls, disconnect status and lost end notifications no longer leave the modem stuck in "ringing" (CLCC polling).
+- Late AT replies are dropped instead of reconnecting the port mid-call; call waiting disabled; init commands are checked.
+- New SMS (+CMTI) are picked up immediately and deleted from the SIM after import.
+- USB PCM loss ends the call cleanly; TTS deadline scales with text length; gRPC keepalive.
+
+Assistant:
+- Replies are serialised, history expires after 10 minutes and is reset per call, each reply has a 60 s deadline.
+- Max 5 tool calls per step, camera frames are sent once, truncated answers are detected, errors are logged with tracebacks.
+- Personal storage migrates once and runs off the event loop; call history is kept for 365 days.
+
+New:
+- Confirmation of risky actions (covers, valves, scenes, vacuums…) in the next turn.
+- Tool audit log and LLM token usage tab, optional daily token limit.
+- Home Assistant events: jarvis_call_incoming, jarvis_call_ended, jarvis_dtmf, jarvis_sms_received, jarvis_call_summary.
+- Optional call summary as a persistent notification.
+- Streaming replies: JARVIS starts speaking while the model is still writing.
+- Room voice can be answered by Home Assistant Assist instead of JARVIS.
+- Panel: "Check all" diagnostics and a persona sandbox with voice preview.
+
+Panel and integrations:
+- Fixed CSP for audio preview, call controls usable while settings are locked, friendlier session/network errors, unsaved-changes warning.
+- jarvis_q1: reauth/reconfigure, rediscovery updates the token, diagnostics, translated entities, call events.
+- sim7600: robust AT protocol, Cyrillic and multipart SMS (PDU), USSD and balance sensor, notify entity, SMS/call events, repairs, diagnostics, Russian translation.
+- Smaller multi-stage Docker image; CI lints unused imports and no longer auto-commits snapshots.
+
 ## 0.4.37 (experimental)
 
 - Retry a failed voice session within the same connected call.

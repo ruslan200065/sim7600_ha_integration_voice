@@ -1,4 +1,5 @@
 """Chat Completions profiles and their independent model catalogs."""
+import ipaddress
 import re
 from urllib.parse import urlsplit
 
@@ -9,13 +10,29 @@ EFFORTS = {"default", "off", "minimal", "low", "medium", "high", "xhigh", "max"}
 PROFILE_ID = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 
 
+def local_host(hostname):
+    """True for hosts that never leave the home network, where plain http is acceptable."""
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        name = hostname.lower().rstrip(".")
+        return name == "localhost" or name.endswith((".local", ".lan", ".home.arpa")) or "." not in name
+    return address.is_private or address.is_loopback
+
+
 def base_url(value):
     if not isinstance(value, str) or not value or len(value) > 500 or re.search(r"[\s\\]", value):
         raise ValueError("Укажи базовый URL API.")
     url = urlsplit(value)
+    try:
+        port = url.port
+    except ValueError:
+        port = 0
     if (url.scheme not in {"https", "http"} or not url.hostname or url.username is not None
-        or url.query or url.fragment or url.port == 0):
+        or url.query or url.fragment or port == 0):
         raise ValueError("Используй URL http(s) без логина, параметров и фрагмента.")
+    if url.scheme == "http" and not local_host(url.hostname):
+        raise ValueError("Для внешнего сервера используй https: ключ и кадры камер нельзя слать открытым текстом.")
     return value.rstrip("/")
 
 
@@ -81,6 +98,7 @@ def completion_options(profile):
         mapped = {"minimal": "low", "medium": "high", "xhigh": "high"}.get(effort, effort)
         return {"thinking": {"type": "enabled"}, "reasoning_effort": mapped,
                 "max_tokens": 8192 if mapped == "max" else 4096}
-    if effort == "default":
-        return {}
-    return {"reasoning_effort": {"off": "none"}.get(effort, effort)}
+    # Always cap the answer: a phone reply never needs more, and it bounds the cost.
+    if effort in {"default", "off"}:
+        return {"max_tokens": 1024}
+    return {"reasoning_effort": {"max": "high"}.get(effort, effort), "max_tokens": 4096}

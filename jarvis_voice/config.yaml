@@ -1,6 +1,6 @@
 name: JARVIS SIM7600 Voice Bridge
 slug: jarvis_sim7600_voice
-version: 0.4.37
+version: 0.5.0
 stage: experimental
 description: Smart GSM assistant for SIM7600 and Home Assistant
 arch:
@@ -37,6 +37,7 @@ options:
   owner_locks: []
   api_token: ""
   max_calls_per_hour: 4
+  llm_daily_token_limit: 0
   call_playback_volume: 50
   call_echo_filter: false
   auto_answer: false
@@ -56,17 +57,24 @@ options:
   q1_speaker_device: ""
   media_allowed_hosts:
     - homeassistant
-    - supervisor
     - homeassistant.local
   family_members: []
   gate_pin: ""
   reminder_calendar: ""
   reminder_person: ""
   speech_cache_enabled: true
+  confirm_risky_actions: true
+  ha_events: true
+  call_summary: false
+  stream_replies: true
   observe_all_entities: false
   control_all_entities: false
   observed_entities: []
   allowed_entities: []
+  room_entities: []
+  room_agent: jarvis
+  assist_agent_id: ""
+  country_code: "7"
   allow_domains:
     - light
     - switch
@@ -86,6 +94,7 @@ schema:
     - str
   api_token: password
   max_calls_per_hour: int(1,20)
+  llm_daily_token_limit: int(0,10000000)
   call_playback_volume: int(10,100)
   call_echo_filter: bool
   auto_answer: bool
@@ -117,12 +126,21 @@ schema:
   reminder_calendar: str
   reminder_person: str
   speech_cache_enabled: bool
+  confirm_risky_actions: bool
+  ha_events: bool
+  call_summary: bool
+  stream_replies: bool
   observe_all_entities: bool
   control_all_entities: bool
   observed_entities:
     - str
   allowed_entities:
     - str
+  room_entities:
+    - str
+  room_agent: list(jarvis|assist)
+  assist_agent_id: str
+  country_code: match(^[0-9]{0,3}$)
   allow_domains:
     - str
   system_prompt: str

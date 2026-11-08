@@ -66,12 +66,67 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.modem.command("AT+CGPS?", timeout=1), ["+CGPS: 1,2", "OK"])
         self.assertEqual(self.modem.call_state, "idle")
 
-    async def test_timeout_closes_out_of_sync_port(self):
+    async def test_late_reply_is_dropped_without_closing_port(self):
         self.port.reply = []
+        with self.assertRaises(TimeoutError):
+            await self.modem.command("AT+CPCMREG=1", timeout=0.05)
+        self.assertTrue(self.port.is_open)
+        self.assertEqual(self.modem.orphaned, 1)
+        # The late reply of the abandoned command arrives before the next answer.
+        self.port.reply = [b"ERROR\r\n", b"+CSQ: 20,99\r\n", b"OK\r\n"]
+        self.assertEqual(await self.modem.command("AT+CSQ", timeout=1), ["+CSQ: 20,99", "OK"])
+        self.assertEqual(self.modem.orphaned, 0)
+
+    async def test_second_timeout_closes_out_of_sync_port(self):
+        self.port.reply = []
+        with self.assertRaises(TimeoutError):
+            await self.modem.command("AT", timeout=0.05)
         with self.assertRaises(TimeoutError):
             await self.modem.command("AT", timeout=0.05)
         with self.assertRaises(ConnectionError):
             await self.modem.command("AT")
+
+    async def test_missed_call_and_disconnect_status_end_ringing(self):
+        self.modem.on_event = AsyncMock()
+        await self.modem._urc("RING")
+        self.assertEqual(self.modem.call_state, "ringing")
+        await self.modem._urc("MISSED_CALL: 10:15AM 79991234567")
+        self.assertEqual(self.modem.call_state, "idle")
+        self.modem.on_event.assert_any_await(
+            "call_ended", {"reason": "MISSED_CALL", "call_id": self.modem.call_id}
+        )
+        await self.modem._urc("RING")
+        self.port.reply = [b'+CLCC: 1,1,6,0,0,"79991234567",145\r\n', b"+CSQ: 20,99\r\n", b"OK\r\n"]
+        await self.modem.command("AT+CSQ", timeout=1)
+        self.assertEqual(self.modem.call_state, "idle")
+
+    async def test_call_without_end_urc_is_recovered_by_clcc_poll(self):
+        self.modem.call_state = "connected"
+        self.port.reply = [b"OK\r\n"]
+        await self.modem._check_call_alive()
+        self.assertEqual(self.modem.call_state, "idle")
+
+    async def test_active_call_survives_clcc_poll(self):
+        self.modem.call_state = "connected"
+        self.port.reply = [b'+CLCC: 1,1,0,0,0,"79991234567",145\r\n', b"OK\r\n"]
+        await self.modem._check_call_alive()
+        self.assertEqual(self.modem.call_state, "connected")
+
+    async def test_new_sms_notification_is_emitted(self):
+        self.modem.on_event = AsyncMock()
+        self.port.lines.put(b'+CMTI: "SM",3\r\n')
+        async with asyncio.timeout(1):
+            while not self.modem.on_event.await_count:
+                await asyncio.sleep(0.01)
+        self.modem.on_event.assert_awaited_with("sms_received", {"storage": "SM", "index": 3})
+
+    async def test_failed_dials_count_towards_hourly_limit(self):
+        self.modem.max_calls_per_hour = 1
+        self.port.reply = [b"BUSY\r\n"]
+        with self.assertRaises(RuntimeError):
+            await self.modem.dial("+79991234567")
+        with self.assertRaisesRegex(RuntimeError, "Hourly call limit"):
+            await self.modem.dial("+79991234567")
 
     async def test_stale_answer_is_never_sent(self):
         self.modem.call_state = "ringing"
@@ -138,7 +193,7 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
         await self.modem._urc("VOICE CALL: END")
         await self.modem.pcm_cleanup
         self.modem.command.assert_awaited_once_with(
-            "AT+CPCMREG=0,1", timeout=2, expected_call=(self.modem.call_id, "idle")
+            "AT+CPCMREG=0,1", timeout=5, expected_call=(self.modem.call_id, "idle")
         )
 
     async def test_phone_diagnostics_expose_ims_support_without_cell_identifiers(self):

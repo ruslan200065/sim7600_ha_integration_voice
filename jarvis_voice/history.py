@@ -16,6 +16,7 @@ from gsmmodem.pdu import Concatenation, decodeSmsPdu
 LOG = logging.getLogger(__name__)
 ACTIVE_CALLS = ("ringing", "dialing", "connected")
 PAGE_SIZE = 50
+RETENTION_DAYS = 365
 
 
 def decode_messages(lines):
@@ -59,9 +60,25 @@ def decode_messages(lines):
 
 
 class History:
-    def __init__(self, path):
+    def __init__(self, path, retention_days=RETENTION_DAYS):
         self.path = Path(path)
         self.session = uuid.uuid4().hex
+        self.retention_days = retention_days
+        self.pruned_at = 0.0
+
+    def _prune(self, conn):
+        """Drop calls and SMS older than the retention window (at most hourly)."""
+        now = time.time()
+        if not self.retention_days or now - self.pruned_at < 3600:
+            return
+        self.pruned_at = now
+        cutoff = now - self.retention_days * 86400
+        conn.execute(
+            "DELETE FROM sms_parts WHERE history_id IN "
+            "(SELECT id FROM history WHERE created_at < ?)",
+            (cutoff,),
+        )
+        conn.execute("DELETE FROM history WHERE created_at < ?", (cutoff,))
 
     def _run(self, operation, *args):
         with closing(sqlite3.connect(self.path)) as conn, conn:
@@ -99,6 +116,7 @@ class History:
         """)
         self.path.chmod(0o600)
         self._interrupt(conn)
+        self._prune(conn)
 
     def _interrupt(self, conn):
         conn.execute(
@@ -144,13 +162,16 @@ class History:
                 "UPDATE history SET state=CASE WHEN connected_at IS NOT NULL THEN 'completed' "
                 "WHEN direction='incoming' THEN 'missed' ELSE 'failed' END, "
                 "text=?, ended_at=? WHERE call_key=? AND state IN (?,?,?)",
-                (data.get("reason", "")[:160], now, key, *ACTIVE_CALLS),
+                (str(data.get("reason") or "")[:160], now, key, *ACTIVE_CALLS),
             )
 
     async def import_sms(self, lines):
-        await asyncio.to_thread(self._run, self._import_sms, lines)
+        return await asyncio.to_thread(self._run, self._import_sms, lines)
 
     def _import_sms(self, conn, lines):
+        """Store new SMS parts and return messages that became complete."""
+        self._prune(conn)
+        completed = []
         for digest, date, sender, text, ref, part, total in decode_messages(lines):
             if conn.execute(
                 "SELECT 1 FROM sms_parts WHERE digest=?", (digest,)
@@ -181,15 +202,19 @@ class History:
                 "SELECT body FROM sms_parts WHERE history_id=? ORDER BY part",
                 (event_id,),
             ).fetchall()
+            body = "".join(item["body"] for item in parts)
             conn.execute(
                 "UPDATE history SET state=?,text=?,created_at=MIN(created_at,?) WHERE id=?",
                 (
                     "received" if len(parts) == total else f"{len(parts)}/{total}",
-                    "".join(item["body"] for item in parts),
+                    body,
                     date,
                     event_id,
                 ),
             )
+            if len(parts) == total:
+                completed.append({"number": sender, "text": body, "received_at": date, "parts": total})
+        return completed
 
     async def page(self, kind, offset):
         return await asyncio.to_thread(self._run, self._page, kind, offset)

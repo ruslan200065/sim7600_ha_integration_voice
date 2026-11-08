@@ -8,13 +8,21 @@ from math import asin, cos, radians, sin, sqrt
 from uuid import uuid4
 
 
+SCHEMA_VERSION = 1
+
+
 class Personal:
     def __init__(self, path):
         self.path = Path(path)
+        self._migrated = False
 
-    def query(self, sql, values=()):
+    def migrate(self):
+        """Create tables once per process instead of running DDL on every query."""
+        if self._migrated:
+            return
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("PRAGMA secure_delete=ON")
+            db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS notes (
                     profile TEXT, note TEXT, PRIMARY KEY (profile, note));
@@ -31,9 +39,80 @@ class Personal:
                     due REAL, delivered INTEGER DEFAULT 0, retry_at REAL DEFAULT 0, condition TEXT, armed INTEGER DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS action_runs (
                     id TEXT PRIMARY KEY, status TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS tool_audit (
+                    at REAL, profile TEXT, tool TEXT, arguments TEXT, result TEXT);
+                CREATE INDEX IF NOT EXISTS tool_audit_at ON tool_audit(at);
+                CREATE TABLE IF NOT EXISTS llm_usage (
+                    day TEXT, profile TEXT, prompt INTEGER, completion INTEGER, requests INTEGER,
+                    PRIMARY KEY (day, profile));
+                CREATE TABLE IF NOT EXISTS pin_failures (
+                    caller TEXT PRIMARY KEY, failures INTEGER, locked_until REAL);
             """)
-            self.path.chmod(0o600)
+            db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        self.path.chmod(0o600)
+        self._migrated = True
+
+    def query(self, sql, values=()):
+        self.migrate()
+        with closing(sqlite3.connect(self.path, timeout=5)) as db, db:
+            db.execute("PRAGMA secure_delete=ON")
             return db.execute(sql, values).fetchall()
+
+    def count_pending(self, profile):
+        return self.query("SELECT COUNT(*) FROM reminders WHERE profile=? AND delivered=0", (profile,))[0][0]
+
+    # Tool-call audit log (feature: who did what, with which result).
+    def audit(self, profile, tool, arguments, result, now=None):
+        now = now or datetime.now(timezone.utc)
+        self.query("INSERT INTO tool_audit VALUES (?, ?, ?, ?, ?)", (
+            now.timestamp(), profile, tool,
+            json.dumps(arguments, ensure_ascii=False, default=str)[:1000],
+            json.dumps(result, ensure_ascii=False, default=str)[:1000]))
+        self.query("DELETE FROM tool_audit WHERE at < ?", (now.timestamp() - 30 * 86400,))
+
+    def audit_log(self, limit=200):
+        return [{"at": datetime.fromtimestamp(at, timezone.utc).isoformat(), "profile": profile,
+                 "tool": tool, "arguments": arguments, "result": result}
+                for at, profile, tool, arguments, result in self.query(
+                    "SELECT at,profile,tool,arguments,result FROM tool_audit ORDER BY at DESC LIMIT ?",
+                    (max(1, min(int(limit), 1000)),))]
+
+    # LLM usage accounting and daily budget.
+    def add_usage(self, profile, prompt, completion, day):
+        self.query("""INSERT INTO llm_usage VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(day, profile) DO UPDATE SET prompt=prompt+excluded.prompt,
+            completion=completion+excluded.completion, requests=requests+1""",
+            (day, profile, int(prompt or 0), int(completion or 0)))
+
+    def usage(self, day=None):
+        if day:
+            rows = self.query("SELECT day,profile,prompt,completion,requests FROM llm_usage WHERE day=?", (day,))
+        else:
+            rows = self.query("SELECT day,profile,prompt,completion,requests FROM llm_usage ORDER BY day DESC LIMIT 100")
+        return [{"day": d, "profile": p, "prompt_tokens": a, "completion_tokens": b, "requests": r}
+                for d, p, a, b, r in rows]
+
+    def tokens_today(self, day):
+        return self.query("SELECT COALESCE(SUM(prompt+completion),0) FROM llm_usage WHERE day=?", (day,))[0][0]
+
+    # Gate PIN brute-force protection that survives across calls and restarts.
+    def pin_locked(self, caller, now):
+        rows = self.query("SELECT locked_until FROM pin_failures WHERE caller=?", (caller,))
+        return bool(rows and rows[0][0] and rows[0][0] > now.timestamp())
+
+    def pin_failed(self, caller, now, limit=3, lockout=3600):
+        rows = self.query("""INSERT INTO pin_failures VALUES (?, 1, 0)
+            ON CONFLICT(caller) DO UPDATE SET failures=failures+1 RETURNING failures""", (caller,))
+        failures = rows[0][0]
+        if failures >= limit:
+            # Lockout doubles with every further batch of failures, capped at a day.
+            factor = 2 ** min((failures - limit) // limit, 5)
+            self.query("UPDATE pin_failures SET locked_until=? WHERE caller=?",
+                       (now.timestamp() + min(lockout * factor, 86400), caller))
+        return failures
+
+    def pin_succeeded(self, caller):
+        self.query("DELETE FROM pin_failures WHERE caller=?", (caller,))
 
     def notes(self, profile):
         return [row[0] for row in self.query(
@@ -107,8 +186,8 @@ class Personal:
         return bool(self.query(f"DELETE FROM {table} WHERE profile=? AND {column}=? RETURNING {column}",
                                (profile, identifier)))
 
-    def pending(self, profile):
-        return [{"id": i, "text": t, "when": datetime.fromtimestamp(d, timezone.utc).isoformat() if d else None,
+    def pending(self, profile, tz=timezone.utc):
+        return [{"id": i, "text": t, "when": datetime.fromtimestamp(d, tz).isoformat(timespec="minutes") if d else None,
                  "condition": json.loads(c) if c else None}
                 for i,t,d,c in self.query(
                     "SELECT id,text,due,condition FROM reminders WHERE profile=? AND delivered=0 ORDER BY due LIMIT 20",

@@ -15,6 +15,12 @@ CALL_STATUS = re.compile(
     r'\+CLCC:\s*\d+\s*,\s*([01])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*[01]'
     r'(?:\s*,\s*"(\+?[0-9]+)"\s*,\s*(\d+))?(?:,.*)?$'
 )
+NEW_SMS = re.compile(r'\+CMTI:\s*"([A-Z]{2})"\s*,\s*(\d+)$')
+PCM_TIMEOUT = 5
+
+
+def is_terminal(value):
+    return value in ("OK", "ERROR") or value.startswith(("+CME ERROR:", "+CMS ERROR:"))
 
 
 class Modem:
@@ -27,6 +33,8 @@ class Modem:
         self.lock = asyncio.Lock()
         self.pending = None
         self.pending_command = ""
+        # Terminal responses still owed by commands that timed out or were cancelled.
+        self.orphaned = 0
         self.reader_task = None
         self.pcm_call_id = None
         self.pcm_cleanup = None
@@ -73,14 +81,13 @@ class Modem:
             disconnected = False
             try:
                 self.serial = serial.Serial(self.port, self.baudrate, timeout=0.15, write_timeout=2)
+                self.orphaned = 0
                 rx = asyncio.create_task(self._reader())
                 await asyncio.sleep(0.3)
-                await self.command("ATE0")
-                await self.command("AT+CMEE=2")
-                await self.command("AT+CLIP=1")
-                await self.command("AT+CLCC=1")
+                await self._init_modem()
                 self.model = " ".join((await self.command("AT+CGMM"))[:-1]).strip()
                 self.firmware = " ".join((await self.command("AT+CGMR"))[:-1]).strip()
+                await self._release_stale_calls()
                 self.call_state = "idle"
                 LOG.info("SIM7600 connected: %s %s", self.model, self.firmware)
                 await self._emit("modem_connected", model=self.model, firmware=self.firmware)
@@ -92,6 +99,7 @@ class Modem:
                     for line in res:
                         if line.startswith("+CSQ:"):
                             self.signal = line.split(":", 1)[1].strip()
+                    await self._check_call_alive()
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -114,6 +122,54 @@ class Modem:
                 await self._emit("modem_offline")
             await asyncio.sleep(5)
 
+    async def _init_modem(self):
+        """Apply settings the call logic depends on; retry the connection if they fail."""
+        for cmd, required in (
+            ("ATE0", True),
+            ("AT+CMEE=2", False),
+            ("AT+CLIP=1", True),
+            ("AT+CLCC=1", True),
+            # A second line would end the active session with its own NO CARRIER.
+            ("AT+CCWA=0", False),
+            ("AT+CNMI=2,1,0,0,0", False),
+        ):
+            result = await self.command(cmd)
+            if result and result[-1] == "OK":
+                continue
+            if required:
+                raise RuntimeError(f"{cmd} failed: {result}")
+            LOG.warning("Modem did not accept %s: %s", cmd, result)
+
+    @staticmethod
+    def _voice_calls(lines):
+        return [
+            match for line in lines
+            if (match := CALL_STATUS.fullmatch(line)) and match[3] == "0" and match[2] != "6"
+        ]
+
+    async def _release_stale_calls(self):
+        """A call left over from a crash or restart has no audio session; end it."""
+        lines = await self.command("AT+CLCC", timeout=3)
+        if self._voice_calls(lines):
+            LOG.warning("Hanging up a call left over from before the reconnect")
+            result = await self.command("AT+CHUP", timeout=5)
+            if not result or result[-1] not in ("OK", "NO CARRIER"):
+                LOG.warning("Could not hang up the stale call: %s", result)
+
+    async def _check_call_alive(self):
+        """Recover from a missed end-of-call URC, which would leave the modem 'busy' forever."""
+        if self.call_state not in ("ringing", "connected"):
+            return
+        call = (self.call_id, self.call_state)
+        try:
+            lines = await self.command("AT+CLCC", timeout=3, expected_call=call)
+        except RuntimeError:
+            return
+        if lines and lines[-1] == "OK" and not self._voice_calls(lines):
+            if (self.call_id, self.call_state) == call:
+                LOG.warning("Call ended without an end-of-call notification")
+                await self._urc("NO CARRIER")
+
     async def _reader(self):
         port = self.serial
         partial = b""
@@ -135,8 +191,11 @@ class Modem:
                 if match and self.call_state == "connected":
                     await self._emit("dtmf_received", digit=match[1], call_id=self.call_id)
                 continue
-            if VOICE_RING.fullmatch(value) or value.startswith(("VOICE CALL:", "+CLIP:")):
+            if VOICE_RING.fullmatch(value) or value.startswith(("VOICE CALL:", "+CLIP:", "MISSED_CALL:")):
                 await self._urc(value)
+                continue
+            if sms := NEW_SMS.fullmatch(value):
+                await self._emit("sms_received", storage=sms[1], index=int(sms[2]))
                 continue
             status = CALL_STATUS.fullmatch(value)
             if status and self.pending_command != "AT+CLCC":
@@ -150,6 +209,12 @@ class Modem:
                     future.set_result([value])
                 await self._urc(value)
                 continue
+            if self.orphaned:
+                # The modem answers in order: drop the late reply of an abandoned command.
+                if is_terminal(value):
+                    self.orphaned -= 1
+                    LOG.debug("Dropped late modem reply: %s", value)
+                continue
             if future is None or future.done():
                 LOG.debug("Modem unsolicited: %s", value)
                 continue
@@ -158,9 +223,7 @@ class Modem:
                 previous = future
             if value != self.pending_command:
                 response.append(value)
-            if value in ("OK", "ERROR") or value.startswith(
-                ("+CME ERROR:", "+CMS ERROR:")
-            ):
+            if is_terminal(value):
                 future.set_result(response)
 
     async def _incoming(self):
@@ -193,6 +256,9 @@ class Modem:
             ("0", "dialing"), ("1", "answering")
         ):
             await self._connected()
+        elif state == "6":
+            # Disconnected: a caller who hangs up before answer gets no VOICE CALL: END.
+            await self._urc("NO CARRIER")
 
     async def _urc(self, value):
         if value.startswith("+CLIP:") and self.call_state == "ringing":
@@ -203,15 +269,20 @@ class Modem:
             await self._incoming()
         elif re.match(r"VOICE CALL:\s*BEGIN\b", value) and self.call_state in ("dialing", "answering"):
             await self._connected()
-        elif (value in CALL_END or re.match(r"VOICE CALL:\s*END\b", value)) and self.call_state not in (
-            "offline", "idle"
-        ):
+        elif (
+            value in CALL_END
+            or re.match(r"VOICE CALL:\s*END\b", value)
+            or value.startswith("MISSED_CALL:")
+        ) and self.call_state not in ("offline", "idle"):
             self.call_state = "idle"
             self.active_number = ""
             if self.pcm_call_id == self.call_id:
                 self.pcm_call_id = None
-                self.pcm_cleanup = asyncio.create_task(self._disable_pcm(self.call_id))
-            await self._emit("call_ended", reason=value)
+                self.pcm_cleanup = asyncio.create_task(
+                    self._disable_pcm(self.call_id, self.pcm_cleanup)
+                )
+            reason = "MISSED_CALL" if value.startswith("MISSED_CALL:") else value
+            await self._emit("call_ended", reason=reason)
 
     async def phone_diagnostics(self):
         """Read network and call indicators without altering the modem settings."""
@@ -288,6 +359,14 @@ class Modem:
                 if lines[-1] != "OK":
                     raise RuntimeError(f"Модем не прочитал SMS из памяти {storage}.")
                 await on_messages(lines)
+                # Parts are archived (multipart pieces too), so free the SIM memory.
+                for line in lines:
+                    if match := re.match(r"\+CMGL:\s*(\d+)\s*,", line):
+                        result = await self.command(
+                            f"AT+CMGD={match[1]}", timeout=5, expected_call=idle
+                        )
+                        if result[-1] != "OK":
+                            LOG.warning("Could not delete SMS %s from %s: %s", match[1], storage, result)
             if not usage:
                 raise RuntimeError("Модем не открыл память SMS.")
             return usage
@@ -310,13 +389,22 @@ class Modem:
             loop = asyncio.get_running_loop()
             future = self.pending = loop.create_future()
             self.pending_command = cmd
+            written = False
             try:
                 await asyncio.to_thread(port.write, (cmd + "\r").encode("ascii"))
+                written = True
                 return await asyncio.wait_for(asyncio.shield(future), timeout)
-            except (TimeoutError, serial.SerialException, asyncio.CancelledError):
-                if not future.done():
-                    # A late terminal response must not complete the next command.
-                    port.close()
+            except serial.SerialException:
+                port.close()
+                raise
+            except (TimeoutError, asyncio.CancelledError):
+                if written and not future.done():
+                    if self.orphaned:
+                        # An earlier late reply never came: the stream is out of sync.
+                        port.close()
+                    else:
+                        # Skip the late reply instead of dropping the link mid-call.
+                        self.orphaned += 1
                 raise
             finally:
                 future.cancel()
@@ -336,12 +424,13 @@ class Modem:
         call = (self.call_id, "dialing")
         self.active_number = number
         self.call_state = "dialing"
+        # Failed attempts count too, so a busy number cannot be redialled endlessly.
+        self.calls.append(now)
         try:
             await self._emit("outgoing_call", number=number)
             lines = await self.command("ATD" + number + ";", timeout=12, expected_call=call)
             if lines[-1] != "OK":
                 raise RuntimeError("Dial failed: " + " ".join(lines))
-            self.calls.append(now)
             if (self.call_id, self.call_state) == call:
                 await self._emit("call_dialing", number=number)
         except (Exception, asyncio.CancelledError) as exc:
@@ -389,9 +478,9 @@ class Modem:
 
     async def reset_pcm(self, call_id):
         call = (call_id, "connected")
-        result = await self.command("AT+CPCMREG=0,1", timeout=2, expected_call=call)
+        result = await self.command("AT+CPCMREG=0,1", timeout=PCM_TIMEOUT, expected_call=call)
         if not result or result[-1] != "OK":
-            result = await self.command("AT+CPCMREG=0", timeout=2, expected_call=call)
+            result = await self.command("AT+CPCMREG=0", timeout=PCM_TIMEOUT, expected_call=call)
         if not result or result[-1] != "OK":
             LOG.warning("Modem did not confirm USB PCM reset")
 
@@ -415,10 +504,12 @@ class Modem:
         else:
             LOG.warning("Could not confirm 16 kHz USB call audio: %s", reported)
 
-    async def _disable_pcm(self, call_id):
+    async def _disable_pcm(self, call_id, previous=None):
+        if previous is not None and not previous.done():
+            await asyncio.gather(previous, return_exceptions=True)
         call = (call_id, "idle")
         try:
-            result = await self.command("AT+CPCMREG=0,1", timeout=2, expected_call=call)
+            result = await self.command("AT+CPCMREG=0,1", timeout=PCM_TIMEOUT, expected_call=call)
             if result[-1] != "OK":
                 LOG.warning("Modem did not release USB call audio: %s", result)
         except (RuntimeError, OSError) as exc:

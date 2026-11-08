@@ -3,6 +3,7 @@
 import json
 import pathlib
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -13,6 +14,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 with patch.dict(sys.modules, {"speech": SimpleNamespace(SpeechKit=object)}):
     import main as server_module
     from main import Server
+from personal import Personal
 
 
 class DialResponseTests(unittest.IsolatedAsyncioTestCase):
@@ -46,66 +48,134 @@ class DialResponseTests(unittest.IsolatedAsyncioTestCase):
         await service.dial_number(member="test FAMILY")
         service.modem.dial.assert_awaited_once_with("+12025550102")
 
-    async def test_gate_with_optional_pin_and_keypad(self):
-        for pin in ("", "00123456789", "7"):
-            with self.subTest(pin_length=len(pin)):
-                service = Server({"api_token": "test", "gate_pin": pin,
-                                  "family_members": ["Member | +12025550102 | | cover.test"]})
-                service.modem.active_number = "+12025550102"
-                service.modem.call_state = "connected"
-                service.modem.enable_pcm = AsyncMock()
-                service.modem.reset_pcm = AsyncMock()
-                service.audio.start = AsyncMock()
-                service.audio.wait_ready = AsyncMock()
-                service.audio.stop = AsyncMock()
-                service.brain = SimpleNamespace(_ha=AsyncMock(return_value={"state": "closed", "attributes": {"friendly_name": "Test lock"}}))
-                async def choose_gate(_phrase, *, phone_actions, **kwargs):
-                    result = await phone_actions["open_assigned_gate"]({})
-                    return result["instruction"] if isinstance(result, dict) else result
-                service.caller_brain = lambda member: SimpleNamespace(reply=choose_gate)
+    def gate_service(self, pin, store=None):
+        service = Server({"api_token": "test", "gate_pin": pin,
+                          "family_members": ["Member | +12025550102 | | cover.test"]})
+        service.personal = store or Personal(pathlib.Path(self.tmp.name) / "personal.sqlite3")
+        service.modem.active_number = "+12025550102"
+        service.modem.call_state = "connected"
+        service.start_call_audio = AsyncMock()
+        service.audio.stop = AsyncMock()
+        service.brain = SimpleNamespace(_ha=AsyncMock(
+            return_value={"state": "closed", "attributes": {"friendly_name": "Test lock"}}))
 
-                async def dialog(_speech, reply, _source, _play, _hangup, _prompt, *, keypad, on_key, **_):
-                    progress = lambda text: None
-                    await on_key("#")
-                    service.brain._ha.assert_not_awaited()
-                    text = await reply("Открой калитку", on_progress=progress)
-                    if pin:
-                        self.assertIn("решётку", text)
-                        self.assertFalse(any(call.args[0] == "POST" for call in service.brain._ha.await_args_list))
-                        for key in "3*" + pin + "#":
-                            await service.event("dtmf_received", {"digit": key, "call_id": service.modem.call_id})
-                            result = await on_key(keypad.get_nowait())
-                        self.assertIn("отправлена", result)
-                        await on_key("#")
-                    else:
-                        self.assertIn("отправлена", text)
+        async def choose_gate(_phrase, *, phone_actions, **kwargs):
+            result = await phone_actions["open_assigned_gate"]({})
+            return result["instruction"] if isinstance(result, dict) else result
+        service.caller_brain = lambda member: SimpleNamespace(reply=choose_gate)
+        return service
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def posted(service):
+        return [c for c in service.brain._ha.await_args_list if c.args[0] == "POST"]
+
+    async def test_gate_never_opens_without_valid_pin(self):
+        # Caller ID can be spoofed, so an empty or too short PIN disables phone opening entirely.
+        for pin in ("", "7", "1234567890123"):
+            with self.subTest(pin_length=len(pin)):
+                service = self.gate_service(pin)
+
+                async def dialog(_speech, reply, *_args, on_key, **_):
+                    text = await reply("Открой калитку", on_progress=lambda text: None)
+                    self.assertIn("недоступно", text)
+                    self.assertEqual(await on_key("#"), "")
                 with patch.object(server_module, "run_dialog", dialog):
                     await service._dialog("", None)
-                service.brain._ha.assert_any_await("POST", "/api/services/cover/open_cover", {"entity_id": "cover.test"})
-                self.assertEqual(service.events, [])
-                self.assertIsNone(service.keypad)
+                self.assertEqual(self.posted(service), [])
+
+    async def test_gate_opens_with_keypad_pin(self):
+        service = self.gate_service("00123456")
+
+        async def dialog(_speech, reply, _source, _play, _hangup, _prompt, *, keypad, on_key, **_):
+            await on_key("#")
+            service.brain._ha.assert_not_awaited()
+            text = await reply("Открой калитку", on_progress=lambda text: None)
+            self.assertIn("решётку", text)
+            self.assertEqual(self.posted(service), [])
+            for key in "3*00123456#":
+                await service.event("dtmf_received", {"digit": key, "call_id": service.modem.call_id})
+                result = await on_key(keypad.get_nowait())
+            self.assertIn("отправлена", result)
+            self.assertEqual(await on_key("#"), "")
+        with patch.object(server_module, "run_dialog", dialog):
+            await service._dialog("", None)
+        service.brain._ha.assert_any_await("POST", "/api/services/cover/open_cover", {"entity_id": "cover.test"})
+        self.assertEqual(len(self.posted(service)), 1)
+        self.assertEqual(service.events, [])
+        self.assertIsNone(service.keypad)
+
+    async def test_spoken_pin_is_not_accepted(self):
+        service = self.gate_service("1234")
+
+        async def dialog(_speech, reply, *_args, **_):
+            await reply("Открой калитку", on_progress=lambda text: None)
+            text = await reply("1 2 3 4", on_progress=lambda text: None)
+            self.assertIn("клавиатуре", text)
+        with patch.object(server_module, "run_dialog", dialog):
+            await service._dialog("", None)
+        self.assertEqual(self.posted(service), [])
+
+    async def test_pin_lockout_survives_across_calls(self):
+        store = Personal(pathlib.Path(self.tmp.name) / "personal.sqlite3")
+        for _call in range(3):
+            service = self.gate_service("1234", store)
+
+            async def dialog(_speech, reply, *_args, on_key, **_):
+                await reply("Открой калитку", on_progress=lambda text: None)
+                for key in "9999#":
+                    result = await on_key(key)
+                self.assertIn("не подошёл", result)
+            with patch.object(server_module, "run_dialog", dialog):
+                await service._dialog("", None)
+        service = self.gate_service("1234", store)
+
+        async def locked(_speech, reply, *_args, on_key, **_):
+            text = await reply("Открой калитку", on_progress=lambda text: None)
+            self.assertIn("заблокировано", text)
+        with patch.object(server_module, "run_dialog", locked):
+            await service._dialog("", None)
+        self.assertEqual(self.posted(service), [])
 
     async def test_multiple_locks_require_selection_and_reject_unassigned_entity(self):
-        service = Server({"api_token": "test", "owner_locks": ["lock.first", "switch.second"]})
+        service = Server({"api_token": "test", "gate_pin": "1234", "owner_locks": ["lock.first", "switch.second"]})
+        service.personal = Personal(pathlib.Path(self.tmp.name) / "personal.sqlite3")
         service.modem.call_state = "connected"
         service.start_call_audio = AsyncMock()
         service.audio.stop = AsyncMock()
         service.brain = SimpleNamespace(_ha=AsyncMock(return_value={"state": "locked", "attributes": {}}))
+
         async def choose(_phrase, *, phone_actions, **kwargs):
             missing = await phone_actions["open_assigned_gate"]({})
             self.assertEqual(len(missing["locks"]), 2)
             await phone_actions["open_assigned_gate"]({"entity_id": "lock.foreign"})
-            self.assertFalse(any(c.args[0] == "POST" for c in service.brain._ha.await_args_list))
+            self.assertEqual(self.posted(service), [])
             result = await phone_actions["open_assigned_gate"]({"entity_id": "switch.second"})
-            self.assertIn("отправлена", result)
+            self.assertIn("решётку", result["instruction"])
             return result
         service.caller_brain = lambda member: SimpleNamespace(reply=choose)
-        async def dialog(_speech, reply, *args, **kwargs):
+
+        async def dialog(_speech, reply, *args, on_key, **kwargs):
             await reply("Открой второй замок", on_progress=lambda text: None)
+            for key in "1234#":
+                result = await on_key(key)
+            self.assertIn("отправлена", result)
         with patch.object(server_module, "run_dialog", dialog):
             await service._dialog("", None)
         service.brain._ha.assert_any_await("POST", "/api/services/switch/turn_on", {"entity_id": "switch.second"})
-        self.assertEqual(sum(c.args[0] == "POST" for c in service.brain._ha.await_args_list), 1)
+        self.assertEqual(len(self.posted(service)), 1)
+
+    async def test_national_number_format_matches_owner(self):
+        service = Server({"api_token": "test", "allowed_number": "+79991234567"})
+        service.modem.active_number = "89991234567"
+        self.assertTrue(service.caller_allowed())
+        service.modem.active_number = "+79990000000"
+        self.assertFalse(service.caller_allowed())
 
     async def test_failed_session_restarts_only_while_same_call_connected(self):
         service = Server({"api_token": "test"})

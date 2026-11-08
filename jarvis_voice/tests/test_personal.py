@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timedelta, timezone
 import sys
 from pathlib import Path
@@ -88,6 +87,22 @@ class SpeechCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_cache_reuses_complete_pcm(self):
         calls = []
 
+        pcm = bytes(range(256)) * 25  # 6400 bytes, 0.2 s of 16 kHz audio
+
+        async def synthesize(text):
+            calls.append(text)
+            yield pcm
+
+        with TemporaryDirectory() as directory:
+            cache = SpeechCache(directory)
+            for _ in range(2):
+                result = [chunk async for chunk in cache.stream("hello", "denis", "neutral", synthesize)]
+                self.assertEqual(b"".join(result), pcm)
+        self.assertEqual(calls, ["hello"])
+
+    async def test_truncated_stream_is_not_cached(self):
+        calls = []
+
         async def synthesize(text):
             calls.append(text)
             yield b"pcm"
@@ -95,6 +110,6 @@ class SpeechCacheTests(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as directory:
             cache = SpeechCache(directory)
             for _ in range(2):
-                result = [chunk async for chunk in cache.stream("hello", "denis", "neutral", synthesize)]
+                result = [chunk async for chunk in cache.stream("hello world", "denis", "neutral", synthesize)]
                 self.assertEqual(result, [b"pcm"])
-        self.assertEqual(calls, ["hello"])
+        self.assertEqual(calls, ["hello world", "hello world"])

@@ -10,7 +10,6 @@ This module never exposes privileged shell access or automatically changes UVC c
 """
 import asyncio
 import glob
-import json
 import logging
 import os
 import re
