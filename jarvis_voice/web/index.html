@@ -8,6 +8,7 @@
   <script src="assets/panel.js" defer></script>
   <script src="assets/operations.js" defer></script>
   <script src="assets/intelligence.js" defer></script>
+  <script src="assets/camera.js" defer></script>
 </head>
 <body>
   <main class="shell">
@@ -30,6 +31,7 @@
         <button type="button" data-tab="personal">Память и правила</button>
         <button type="button" data-tab="history">Журнал</button>
         <button type="button" data-tab="audit">Аудит и расход</button>
+        <button type="button" data-tab="camera">Камера</button>
         <button type="button" data-tab="hardware">Оборудование</button>
       </nav>
       <div class="workspace-content">
@@ -47,6 +49,32 @@
               <button type="button" data-phone="hangup" disabled>Завершить</button>
             </div>
             <output id="phone-result" aria-live="polite"></output>
+          </section>
+        </section>
+        <section class="view" data-view="camera" hidden>
+          <div class="section-heading"><h2>Камера</h2></div>
+          <section class="card">
+            <div class="camera-preview">
+              <img id="camera-feed" alt="Предпросмотр камеры" hidden>
+              <p id="camera-placeholder">Предпросмотр выключен</p>
+            </div>
+            <div class="actions">
+              <button type="button" class="primary" id="camera-toggle" disabled>Включить предпросмотр</button>
+              <output id="camera-status" aria-live="polite"></output>
+            </div>
+          </section>
+          <section class="card">
+            <h3>Видео</h3>
+            <div class="fields">
+              <label>Формат<select id="camera-format"></select></label>
+              <label>Разрешение<select id="camera-size"></select></label>
+              <label>Кадров в секунду<select id="camera-fps"></select></label>
+            </div>
+            <div class="actions"><button type="button" id="camera-save" disabled>Применить режим</button></div>
+          </section>
+          <section class="card">
+            <h3>Настройки изображения</h3>
+            <div class="fields" id="camera-controls"></div>
           </section>
         </section>
         <form id="settings" autocomplete="off">

@@ -372,7 +372,8 @@ function setTab(key) {
     else tab.removeAttribute("aria-current");
   }
   for (const view of views) view.hidden = view.dataset.view !== key;
-  form.hidden = key === "history" || key === "personal" || key === "audit" || key === "knowledge" || key === "operations" || key === "intelligence";
+  form.hidden = key === "camera" || key === "history" || key === "personal" || key === "audit" || key === "knowledge" || key === "operations" || key === "intelligence";
+  document.dispatchEvent(new CustomEvent("jarvis-tab", {detail: key}));
   if (key === "personal") loadPersonal();
   if (key === "knowledge") loadKnowledge();
   if (key === "audit") loadAudit();

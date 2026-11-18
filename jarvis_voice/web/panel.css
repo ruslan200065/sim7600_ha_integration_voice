@@ -93,3 +93,9 @@ audio {max-width:100%}
 
 .personal-section {margin-bottom:22px}
 .personal-section > .muted {margin:0 0 12px}
+
+.camera-preview {display:grid;place-items:center;min-height:180px;background:#101319;color:#dce4eb;border-radius:10px;overflow:hidden}
+.camera-preview img {display:block;max-width:100%;max-height:65vh;object-fit:contain}
+.camera-preview img[hidden],.camera-preview p[hidden] {display:none}
+.camera-preview + .actions {margin-top:12px}
+#camera-controls output {float:right;font-variant-numeric:tabular-nums}

@@ -9,6 +9,12 @@
 - Add configured LLM failover before tools/speech and optional OpenAI-compatible speech backup.
 - Add per-call diagnostics, autonomous-rule editors and family-message UI.
 
+## 0.9.0
+
+- Вкладка «Камера» с предпросмотром USB-камеры, выбором FPS, разрешения и формата.
+- Доступные настройки изображения определяются драйвером V4L2 и применяются сразу.
+- Захват запускается по кнопке и останавливается при уходе с вкладки или отключении клиента. MJPEG передаётся без перекодирования.
+
 ## 0.8.0
 
 - Убрана работа с GPS-приёмником модема. Компаньон 0.6 удаляет устаревшие GPS-сущности при запуске.

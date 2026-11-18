@@ -884,6 +884,8 @@ class SetupPanel:
     def app(self):
         app = web.Application(middlewares=[self.authorize], client_max_size=32 * 1024)
         register_intelligence(app, self)
+        if hasattr(self.service, "camera_panel"):
+            self.service.camera_panel.register(app)
         app.router.add_post("/sandbox", self.sandbox)
         app.router.add_post("/sandbox/{mode:speak}", self.sandbox)
         app.router.add_get("/", self.home)

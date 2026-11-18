@@ -32,7 +32,8 @@ from speech import SpeechKit
 from brain import Brain
 from q1_audio import audio_route, capture_pcm, recognize_microphone_live, play_stream
 from q1_protocol import led_set
-from q1_hardware import diagnostics, snapshot, apply_original_camera_controls
+from q1_hardware import diagnostics, snapshot, apply_original_camera_controls, camera_device
+from camera_panel import CameraPanel
 from q1_media import Q1Media
 from setup_panel import SetupPanel
 from history import History, RETENTION_DAYS
@@ -125,6 +126,8 @@ class Server:
             data_dir / "history.sqlite3",
             retention_days=options.get("history_retention_days", RETENTION_DAYS),
         )
+        self.camera_settings_path = data_dir / "camera_settings.json"
+        self.camera_panel = CameraPanel(self)
         self.call_outbox_path = data_dir / "call_outbox.sqlite3"
         self.call_outbox = None
         self.personal = Personal(data_dir / "personal.sqlite3")
@@ -1316,8 +1319,14 @@ class Server:
             device = self.o.get("q1_video_device", "")
         if not device:
             raise RuntimeError("Configure q1_video_device")
+        device = camera_device(device)
         async with self.camera_lock:
             now = asyncio.get_running_loop().time
+            if self.camera_panel.device == device:
+                current = self.camera_panel.last_frame
+                if current and now() - current[0] < 2:
+                    return current[1]
+                raise RuntimeError("Предпросмотр ещё не получил кадр камеры.")
             if self.camera_frame and self.camera_frame[0] == device and now() - self.camera_frame[1] < 1:
                 return self.camera_frame[2]
             content = await snapshot(device)
