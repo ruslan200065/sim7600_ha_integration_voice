@@ -10,7 +10,6 @@ MANUFACTURER = "SIMCom"
 CONF_SERIAL_PORT = "serial_port"
 CONF_BAUD_RATE = "baud_rate"
 CONF_POLLING_INTERVAL = "polling_interval"
-CONF_GNSS_INTERVAL = "gnss_interval"
 CONF_DEBUG_MODE = "debug_mode"
 CONF_DEFAULT_RECIPIENT = "default_recipient"
 CONF_BALANCE_USSD = "balance_ussd"
@@ -19,10 +18,8 @@ CONF_MANUAL_PATH = "manual_path"
 
 DEFAULT_BAUD = 115200
 DEFAULT_POLLING_INTERVAL = 60  # seconds
-DEFAULT_GNSS_INTERVAL = 300  # seconds
 DEFAULT_BALANCE_INTERVAL = 12  # hours
 
-GPS_STALE_AFTER = 600  # seconds without fix -> location unknown
 SMS_CLEANUP_INTERVAL = 3600  # seconds between AT+CMGD=1,1
 NO_REGISTRATION_ISSUE_AFTER = 1800  # seconds without network registration
 

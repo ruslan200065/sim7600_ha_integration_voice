@@ -908,7 +908,7 @@ for (const button of document.querySelectorAll("[data-check]")) {
 }
 
 // Checks that are quick and silent; the 5-second recording and the speaker tone stay manual.
-const CHECK_ALL = ["network", "modem", "gps", "camera", "microphone", "speech", "deepseek"];
+const CHECK_ALL = ["network", "modem", "camera", "microphone", "speech", "deepseek"];
 const checkAllButton = document.querySelector("#check-all");
 const checkAllResult = document.querySelector("#check-all-result");
 checkAllButton.addEventListener("click", async () => {

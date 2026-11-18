@@ -1,4 +1,4 @@
-"""Q1 microphone configuration and GPS lock indications."""
+"""Q1 microphone configuration indicator."""
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
 
 from .const import DOMAIN
@@ -7,19 +7,16 @@ from .entity import JarvisEntity
 
 async def async_setup_entry(hass, entry, async_add_entities):
     c = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([Q1Flag(c, "gps_fix"), Q1Flag(c, "q1_mic"), MicrophoneSound(c.microphone)])
+    async_add_entities([MicrophoneConfigured(c), MicrophoneSound(c.microphone)])
 
 
-class Q1Flag(JarvisEntity, BinarySensorEntity):
-    def __init__(self, coordinator, key):
-        super().__init__(coordinator, key)
-        self.key = key
+class MicrophoneConfigured(JarvisEntity, BinarySensorEntity):
+    def __init__(self, coordinator):
+        super().__init__(coordinator, "q1_mic")
 
     @property
     def is_on(self):
         d = self.coordinator.data or {}
-        if self.key == "gps_fix":
-            return bool((d.get("gps") or {}).get("fix"))
         return bool((d.get("capabilities") or {}).get("microphone_configured"))
 
 

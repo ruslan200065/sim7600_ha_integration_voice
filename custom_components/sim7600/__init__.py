@@ -36,7 +36,7 @@ from .coordinator import SIM7600DataUpdateCoordinator, entry_option
 from .modem import InvalidInputError, ModemError, SIM7600Modem
 from .sms_codec import PHONE_NUMBER_PATTERN, USSD_CODE_PATTERN
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.DEVICE_TRACKER, Platform.NOTIFY]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NOTIFY]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -72,12 +72,18 @@ LEGACY_UNIQUE_ID_SUFFIXES = {
     "SIM7600FirmwareSensor": "firmware_version",
     "SIM7600SIMStatusSensor": "sim_status",
     "SIM7600LastSMSSensor": "last_sms",
-    "SIM7600SpeedSensor": "speed",
-    "SIM7600AltitudeSensor": "altitude",
-    "SIM7600DateSensor": "gnss_timestamp",
 }
-# Merged into gnss_timestamp.
-LEGACY_REMOVED_SUFFIXES = ("SIM7600TimeSensor",)
+LEGACY_REMOVED_SUFFIXES = {
+    "GPS",
+    "speed",
+    "altitude",
+    "gnss_timestamp",
+    "gps_last_fix",
+    "SIM7600SpeedSensor",
+    "SIM7600AltitudeSensor",
+    "SIM7600DateSensor",
+    "SIM7600TimeSensor",
+}
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -199,7 +205,7 @@ def _async_migrate_unique_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
             continue
         suffix = reg_entry.unique_id[len(prefix) :]
         if suffix in LEGACY_REMOVED_SUFFIXES:
-            LOGGER.debug("Removing merged legacy entity %s", reg_entry.entity_id)
+            LOGGER.debug("Removing retired entity %s", reg_entry.entity_id)
             registry.async_remove(reg_entry.entity_id)
             continue
         new_key = LEGACY_UNIQUE_ID_SUFFIXES.get(suffix)

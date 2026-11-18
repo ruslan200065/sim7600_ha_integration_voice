@@ -47,8 +47,8 @@ class SmartFeatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await b._tool('learn_device_correction',args))['needs_confirmation'])
         self.assertTrue((await b._tool('learn_device_correction',args))['needs_confirmation'])
         self.assertEqual(b.autonomy.corrections('one'),[])
-        b.turn=2
-        self.assertTrue((await b._tool('learn_device_correction',args))['saved'])
+        b._timed_reply = lambda *_: b._tool('learn_device_correction', args)
+        self.assertTrue((await b.reply('Да'))['saved'])
         self.assertEqual(b.autonomy.resolve('one','большой свет'),'light.room')
         self.assertEqual(b.autonomy.resolve('two','большой свет'),'')
         b.autonomy.learn('one','Скрытый свет','light.secret',True)
@@ -68,8 +68,8 @@ class SmartFeatureTests(unittest.IsolatedAsyncioTestCase):
         args={'entity_id':'light.room','service':'turn_on','confirmed':True}
         self.assertTrue((await b._tool('call_ha_service',args))['needs_confirmation'])
         self.assertFalse(any(call.args[0]=='POST' for call in b._ha.await_args_list))
-        b.turn=2
-        self.assertTrue((await b._tool('call_ha_service',args))['accepted'])
+        b._timed_reply = lambda *_: b._tool('call_ha_service', args)
+        self.assertTrue((await b.reply('Да'))['accepted'])
         self.assertEqual(sum(call.args[0]=='POST' for call in b._ha.await_args_list),1)
     async def test_simulation_normalizes_old_and_canonical_shapes_without_post(self):
         b=self.brain();b._ha=AsyncMock(return_value=[{'entity_id':'sensor.lux','state':'10','attributes':{}}])

@@ -18,15 +18,12 @@ from .const import (
     CONF_BALANCE_INTERVAL,
     CONF_BALANCE_USSD,
     CONF_DEFAULT_RECIPIENT,
-    CONF_GNSS_INTERVAL,
     CONF_POLLING_INTERVAL,
     DEFAULT_BALANCE_INTERVAL,
-    DEFAULT_GNSS_INTERVAL,
     DEFAULT_POLLING_INTERVAL,
     DOMAIN,
     EVENT_INCOMING_CALL,
     EVENT_SMS_RECEIVED,
-    GPS_STALE_AFTER,
     ISSUE_NO_REGISTRATION,
     ISSUE_SIM_PIN,
     LOGGER,
@@ -35,7 +32,7 @@ from .const import (
     SMS_CLEANUP_INTERVAL,
 )
 from .modem import ModemError, SIM7600Modem
-from .types import GpsData, SmsData
+from .types import SmsData
 
 # A ringing call repeats RING (+CLIP) every few seconds. Events inside this
 # window belong to the same call.
@@ -58,7 +55,6 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Fetch SIM7600 data and route unsolicited modem events.
 
     - Static data (IMEI, firmware, manufacturer, model) is read once.
-    - GPS is polled every gnss_interval; the fix expires after 10 minutes.
     - Last known values are kept when a single AT command returns nothing.
     - UpdateFailed is raised when the connection fails or the modem stops
       answering (ModemTimeoutError after consecutive timeouts).
@@ -73,9 +69,6 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Initialize the coordinator."""
         self.polling_interval: int = int(
             entry_option(entry, CONF_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL)
-        )
-        self.gnss_interval: int = int(
-            entry_option(entry, CONF_GNSS_INTERVAL, DEFAULT_GNSS_INTERVAL)
         )
         super().__init__(
             hass,
@@ -103,10 +96,6 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.manufacturer: str | None = None
         self.model: str | None = None
 
-        self.gps_enabled: bool = False
-        self.last_gnss_update: float = 0.0
-        self._last_fix_time: float | None = None
-
         self._consecutive_failures: int = 0
 
         # Last known values.
@@ -118,7 +107,6 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cached_reg_status: int | None = None
         self._cached_gprs_reg_status: int | None = None
         self._cached_sim_status: str | None = None
-        self._cached_gps: GpsData | None = None
         self._cached_last_sms: SmsData | None = None
 
         # First cleanup only after one interval, so read SMS that existed
@@ -226,10 +214,6 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.model is None:
             self.model = await modem.get_model()
 
-        if not self.gps_enabled:
-            self.gps_enabled = await modem.set_gps(True)
-            LOGGER.debug("GPS enabled: %s", self.gps_enabled)
-
         new_rssi = await modem.get_signal_quality()
         if new_rssi is not None:
             self._cached_rssi = new_rssi
@@ -258,23 +242,9 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         now = time.time()
         await self._process_sms(now)
 
-        if self.gps_enabled and now - self.last_gnss_update > self.gnss_interval:
-            new_gps = await modem.get_gps_info()
-            self.last_gnss_update = now
-            if new_gps is not None:
-                self._cached_gps = new_gps
-                self._last_fix_time = now
-                LOGGER.debug(
-                    "GPS fix: lat=%.6f, lon=%.6f", new_gps.latitude, new_gps.longitude
-                )
-
         await self._update_balance(now)
         self._update_issues(now)
 
-        gps_fresh = (
-            self._last_fix_time is not None
-            and now - self._last_fix_time <= GPS_STALE_AFTER
-        )
         return {
             "rssi": self._cached_rssi,
             "signal_dbm": self._cached_signal_dbm,
@@ -289,12 +259,6 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "model": self.model,
             "sim_status": self._cached_sim_status,
             "last_sms": self._cached_last_sms,
-            "gps": self._cached_gps if gps_fresh else None,
-            "gps_last_fix": (
-                dt_util.utc_from_timestamp(self._last_fix_time)
-                if self._last_fix_time is not None
-                else None
-            ),
             "balance": self._balance,
             "balance_updated": (
                 dt_util.utc_from_timestamp(self._balance_updated)
@@ -305,6 +269,7 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _process_sms(self, now: float) -> None:
         messages = await self.modem.get_unread_sms()
+        deletion_failed = False
         for sms in messages:
             self._cached_last_sms = sms
             self.hass.bus.async_fire(
@@ -319,13 +284,18 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 },
             )
             for index in sms.indices:
-                await self.modem.delete_sms(index)
+                if not await self.modem.delete_sms(index):
+                    deletion_failed = True
 
+        if deletion_failed:
+            LOGGER.debug(
+                "Postponing bulk SMS cleanup after an individual delete failure"
+            )
+            return
         if now - self._last_sms_cleanup >= SMS_CLEANUP_INTERVAL:
             if self.modem.has_pending_sms:
                 LOGGER.debug("Skipping SMS cleanup: multipart message incomplete")
-            else:
-                await self.modem.delete_read_sms()
+            elif await self.modem.delete_read_sms():
                 self._last_sms_cleanup = now
 
     async def _update_balance(self, now: float) -> None:

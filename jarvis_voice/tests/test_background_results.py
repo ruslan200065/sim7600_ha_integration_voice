@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from brain import Brain, REPLY_TURN
+from brain import Brain, REPLY_ACCEPTED, REPLY_TURN
 from voice_dialog import CallOutput, run_dialog
 
 
@@ -75,9 +75,11 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         finally:
             REPLY_TURN.reset(token)
         token = REPLY_TURN.set(2)
+        accepted = REPLY_ACCEPTED.set(True)
         try:
             self.assertIsNone(brain._needs_confirmation(key, {"confirmed": True}, "Выполнить?"))
         finally:
+            REPLY_ACCEPTED.reset(accepted)
             REPLY_TURN.reset(token)
 
     async def test_background_result_is_spoken_after_newer_turn(self):

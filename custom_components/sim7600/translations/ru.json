@@ -1,5 +1,5 @@
 {
-  "title": "SIM7600 4G и GPS шлюз",
+  "title": "SIM7600 4G шлюз",
   "config": {
     "flow_title": "SIM7600 ({port})",
     "step": {
@@ -10,7 +10,6 @@
           "serial_port": "Последовательный порт",
           "baud_rate": "Скорость (бод)",
           "polling_interval": "Интервал опроса (секунды)",
-          "gnss_interval": "Интервал GNSS (секунды)",
           "debug_mode": "Режим отладки"
         }
       },
@@ -21,7 +20,6 @@
           "manual_path": "Путь к последовательному порту",
           "baud_rate": "Скорость (бод)",
           "polling_interval": "Интервал опроса (секунды)",
-          "gnss_interval": "Интервал GNSS (секунды)",
           "debug_mode": "Режим отладки"
         }
       },
@@ -30,7 +28,6 @@
         "description": "Модуль SIM7600 найден на {port}. Настройте интервалы опроса.",
         "data": {
           "polling_interval": "Интервал опроса (секунды)",
-          "gnss_interval": "Интервал GNSS (секунды)",
           "debug_mode": "Режим отладки"
         }
       }
@@ -53,7 +50,6 @@
         "description": "Настройте опрос, получателя SMS по умолчанию для объекта уведомлений и необязательный USSD-запрос баланса.",
         "data": {
           "polling_interval": "Интервал опроса (секунды)",
-          "gnss_interval": "Интервал GNSS (секунды)",
           "debug_mode": "Режим отладки",
           "default_recipient": "Получатель SMS по умолчанию",
           "balance_ussd": "USSD-код баланса",
@@ -112,14 +108,7 @@
       "firmware_version": { "name": "Версия прошивки" },
       "sim_status": { "name": "Состояние SIM" },
       "last_sms": { "name": "Последнее SMS" },
-      "speed": { "name": "Скорость" },
-      "altitude": { "name": "Высота" },
-      "gnss_timestamp": { "name": "Время GNSS" },
-      "gps_last_fix": { "name": "Последняя GPS-фиксация" },
       "balance": { "name": "Баланс" }
-    },
-    "device_tracker": {
-      "gps": { "name": "GPS" }
     },
     "notify": {
       "sms": { "name": "SMS" }

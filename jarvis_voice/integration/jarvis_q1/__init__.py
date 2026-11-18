@@ -10,6 +10,8 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from homeassistant.helpers import entity_registry as er
+
 from .client import JarvisClient, JarvisError
 from .const import CONF_ENTRY_ID, CONF_HOST, CONF_PORT, CONF_TOKEN, DOMAIN
 from .coordinator import JarvisCoordinator, MicrophoneCoordinator
@@ -19,6 +21,12 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.BUTTON,
              Platform.CAMERA, Platform.MEDIA_PLAYER, Platform.SWITCH]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+_RETIRED_ENTITIES = {
+    ("sensor", "jarvis_q1_gps_latitude"),
+    ("sensor", "jarvis_q1_gps_longitude"),
+    ("binary_sensor", "jarvis_q1_gps_fix"),
+    ("button", "jarvis_q1_gps_start"),
+}
 
 
 async def async_setup(hass, config):
@@ -38,6 +46,10 @@ async def async_setup_entry(hass, entry):
     await coordinator.microphone.async_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    registry = er.async_get(hass)
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if (entity.domain, entity.unique_id) in _RETIRED_ENTITIES:
+            registry.async_remove(entity.entity_id)
     return True
 
 
@@ -85,9 +97,6 @@ def _register_services(hass):
     async def handle_led(call):
         await coord(call).client.post("/q1/led", {"color": call.data["color"]})
 
-    async def handle_gps(call):
-        await coord(call).client.post("/q1/gps/start", {"assisted": call.data.get("assisted", False)})
-
     async def handle_probe(call):
         c = coord(call)
         try:
@@ -114,7 +123,5 @@ def _register_services(hass):
     hass.services.async_register(DOMAIN, "set_led", handle_led, schema=vol.Schema({
         **common, vol.Required("color"): vol.In(
             ["red", "green", "blue", "white", "pink", "yellow", "cyan", "off"])}))
-    hass.services.async_register(DOMAIN, "gps_start", handle_gps, schema=vol.Schema({
-        **common, vol.Optional("assisted", default=False): cv.boolean}))
     hass.services.async_register(DOMAIN, "probe", handle_probe, schema=vol.Schema(common),
                                  supports_response=SupportsResponse.ONLY)

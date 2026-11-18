@@ -32,6 +32,8 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
         self.last_answer = ""
         self.probe = {}
         self.microphone = None
+        self._call_event_stream = None
+        self._call_event_cursor = 0
         self._last_call_state = None
         self._last_number = ""
 
@@ -65,18 +67,31 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
             raise UpdateFailed(str(exc)) from exc
         if not isinstance(data, dict):
             raise UpdateFailed("JARVIS /status returned an unexpected payload")
-        if data.get("call_state") != "offline":
-            try:
-                gps = await self.client.get("/q1/gps", timeout=9)
-            except JarvisAuthError as exc:
-                raise ConfigEntryAuthFailed(str(exc)) from exc
-            except JarvisError:
-                gps = {}
-            data["gps"] = gps if isinstance(gps, dict) else {}
+        if "call_event_stream" in data:
+            self._replay_call_events(data["call_event_stream"], data.get("call_events", []))
         else:
-            data["gps"] = {}
-        self._fire_call_events(data)
+            self._fire_call_events(data)
         return data
+
+    def _replay_call_events(self, stream, events):
+        if self._call_event_stream is None:
+            # Start at the next event when joining a running add-on.
+            self._call_event_cursor = events[-1]["sequence"] if events else 0
+        elif stream != self._call_event_stream:
+            self._call_event_cursor = 0
+        self._call_event_stream = stream
+
+        for event in events:
+            sequence = event["sequence"]
+            if sequence <= self._call_event_cursor:
+                continue
+            if event["delivery"] == "pending":
+                break
+            if event["delivery"] == "companion":
+                self.hass.bus.async_fire(
+                    event["name"], {**event["data"], "entry_id": self.entry.entry_id},
+                )
+            self._call_event_cursor = sequence
 
     def _fire_call_events(self, data):
         current = data.get("call_state")

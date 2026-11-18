@@ -18,4 +18,4 @@ EVENT_CALL_ENDED = "jarvis_call_ended"
 STATUS_INTERVAL_SECONDS = 20
 MICROPHONE_INTERVAL_SECONDS = 15
 
-SERVICES = ("speak", "listen", "transcribe", "call", "hangup", "send_dtmf", "set_led", "gps_start", "probe")
+SERVICES = ("speak", "listen", "transcribe", "call", "hangup", "send_dtmf", "set_led", "probe")

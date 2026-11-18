@@ -9,6 +9,7 @@ from notifications import NotificationPolicies
 from timeline import Timeline
 """JARVIS Voice Bridge: HA add-on HTTP API, SIM7600 call management, SpeechKit and DeepSeek."""
 import asyncio
+from collections import deque
 import json
 import hmac
 import re
@@ -30,7 +31,7 @@ from voice_dialog import CallOutput, run_dialog
 from speech import SpeechKit
 from brain import Brain
 from q1_audio import audio_route, capture_pcm, recognize_microphone_live, play_stream
-from q1_protocol import gps_status, gps_start, led_set
+from q1_protocol import led_set
 from q1_hardware import diagnostics, snapshot, apply_original_camera_controls
 from q1_media import Q1Media
 from setup_panel import SetupPanel
@@ -95,6 +96,11 @@ class Server:
         self.mode = "booting"
         self.last_error = ""
         self.events = []
+        self.call_events = deque(maxlen=128)
+        self.call_event_stream = secrets.token_hex(8)
+        self.call_event_sequence = 0
+        self.incoming_call_event = None
+        self.incoming_call_timer = None
         self.api_token = options.get("api_token","")
         if not self.api_token:
             token_path=Path("/data/companion_api_token")
@@ -200,6 +206,9 @@ class Server:
         self.sms_task = asyncio.create_task(self.sync_sms())
 
     async def close(self):
+        if self.incoming_call_timer is not None:
+            self.incoming_call_timer.cancel()
+            self.incoming_call_timer = None
         if self.events_task:
             self.events_task.cancel()
             await asyncio.gather(self.events_task, return_exceptions=True)
@@ -271,21 +280,50 @@ class Server:
         owner = phone_key(self.o.get("allowed_number"), self.country)
         return key in self.family or (bool(owner) and key == owner)
 
-    def fire_ha_event(self, name, data):
+    def fire_ha_event(self, name, data, *, delivery=None):
         """Send an event to the Home Assistant bus without blocking the caller."""
         if self.o.get("ha_events", True) is False or not getattr(self.brain, "hass_token", ""):
+            if delivery is not None:
+                delivery["delivery"] = "companion"
             return
         tasks = self.__dict__.setdefault("ha_event_tasks", set())
+
+        if delivery is not None:
+            delivery["delivery"] = "pending"
 
         async def send():
             try:
                 await self.brain._ha("POST", "/api/events/" + name, data, timeout=5)
             except Exception as exc:
+                if delivery is not None:
+                    delivery["delivery"] = "companion"
                 LOG.warning("Could not send %s to Home Assistant: %s", name, exc)
+            else:
+                if delivery is not None:
+                    delivery["delivery"] = "direct"
 
         task = asyncio.create_task(send())
         tasks.add(task)
         task.add_done_callback(tasks.discard)
+
+    def _record_call_event(self, name, data, *, delivery="companion"):
+        self.call_event_sequence += 1
+        event = {
+            "sequence": self.call_event_sequence,
+            "name": name,
+            "data": data,
+            "delivery": delivery,
+        }
+        self.call_events.append(event)
+        return event
+
+    def _publish_incoming_call(self):
+        if self.incoming_call_timer is None:
+            return
+        self.incoming_call_timer.cancel()
+        self.incoming_call_timer = None
+        event = self.incoming_call_event
+        self.fire_ha_event(event["name"], dict(event["data"]), delivery=event)
 
     def _telephony_event(self, name, data):
         if name in ("incoming_call", "outgoing_call", "caller_id", "call_connected"):
@@ -294,20 +332,35 @@ class Server:
                 self.event_number = number
         if name == "incoming_call":
             self.event_number = data.get("number") or ""
+            self.incoming_call_event = self._record_call_event(
+                "jarvis_call_incoming",
+                {"number": self.event_number, "known": self.known_number(self.event_number),
+                 "call_id": self.modem.call_id},
+                delivery="pending",
+            )
+            self.incoming_call_timer = asyncio.get_running_loop().call_later(
+                2, self._publish_incoming_call,
+            )
         if name == "caller_id":
             number = getattr(self, "event_number", "")
-            self.fire_ha_event("jarvis_call_incoming", {
-                "number": number,
-                "known": self.known_number(number),
-                "call_id": self.modem.call_id,
-            })
-        elif name in ("call_ended", "call_failed"):
-            self.fire_ha_event("jarvis_call_ended", {
+            event = self.incoming_call_event
+            if event is not None and not event["data"]["number"]:
+                event["data"].update(number=number, known=self.known_number(number))
+                self._publish_incoming_call()
+        elif name in ("call_ended", "call_failed", "modem_offline"):
+            if name == "modem_offline" and not (
+                self.incoming_call_event or getattr(self, "event_number", "")
+            ):
+                return
+            self._publish_incoming_call()
+            event = self._record_call_event("jarvis_call_ended", {
                 "number": getattr(self, "event_number", ""),
                 "reason": data.get("reason") or name,
-                "call_id": data.get("call_id"),
+                "call_id": data.get("call_id", self.modem.call_id),
             })
+            self.fire_ha_event(event["name"], dict(event["data"]), delivery=event)
             self.event_number = ""
+            self.incoming_call_event = None
         elif name == "dtmf_received" and not (
             self.keypad and self.keypad[0] == data.get("call_id")
         ):
@@ -1000,13 +1053,26 @@ class Server:
         return await handler(request)
 
     async def health(self, request):
-        return web.json_response({"ok":True,"modem":self.modem.call_state,"mode":self.mode})
+        return web.json_response({
+            "ok": True,
+            "modem": self.modem.call_state,
+            "mode": self.mode,
+        })
+
+    async def readiness(self, request):
+        ready = self.modem.call_state != "offline"
+        return web.json_response(
+            {"ready": ready, "modem": self.modem.call_state, "speech_configured": self.speech is not None},
+            status=200 if ready else 503,
+        )
 
     async def status(self, request):
         return web.json_response({"mode":self.mode,"call_state":self.modem.call_state,
              "active_number":self.modem.active_number,"signal":self.modem.signal,
              "model":self.modem.model,"firmware":self.modem.firmware,
              "last_error":self.last_error,"events":self.events[-10:],
+            "call_event_stream": self.call_event_stream,
+            "call_events": list(self.call_events),
             "speaker_playing":self.media.playing,
             "capabilities":{
                 "camera_configured":bool(self.o.get("q1_video_device")),
@@ -1240,19 +1306,6 @@ class Server:
             self.camera_frame = None
         return web.json_response(result)
 
-    async def q1_gps(self,request):
-        try:
-            return web.json_response(await gps_status(self.modem))
-        except (RuntimeError,ConnectionError) as exc:
-            raise web.HTTPConflict(text=str(exc)[:250])
-
-    async def q1_gps_start(self,request):
-        data=await request.json()
-        try:
-            return web.json_response(await gps_start(self.modem,assisted=data.get("assisted") is True))
-        except (RuntimeError,ConnectionError) as exc:
-            raise web.HTTPConflict(text=str(exc)[:250])
-
     async def q1_led(self,request):
         data=await request.json()
         try:
@@ -1378,7 +1431,7 @@ class Server:
     def app(self):
         app=web.Application(middlewares=[self.auth],client_max_size=256*1024)
         for method,path,fn in (
-            ("GET","/health",self.health),("GET","/status",self.status),
+            ("GET","/health",self.health),("GET","/ready",self.readiness),("GET","/status",self.status),
             ("POST","/notify",self.notify_event),("POST","/dial",self.dial),("POST","/hangup",self.hangup),
             ("POST","/answer",self.answer),("POST","/chat",self.chat),
             ("POST","/dtmf",self.send_dtmf),
@@ -1388,8 +1441,6 @@ class Server:
             ("GET","/q1/snapshot",self.q1_snapshot),
             ("GET","/q1/shared-photo/{ticket}",self.shared_photo),
             ("POST","/q1/camera/apply_original",self.q1_camera_setup),
-            ("GET","/q1/gps",self.q1_gps),
-            ("POST","/q1/gps/start",self.q1_gps_start),
             ("POST","/q1/led",self.q1_led),
             ("POST","/q1/play_media",self.q1_play_media),
             ("POST","/q1/stop_media",self.q1_stop_media),

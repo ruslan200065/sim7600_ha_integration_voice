@@ -148,24 +148,6 @@ set_led:
             - yellow
             - cyan
             - "off"
-gps_start:
-  name: Activate GPS
-  description: Start the SIM7600 GNSS receiver.
-  fields:
-    entry_id:
-      name: Gateway
-      description: JARVIS Q1 config entry. Optional when only one gateway is configured.
-      required: false
-      selector:
-        config_entry:
-          integration: jarvis_q1
-    assisted:
-      name: A-GPS mode
-      description: Use assisted GPS (requires mobile data) for a faster first fix.
-      required: false
-      default: false
-      selector:
-        boolean:
 probe:
   name: Inspect Q1 hardware
   description: Return detected camera, serial devices and audio sources/sinks.

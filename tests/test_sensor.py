@@ -1,36 +1,20 @@
 """Tests for SIM7600 sensor entities."""
 
-from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
 from homeassistant.components.sensor import SensorDeviceClass
-from homeassistant.const import UnitOfSpeed
 
 from custom_components.sim7600.sensor import (
     SENSORS_BY_KEY,
     SIM7600Sensor,
-    parse_gnss_timestamp,
     truncate_state,
 )
-from custom_components.sim7600.types import GpsData, SmsData
+from custom_components.sim7600.types import SmsData
 
 
 @pytest.fixture
-def gps_data() -> GpsData:
-    """Sample GPS fix."""
-    return GpsData(
-        latitude=52.524,
-        longitude=13.409,
-        altitude=50.0,
-        speed=1.5,
-        date="250321",
-        time="023504.0",
-    )
-
-
-@pytest.fixture
-def mock_coordinator(gps_data: GpsData) -> MagicMock:
+def mock_coordinator() -> MagicMock:
     """Coordinator mock with full data."""
     coordinator = MagicMock()
     coordinator.manufacturer = "SIMCOM INCORPORATED"
@@ -45,7 +29,6 @@ def mock_coordinator(gps_data: GpsData) -> MagicMock:
         "sim_status": "READY",
         "reg_status": 1,
         "gprs_reg_status": 5,
-        "gps": gps_data,
     }
     return coordinator
 
@@ -102,50 +85,6 @@ def test_sim_status_sensor(mock_coordinator: MagicMock, mock_entry: MagicMock) -
     assert sensor.native_value == "READY"
     mock_coordinator.data = {"sim_status": None}
     assert sensor.native_value is None
-
-
-def test_speed_sensor_is_knots(
-    mock_coordinator: MagicMock, mock_entry: MagicMock, gps_data: GpsData
-) -> None:
-    """+CGPSINFO speed is in knots; HA handles unit conversion."""
-    sensor = _sensor(mock_coordinator, mock_entry, "speed")
-    assert sensor.native_value == gps_data.speed
-    assert sensor.native_unit_of_measurement == UnitOfSpeed.KNOTS
-    assert sensor.device_class == SensorDeviceClass.SPEED
-
-
-def test_altitude_sensor_from_gps(
-    mock_coordinator: MagicMock, mock_entry: MagicMock, gps_data: GpsData
-) -> None:
-    """Altitude sensor reads the GPS fix."""
-    assert _sensor(mock_coordinator, mock_entry, "altitude").native_value == 50.0
-
-
-def test_gnss_timestamp_combines_date_and_time(
-    mock_coordinator: MagicMock, mock_entry: MagicMock
-) -> None:
-    """GNSS date and time are one UTC timestamp sensor."""
-    sensor = _sensor(mock_coordinator, mock_entry, "gnss_timestamp")
-    assert sensor.device_class == SensorDeviceClass.TIMESTAMP
-    assert sensor.native_value == datetime(2021, 3, 25, 2, 35, 4, tzinfo=UTC)
-
-
-def test_parse_gnss_timestamp_fraction_and_garbage() -> None:
-    """Fractional seconds are kept; garbage returns None."""
-    assert parse_gnss_timestamp("071125", "123045.5") == datetime(
-        2025, 11, 7, 12, 30, 45, 500000, tzinfo=UTC
-    )
-    assert parse_gnss_timestamp("", "") is None
-    assert parse_gnss_timestamp("991399", "999999") is None
-
-
-def test_gps_sensors_none_without_fix(
-    mock_coordinator: MagicMock, mock_entry: MagicMock
-) -> None:
-    """GPS sensors return None when there is no (fresh) fix."""
-    mock_coordinator.data = {"gps": None}
-    for key in ("speed", "altitude", "gnss_timestamp"):
-        assert _sensor(mock_coordinator, mock_entry, key).native_value is None
 
 
 def test_reg_status_enum(mock_coordinator: MagicMock, mock_entry: MagicMock) -> None:

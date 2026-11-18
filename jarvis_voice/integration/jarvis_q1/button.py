@@ -1,4 +1,4 @@
-"""Buttons for a microphone voice turn and GPS fix."""
+"""Buttons for a microphone voice turn and ending a call."""
 from homeassistant.components.button import ButtonEntity
 
 from .const import DOMAIN
@@ -7,7 +7,7 @@ from .entity import JarvisEntity
 
 async def async_setup_entry(hass, entry, async_add_entities):
     c = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([Q1Button(c, "listen"), Q1Button(c, "gps_start"), Q1Button(c, "hangup")])
+    async_add_entities([Q1Button(c, "listen"), Q1Button(c, "hangup")])
 
 
 class Q1Button(JarvisEntity, ButtonEntity):
@@ -31,8 +31,6 @@ class Q1Button(JarvisEntity, ButtonEntity):
     async def async_press(self):
         if self.key == "listen":
             await self.coordinator.listen()
-        elif self.key == "gps_start":
-            await self.coordinator.client.post("/q1/gps/start", {"assisted": False})
         else:
             await self.coordinator.client.post("/hangup", {})
         await self.coordinator.async_request_refresh()

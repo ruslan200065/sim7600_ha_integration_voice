@@ -549,15 +549,3 @@ async def test_firmware_strips_prefix(modem: SIM7600Modem, fake: FakeSerial) -> 
     """'+CGMR: ' and 'Revision:' prefixes are removed."""
     fake.responses["AT+CGMR"] = "\r\n+CGMR: LE20B04SIM7600M22\r\n\r\nOK\r\n"
     assert await modem.get_firmware() == "LE20B04SIM7600M22"
-
-
-async def test_gps_fix_has_timestamp(modem: SIM7600Modem, fake: FakeSerial) -> None:
-    """A GPS fix records when it was received."""
-    fake.responses["AT+CGPSINFO"] = (
-        "\r\n+CGPSINFO: 5231.450000,N,01324.550000,E,071125,123045.0,10.0,5.4,0.0\r\n"
-        "\r\nOK\r\n"
-    )
-    gps = await modem.get_gps_info()
-    assert gps is not None
-    assert gps.speed == 5.4
-    assert gps.fix_time is not None

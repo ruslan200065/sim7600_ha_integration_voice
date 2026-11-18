@@ -6,7 +6,7 @@ import pytest
 from pdu_helpers import make_deliver_pdu
 
 from custom_components.sim7600.modem import SIM7600Modem
-from custom_components.sim7600.types import GpsData, SmsData
+from custom_components.sim7600.types import SmsData
 
 
 @pytest.fixture
@@ -60,82 +60,6 @@ async def test_get_sim_status_no_response(modem: SIM7600Modem) -> None:
     """Keine CPIN-Zeile → None."""
     with patch.object(modem, "send_command", return_value=["OK"]):
         result = await modem.get_sim_status()
-    assert result is None
-
-
-# --- GPS-Informationen ---
-
-
-async def test_get_gps_info_all_fields_present(modem: SIM7600Modem) -> None:
-    """Vollständige GPS-Antwort → GpsData-Objekt mit allen 6 Feldern."""
-    line = "+CGPSINFO: 5231.450000,N,01324.550000,E,250321,023504.0,10.0,1.5,0.0"
-    with patch.object(modem, "send_command", return_value=[line, "OK"]):
-        result = await modem.get_gps_info()
-    assert isinstance(result, GpsData)
-    assert result.altitude == 10.0
-    assert result.speed == 1.5
-    assert result.date == "250321"
-    assert result.time == "023504.0"
-
-
-async def test_get_gps_info_northern_eastern(modem: SIM7600Modem) -> None:
-    """Nord/Ost-Koordinaten korrekt in Dezimalgrad umgerechnet."""
-    line = "+CGPSINFO: 5231.450000,N,01324.550000,E,250321,023504.0,10.0,0.0,0.0"
-    with patch.object(modem, "send_command", return_value=[line, "OK"]):
-        result = await modem.get_gps_info()
-    assert result is not None
-    assert result.latitude == pytest.approx(52.524166666, rel=1e-5)
-    assert result.longitude == pytest.approx(13.409166666, rel=1e-5)
-
-
-async def test_get_gps_info_southern_western(modem: SIM7600Modem) -> None:
-    """Süd/West-Koordinaten haben negative Vorzeichen."""
-    line = "+CGPSINFO: 3113.343286,S,12121.259046,W,250321,023504.0,45.0,0.0,0.0"
-    with patch.object(modem, "send_command", return_value=[line, "OK"]):
-        result = await modem.get_gps_info()
-    assert result is not None
-    assert result.latitude < 0
-    assert result.longitude < 0
-
-
-async def test_get_gps_info_empty(modem: SIM7600Modem) -> None:
-    """Leere GPS-Antwort (kein Fix) → None."""
-    with patch.object(
-        modem, "send_command", return_value=["+CGPSINFO: ,,,,,,,,", "OK"]
-    ):
-        result = await modem.get_gps_info()
-    assert result is None
-
-
-async def test_get_gps_info_missing_speed(modem: SIM7600Modem) -> None:
-    """Fehlende Geschwindigkeit → None (alle Felder verpflichtend)."""
-    line = "+CGPSINFO: 5231.450000,N,01324.550000,E,250321,023504.0,10.0,,0.0"
-    with patch.object(modem, "send_command", return_value=[line, "OK"]):
-        result = await modem.get_gps_info()
-    assert result is None
-
-
-async def test_get_gps_info_missing_altitude(modem: SIM7600Modem) -> None:
-    """Fehlende Höhe → None."""
-    line = "+CGPSINFO: 5231.450000,N,01324.550000,E,250321,023504.0,,0.0,0.0"
-    with patch.object(modem, "send_command", return_value=[line, "OK"]):
-        result = await modem.get_gps_info()
-    assert result is None
-
-
-async def test_get_gps_info_missing_date(modem: SIM7600Modem) -> None:
-    """Fehlende Datum → None."""
-    line = "+CGPSINFO: 5231.450000,N,01324.550000,E,,023504.0,10.0,0.0,0.0"
-    with patch.object(modem, "send_command", return_value=[line, "OK"]):
-        result = await modem.get_gps_info()
-    assert result is None
-
-
-async def test_get_gps_info_missing_time(modem: SIM7600Modem) -> None:
-    """Fehlende Uhrzeit → None."""
-    line = "+CGPSINFO: 5231.450000,N,01324.550000,E,250321,,10.0,0.0,0.0"
-    with patch.object(modem, "send_command", return_value=[line, "OK"]):
-        result = await modem.get_gps_info()
     assert result is None
 
 
@@ -217,41 +141,6 @@ async def test_delete_sms_sends_correct_command(modem: SIM7600Modem) -> None:
     with patch.object(modem, "send_command", return_value=["OK"]) as mock_cmd:
         await modem.delete_sms(7)
     mock_cmd.assert_called_once_with("AT+CMGD=7,0")
-
-
-# --- GPS-Aktivierung ---
-
-
-async def test_set_gps_success(modem: SIM7600Modem) -> None:
-    """AT+CGPS=1 mit OK-Antwort → True."""
-    with patch.object(modem, "send_command", return_value=["OK"]):
-        result = await modem.set_gps(True)
-    assert result is True
-
-
-async def test_set_gps_retries_on_timeout(modem: SIM7600Modem) -> None:
-    """Kein OK beim ersten Versuch → 500ms warten und einmalig wiederholen."""
-    call_count = 0
-
-    async def mock_send(cmd: str, **kwargs: object) -> list[str]:
-        nonlocal call_count
-        call_count += 1
-        return ["OK"] if call_count > 1 else []
-
-    with patch.object(modem, "send_command", side_effect=mock_send):
-        with patch("custom_components.sim7600.modem.asyncio.sleep") as mock_sleep:
-            result = await modem.set_gps(True)
-
-    assert call_count == 2
-    mock_sleep.assert_called_once_with(0.5)
-    assert result is True
-
-
-async def test_set_gps_error_treated_as_already_enabled(modem: SIM7600Modem) -> None:
-    """ERROR (GPS evtl. schon aktiv) → True ohne Retry."""
-    with patch.object(modem, "send_command", return_value=["ERROR"]):
-        result = await modem.set_gps(True)
-    assert result is True
 
 
 # --- Operator ---

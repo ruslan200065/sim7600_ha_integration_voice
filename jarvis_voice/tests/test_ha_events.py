@@ -42,6 +42,22 @@ class HomeAssistantEventTests(unittest.IsolatedAsyncioTestCase):
              {"number": "89990000001", "reason": "NO CARRIER", "call_id": 7}),
         ])
 
+    async def test_short_call_is_buffered_when_direct_delivery_fails(self):
+        service = self.service()
+        service.brain._ha.side_effect = OSError("Home Assistant unavailable")
+        service.modem.call_id = 8
+        await service.event("incoming_call", {"number": ""})
+        await service.event("caller_id", {"number": "+79990000001"})
+        await service.event("call_ended", {"call_id": 8})
+        await self.settle()
+
+        calls = list(service.call_events)
+        self.assertEqual([e["sequence"] for e in calls], [1, 2])
+        self.assertEqual([e["name"] for e in calls],
+                         ["jarvis_call_incoming", "jarvis_call_ended"])
+        self.assertTrue(all(e["delivery"] == "companion" for e in calls))
+        self.assertTrue(all(e["data"]["call_id"] == 8 for e in calls))
+
     async def test_dtmf_inside_jarvis_dialog_is_not_forwarded(self):
         service = self.service()
         service.keypad = (3, asyncio.Queue(maxsize=8))

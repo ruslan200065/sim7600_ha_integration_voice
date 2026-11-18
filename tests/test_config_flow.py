@@ -19,11 +19,9 @@ from custom_components.sim7600.const import (
     CONF_BAUD_RATE,
     CONF_DEBUG_MODE,
     CONF_DEFAULT_RECIPIENT,
-    CONF_GNSS_INTERVAL,
     CONF_MANUAL_PATH,
     CONF_POLLING_INTERVAL,
     CONF_SERIAL_PORT,
-    DEFAULT_GNSS_INTERVAL,
     DEFAULT_POLLING_INTERVAL,
     DOMAIN,
 )
@@ -34,7 +32,6 @@ USER_INPUT = {
     CONF_SERIAL_PORT: "/dev/ttyUSB2",
     CONF_BAUD_RATE: 115200,
     CONF_POLLING_INTERVAL: 30,
-    CONF_GNSS_INTERVAL: 120,
     CONF_DEBUG_MODE: False,
 }
 
@@ -189,7 +186,6 @@ async def test_usb_discovery_uses_serial_by_id(hass: HomeAssistant, mock_probe) 
         result["flow_id"],
         {
             CONF_POLLING_INTERVAL: DEFAULT_POLLING_INTERVAL,
-            CONF_GNSS_INTERVAL: DEFAULT_GNSS_INTERVAL,
             CONF_DEBUG_MODE: False,
         },
     )
@@ -255,7 +251,6 @@ async def test_options_flow(hass: HomeAssistant) -> None:
         result["flow_id"],
         user_input={
             CONF_POLLING_INTERVAL: 30,
-            CONF_GNSS_INTERVAL: 120,
             CONF_DEBUG_MODE: True,
             CONF_DEFAULT_RECIPIENT: " +79991234567 ",
             CONF_BALANCE_USSD: "*100#",

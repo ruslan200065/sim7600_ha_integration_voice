@@ -90,8 +90,19 @@ class BrainTools(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(same_turn["needs_confirmation"])
         posted = [call for call in brain._ha.await_args_list if call.args[0] == "POST"]
         self.assertEqual(posted, [])
-        brain.turn = 2
-        done = await brain._tool("call_ha_service", {**args, "confirmed": True})
+        brain._timed_reply = lambda *_: brain._tool(
+            "call_ha_service", {**args, "confirmed": True}
+        )
+        rejected = await brain.reply("Нет")
+        self.assertTrue(rejected["needs_confirmation"])
+        brain._timed_reply = lambda *_: brain._tool(
+            "call_ha_service", {**args, "confirmed": True, "position": 90}
+        )
+        changed = await brain.reply("Да")
+        self.assertTrue(changed["needs_confirmation"])
+        brain._timed_reply = lambda *_: brain._tool("call_ha_service", {**args, "confirmed": True})
+        self.assertTrue((await brain.reply("Да"))["needs_confirmation"])
+        done = await brain.reply("Да, подтверждаю!")
         self.assertTrue(done["accepted"])
         brain._ha.assert_any_await("POST", "/api/services/cover/open_cover", {"entity_id": "cover.blinds"})
         # Scheduled rules were confirmed when created.

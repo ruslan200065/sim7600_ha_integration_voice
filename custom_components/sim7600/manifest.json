@@ -1,6 +1,6 @@
 {
   "domain": "sim7600",
-  "name": "SIM7600 4G & GPS Gateway",
+  "name": "SIM7600 4G Gateway",
   "codeowners": ["@ruslan200065"],
   "config_flow": true,
   "dependencies": ["usb"],
@@ -15,5 +15,5 @@
       "pid": "9001"
     }
   ],
-  "version": "0.5.0"
+  "version": "0.6.0"
 }

@@ -53,14 +53,6 @@ OK` |
 Msg1
 OK` |
 
-## 4. GNSS-Positionierung (GPS)
-
-| AT-Befehl | Beschreibung | Syntax | Beispielantwort |
-| :--- | :--- | :--- | :--- |
-| **AT+CGPSINFO** | Position | `AT+CGPSINFO` | `+CGPSINFO: 5231.450000,N,01324.550000,E,250321,023504.0,10.0,0.0,0.0` |
-
----
-
 ## Agentische Implementierungshinweise
 
 ### 1. Daten-Parsing-Muster

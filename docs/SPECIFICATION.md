@@ -10,17 +10,16 @@ Es dient als verbindliche Grundlage für Neuentwicklung und Refactoring und folg
 
 | Attribut | Wert |
 |---|---|
-| Name | SIM7600 4G & GPS Gateway |
+| Name | SIM7600 4G Gateway |
 | HA-Domain | `sim7600` |
 | Version | 0.1 |
 | Ziel | Offizielle Home Assistant Core Integration (HACS-kompatibel) |
 | IoT-Klasse | `local_polling` |
-| Hardware | Waveshare SIM7600X 4G/GPS HAT (SIM7600E-H, SIM7600G-H u. a.) |
+| Hardware | Waveshare SIM7600X 4G HAT (SIM7600E-H, SIM7600G-H u. a.) |
 | Schnittstelle | Seriell (USB/UART), typisch `/dev/ttyUSB2` oder `/dev/ttyS0` |
 | USB-IDs | VID `1E0E`, PID `9001` |
 
 **Kernziele:**
-1. Zuverlässiges GPS-Tracking als `device_tracker`-Entität mit vollständigen Positionsdaten
 2. SMS-Versand und -Empfang für Alarmsysteme und Benachrichtigungen
 3. Echtzeit-Netzwerkmonitoring (Signalstärke, Betreiber, Netzwerkmodus)
 4. Geräte-Diagnostik (IMEI, Firmware, SIM-Status)
@@ -36,21 +35,21 @@ Es dient als verbindliche Grundlage für Neuentwicklung und Refactoring und folg
 │             Home Assistant Core                          │
 │   (Services, Entity Registry, Config Entries, UI)        │
 ├──────────────┬──────────────────┬────────────────────────┤
-│  sensor.py   │ device_tracker.py│  __init__.py            │
+│  sensor.py   │ notify.py        │  __init__.py            │
 │  (12 Ent.)   │ (1 Entität)      │  (SMS-Service)          │
 ├──────────────┴──────────────────┴────────────────────────┤
 │              coordinator.py                              │
 │   SIM7600DataUpdateCoordinator                           │
-│   - Dual-Polling (Netzwerk vs. GNSS)                     │
+│   - Polling (Netzwerk und SMS)                     │
 │   - State-Persistenz: letzte bekannte Werte              │
 │   - Fehler-isolierte Updates (kein kompletter Ausfall)   │
-│   - Eigensteuerung: Retry, GPS-Aktivierung, Caching      │
+│   - Eigensteuerung: Retry und Caching      │
 ├─────────────────────────────────────────────────────────┤
 │              modem.py                                    │
 │   SIM7600Modem                                           │
 │   - Async-Seriell (serial_asyncio_fast)                  │
 │   - AT-Befehl-Serialisierung (asyncio.Lock)              │
-│   - Protokoll-Parsing, GPS-Koordinatenumrechnung         │
+│   - AT-Protokoll-Parsing         │
 ├─────────────────────────────────────────────────────────┤
 │   Hardware: SIM7600 Modem (USB / UART)                   │
 └─────────────────────────────────────────────────────────┘
@@ -66,7 +65,6 @@ Es dient als verbindliche Grundlage für Neuentwicklung und Refactoring und folg
 | `coordinator.py` | `SIM7600DataUpdateCoordinator` | Polling, State-Persistenz, Eigensteuerung |
 | `modem.py` | `SIM7600Modem` | AT-Kommunikation, Parsing |
 | `sensor.py` | 12 Sensor-Klassen | HA-Sensor-Entitäten |
-| `device_tracker.py` | `SIM7600DeviceTracker` | HA-DeviceTracker-Entität (GPS) |
 | `services.yaml` | — | HA-Service-Beschreibung |
 | `strings.json` | — | UI-Texte |
 | `translations/en.json` | — | Englische Übersetzungen |
@@ -83,14 +81,12 @@ Es dient als verbindliche Grundlage für Neuentwicklung und Refactoring und folg
 | Serieller Port | `serial_port` | `str` | — (Pflicht) | — | z. B. `/dev/ttyUSB2` |
 | Baudrate | `baud_rate` | `int` | `115200` | — | Erlaubt: 9600, 19200, 38400, 57600, 115200 |
 | Polling-Intervall | `polling_interval` | `int` | `60` s | `15` s | Netzwerk, SMS, Echtzeit-Daten |
-| GNSS-Intervall | `gnss_interval` | `int` | `300` s | `15` s | GPS-Abfrageintervall |
 | Debug-Modus | `debug_mode` | `bool` | `False` | — | Trace-Logging für AT-Rohdaten (Level 5) |
 
 ### 3.2 Options-Flow (nachträgliche Konfiguration)
 
 Die folgenden Parameter müssen nach der Ersteinrichtung über einen **Options-Flow** änderbar sein:
 - `polling_interval`
-- `gnss_interval`
 - `debug_mode`
 
 ### 3.3 Konfigurationsflow
@@ -126,20 +122,9 @@ Alle Sensoren gehören zum Gerät **"SIM7600 Modem"** (Hersteller: SimTech, Mode
 | Last SMS | `SIM7600LastSMSSensor` | — | — | — | — |
 | Speed | `SIM7600SpeedSensor` | km/h | `speed` | `measurement` | — |
 | Altitude | `SIM7600AltitudeSensor` | m | `distance` | `measurement` | — |
-| GNSS Date | `SIM7600DateSensor` | — | — | — | — |
-| GNSS Time | `SIM7600TimeSensor` | — | — | — | — |
 
 **Zusatzattribute:**
 - `Last SMS`: `sender` (str), `timestamp` (str)
-- `GNSS Date` / `GNSS Time`: Rohdaten aus GPS-Fix; Format DDMMYY bzw. HHMMSS.S
-
-### 4.2 Device Tracker-Plattform (`device_tracker`)
-
-| Entität | Klasse | Pflichtfelder | Zusatzattribute |
-|---|---|---|---|
-| SIM7600 Modem | `SIM7600DeviceTracker` | `latitude`, `longitude` | `altitude`, `speed`, `date`, `time` |
-
----
 
 ## 5. Services
 
@@ -169,7 +154,6 @@ Dieser Abschnitt definiert das autonome Verhalten der Integration — wie sie Fe
 
 | Datenkategorie | Verhalten bei Fehler |
 |---|---|
-| GPS (latitude, longitude, altitude, speed, date, time) | Letzter erfolgreicher GPS-Fix bleibt erhalten. Device Tracker zeigt letzte bekannte Position. |
 | RSSI / Signal | Letzter bekannter Wert bleibt. Wird auf `None` gesetzt nur wenn Connection-Fehler dauerhaft (d. h. Exception, nicht nur `None`-Antwort). |
 | Operator / Network Mode / System Mode | Letzter bekannter Wert bleibt, bis neuer Wert verfügbar. |
 | IMEI / Firmware / Manufacturer / Model | Einmalig abgerufen, danach permanent gecacht. Nie `None` nach erstem Erfolg. |
@@ -177,7 +161,7 @@ Dieser Abschnitt definiert das autonome Verhalten der Integration — wie sie Fe
 | SMS | `last_sms` bleibt auf letzter empfangener Nachricht bis neue eintrifft. |
 
 **Implementierungsmuster im Coordinator:**
-- Der Coordinator hält `_last_gps: dict | None`, `_last_signal_dbm: float | None` etc. als Instanz-Attribute.
+- Der Coordinator hält `_last_signal_dbm: float | None` etc. als Instanz-Attribute.
 - In `_async_update_data()`: Wenn ein neuer Wert `None` ist und ein alter Wert existiert, wird der alte Wert ins Result-Dict übernommen.
 - Nur wenn die gesamte Verbindung fehlschlägt (Exception), wird `UpdateFailed` geworfen.
 
@@ -188,15 +172,7 @@ Dieser Abschnitt definiert das autonome Verhalten der Integration — wie sie Fe
 | Ebene | Intervall | Abgerufene Daten |
 |---|---|---|
 | Netzwerk (schnell) | `polling_interval` (Standard 60 s, min. 15 s) | RSSI, Operator, Network Mode, System Mode, Reg-Status, GPRS-Status, SMS |
-| GNSS (langsam) | `gnss_interval` (Standard 300 s, min. 15 s) | GPS-Position, Geschwindigkeit, Höhe, Datum, Uhrzeit |
 
-GNSS wird im gleichen `_async_update_data()`-Aufruf abgerufen, aber nur wenn `now - last_gnss_update > gnss_interval`.
-
-### 6.3 GPS-Aktivierung
-
-- GPS wird beim ersten Update-Zyklus einmalig via `AT+CGPS=1` aktiviert.
-- Wenn `set_gps(True)` `False` zurückgibt (ERROR oder Timeout), wird der Versuch im nächsten Zyklus wiederholt (kein permanentes `gps_enabled = True` bei Fehler).
-- Sobald GPS aktiviert ist, werden keine weiteren Aktivierungsversuche unternommen.
 
 ### 6.4 SMS-Verwaltung
 
@@ -206,7 +182,7 @@ GNSS wird im gleichen `_async_update_data()`-Aufruf abgerufen, aber nur wenn `no
 
 ### 6.5 Retry-Verhalten
 
-- Bei AT-Timeout oder `ERROR`-Antwort: Einzelner Retry nach 500 ms für kritische Befehle (GPS-Aktivierung, SMS-Versand).
+- Bei AT-Timeout oder `ERROR`-Antwort: Einzelner Retry nach 500 ms für kritische Befehle (SMS-Versand).
 - Nicht-kritische Abfragen (RSSI, Operator etc.): kein Retry im gleichen Zyklus, Retry im nächsten Polling-Zyklus.
 - Bei dauerhafter Verbindungslosigkeit (>3 aufeinanderfolgende `UpdateFailed`): Meldung im HA-Log auf WARNING-Level.
 
@@ -255,35 +231,9 @@ EMPFANG: readline() bis "OK" oder "ERROR" (Default-Timeout: 5 s)
 | `get_sim_status()` | `AT+CPIN?` | `str \| None` (z. B. `"READY"`) |
 | `get_registration_status()` | `AT+CREG?` | `int \| None` |
 | `get_gprs_registration_status()` | `AT+CGREG?` | `int \| None` |
-| `set_gps(enable)` | `AT+CGPS=<1\|0>` | `bool` |
-| `get_gps_info()` | `AT+CGPSINFO` | `GpsData \| None` |
 | `send_sms(number, msg)` | `AT+CMGF=1`, `AT+CMGS` | `bool` |
 | `get_unread_sms()` | `AT+CMGF=1`, `AT+CMGL="REC UNREAD"` | `list[SmsData]` |
 | `delete_sms(index)` | `AT+CMGD=<index>,0` | `bool` |
-
-### 7.4 GPS-Datenmodell (`GpsData`)
-
-**Alle Felder sind verpflichtend** wenn GPS-Daten vorhanden sind. Fehlt ein Feld in der Modem-Antwort, wird `None` zurückgegeben (kein partielles Dict).
-
-```python
-@dataclass
-class GpsData:
-    latitude: float     # Dezimalgrad, N=positiv, S=negativ
-    longitude: float    # Dezimalgrad, E=positiv, W=negativ
-    altitude: float     # Meter über Meeresspiegel
-    speed: float        # km/h (Bodengeschwindigkeit)
-    date: str           # Format: DDMMYY (z. B. "250321")
-    time: str           # Format: HHMMSS.S (z. B. "023504.0")
-```
-
-**GPS-Parsing** (`AT+CGPSINFO`-Antwort):
-```
-+CGPSINFO: <lat>,<N|S>,<lon>,<E|W>,<date>,<time>,<alt>,<speed>,<course>
-```
-- Latitude: `ddmm.mmmmmm` → `dd + mm/60`, S → negativ
-- Longitude: `dddmm.mmmmmm` → `ddd + mm/60`, W → negativ
-- Alle 8 Felder (lat bis speed) müssen geparst werden; fehlt eines → `None` zurück
-- Leere Antwort `,,,,,,,,` → `None`
 
 ### 7.5 SMS-Datenmodell (`SmsData`)
 
@@ -322,8 +272,6 @@ class CoordinatorData:
     # SMS
     last_sms: SmsData | None      # letzte empfangene SMS
 
-    # GPS (letzter erfolgreicher Fix, bleibt bis neuer Fix)
-    gps: GpsData | None
 ```
 
 ---
@@ -350,15 +298,14 @@ class CoordinatorData:
 | Level | Inhalt |
 |---|---|
 | TRACE (5) | Rohe AT-Zeilen (nur Debug-Modus) |
-| DEBUG | Gesendeter Befehl, komplette Antwort-Liste, GPS-Rohdaten |
-| INFO | GPS-Fix erhalten, GPS aktiviert, SMS empfangen |
+| DEBUG | Gesendeter Befehl, komplette Antwort-Liste |
+| INFO | SMS empfangen |
 | WARNING | AT-Timeout, wiederholte Update-Fehler |
 | ERROR | Verbindungsfehler, ungültige Service-Parameter, SMS-Versand fehlgeschlagen |
 
 ### 9.4 Typsicherheit
 
 - Strict typing für alle Module (`mypy --strict` kompatibel).
-- GPS-Daten als `@dataclass` oder `TypedDict`, nicht als `dict[str, Any]`.
 - SMS-Daten als `@dataclass`, nicht als `dict[str, str]`.
 
 ### 9.5 Code-Qualität
@@ -404,11 +351,6 @@ Tests werden **vor der Implementierung** definiert und dienen als ausführbare S
 | `test_get_operator_no_service` | `+COPS: 0` | `None` |
 | `test_get_sim_status_ready` | `+CPIN: READY` | `"READY"` |
 | `test_get_sim_status_pin` | `+CPIN: SIM PIN` | `"SIM PIN"` |
-| `test_get_gps_info_full_valid` | Vollständige `+CGPSINFO`-Zeile mit allen Feldern | `GpsData` mit allen Feldern |
-| `test_get_gps_info_partial_missing_speed` | `+CGPSINFO`-Zeile ohne Speed-Feld | `None` |
-| `test_get_gps_info_empty` | `+CGPSINFO: ,,,,,,,,` | `None` |
-| `test_get_gps_info_northern_eastern` | `5231.450000,N,01324.550000,E` | lat≈52.524, lon≈13.409 |
-| `test_get_gps_info_southern_western` | `3113.343286,S,12121.259046,W` | lat≈-31.222, lon≈-121.354 |
 | `test_get_unread_sms_single` | Eine ungelesene SMS | Liste mit einem `SmsData`-Objekt inkl. Index |
 | `test_get_unread_sms_multiple` | Zwei ungelesene SMS | Liste mit zwei Einträgen |
 | `test_get_unread_sms_empty` | Keine SMS | Leere Liste |
@@ -425,26 +367,11 @@ Tests werden **vor der Implementierung** definiert und dienen als ausführbare S
 | `test_update_success_full` | Alle Modem-Methoden liefern Werte | Vollständiges `CoordinatorData` |
 | `test_signal_dbm_calculation` | `rssi=20` | `signal_dbm=-73` |
 | `test_static_data_cached` | Zweiter Update-Aufruf | IMEI/Firmware-Methoden nur 1× aufgerufen |
-| `test_gps_not_fetched_before_interval` | GPS zuletzt vor 10 s abgerufen, Interval=300 s | `get_gps_info` nicht aufgerufen |
-| `test_gps_fetched_after_interval` | GPS zuletzt vor 400 s, Interval=300 s | `get_gps_info` aufgerufen |
-| `test_state_persistence_gps_on_none_response` | GPS-Methode gibt `None` zurück | Letzter GPS-Fix bleibt in `data["gps"]` |
 | `test_state_persistence_signal_on_none_response` | `get_signal_quality` gibt `None` | Letzter `signal_dbm`-Wert bleibt |
 | `test_no_update_failed_on_partial_error` | Einzelner AT-Befehl schlägt fehl | `UpdateFailed` wird **nicht** geworfen |
 | `test_update_failed_on_connection_error` | Exception in `get_signal_quality` | `UpdateFailed` wird geworfen |
 | `test_sms_deleted_after_reading` | Neue SMS empfangen | `delete_sms` mit korrektem Index aufgerufen |
-| `test_gps_activation_retried_on_failure` | `set_gps` gibt `False` im ersten Zyklus | Im zweiten Zyklus erneuter Versuch |
 | `test_sim_status_in_data` | `get_sim_status` gibt `"READY"` zurück | `data["sim_status"] == "READY"` |
-
-### 11.3 `test_gps.py` — GPS-Parsing-Tests (erweitert)
-
-| Test | Beschreibung |
-|---|---|
-| `test_coordinates_northeast` | Korrekte Umrechnung N/E |
-| `test_coordinates_southwest` | Korrekte Umrechnung S/W (negative Werte) |
-| `test_all_fields_mandatory` | Fehlende Speed → `None` |
-| `test_all_fields_mandatory_altitude` | Fehlende Altitude → `None` |
-| `test_all_fields_mandatory_date` | Fehlender Date → `None` |
-| `test_empty_response` | `,,,,,,,,` → `None` |
 
 ### 11.4 `test_sensor.py` — Sensor-Tests (erweitert)
 
@@ -453,20 +380,7 @@ Tests werden **vor der Implementierung** definiert und dienen als ausführbare S
 | `test_signal_sensor_value` | Korrekte dBm-Ausgabe |
 | `test_signal_sensor_persisted_value` | `None` in data → alter Wert bleibt |
 | `test_sim_status_sensor_ready` | `"READY"` korrekt dargestellt |
-| `test_speed_sensor_value` | GPS-Speed korrekt |
-| `test_altitude_sensor_value` | GPS-Altitude korrekt |
-| `test_date_sensor_value` | GPS-Date korrekt |
-| `test_time_sensor_value` | GPS-Time korrekt |
 | `test_last_sms_attributes` | `sender` und `timestamp` als Attribute |
-
-### 11.5 `test_device_tracker.py` — Device Tracker-Tests
-
-| Test | Beschreibung |
-|---|---|
-| `test_tracker_position_valid` | lat/lon korrekt aus GPS-Daten |
-| `test_tracker_persists_last_position` | GPS-Daten `None` → letzte Position bleibt |
-| `test_tracker_altitude_attribute` | Altitude als Zusatzattribut |
-| `test_tracker_speed_attribute` | Speed als Zusatzattribut |
 
 ### 11.6 `test_config_flow.py` — Config Flow-Tests
 
@@ -529,12 +443,9 @@ source venv/bin/activate && ruff check . && ruff format --check . && mypy custom
 |---|---|---|
 | 1 | `SIM7600SIMStatusSensor` liest nie befüllten Key | `get_sim_status()` in Modem implementieren (`AT+CPIN?`), im Coordinator aufrufen |
 | 2 | USB-Discovery fragt keine optionalen Parameter ab | Discovery-Flow um vollständiges Konfigformular erweitern |
-| 3 | GPS gibt `None` → Device Tracker zeigt `unknown` | State-Persistenz: letzter GPS-Fix bleibt erhalten |
 | 4 | Signal `None` bei Timeout → Sensor zeigt `unknown` | State-Persistenz: letzter Signal-Wert bleibt |
 | 5 | SMS werden nicht gelöscht → Modem-Speicher läuft voll | `delete_sms(index)` nach Auslesen aufrufen |
 | 6 | Kein Options-Flow → Intervall-Änderung nur via Neukonfiguration | `Sim7600OptionsFlow` implementieren |
-| 7 | GPS-Pflichtfelder optional → partiell befülltes Dict | `GpsData`-Dataclass, alle Felder Pflicht oder `None` für gesamten Fix |
-| 8 | GPS-Aktivierung bei Fehler permanent als `False` | Retry im nächsten Zyklus wenn `set_gps` `False` zurückgibt |
 | 9 | `get_chip_details()` implementiert aber nie aufgerufen | Entweder in Coordinator nutzen oder entfernen |
 
 ---

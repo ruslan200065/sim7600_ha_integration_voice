@@ -24,7 +24,6 @@ PURE_TESTS = {
     "test_sms_codec.py",
     "test_modem_protocol.py",
     "test_modem.py",
-    "test_gps.py",
     "test_sms.py",
 }
 

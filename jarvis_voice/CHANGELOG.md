@@ -9,6 +9,13 @@
 - Add configured LLM failover before tools/speech and optional OpenAI-compatible speech backup.
 - Add per-call diagnostics, autonomous-rule editors and family-message UI.
 
+## 0.8.0
+
+- Убрана работа с GPS-приёмником модема. Компаньон 0.6 удаляет устаревшие GPS-сущности при запуске.
+- События коротких звонков сохраняются для доставки компаньоном при недоступности прямой публикации в Home Assistant.
+- Добавлены монопольное открытие AT-порта на Linux и проверка готовности модема через /ready.
+- Подтверждение действия проверяет реплику пользователя и точные параметры запроса.
+
 ## 0.6.0 (experimental)
 
 - Verify observable device postconditions without retrying physical commands.

@@ -29,12 +29,20 @@ jobs:
       - name: Run tests
         run: pytest -q jarvis_voice/tests
   container-smoke:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Build the Home Assistant add-on
         run: |
-          base=$(awk '$1 == "amd64:" { print $2 }' jarvis_voice/build.yaml)
+          base=$(awk -v arch="${{ matrix.arch }}:" '$1 == arch { print $2 }' jarvis_voice/build.yaml)
           docker build --build-arg BUILD_FROM="$base" -t jarvis-voice-test jarvis_voice
       - name: Check runtime image contents
         run: |
@@ -50,6 +58,8 @@ jobs:
             -v "$RUNNER_TEMP/jarvis-options.json:/tmp/jarvis-options.json:ro" jarvis-voice-test
           curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8099/health
           curl --fail -H 'Authorization: Bearer smoke-test' http://127.0.0.1:8099/status
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer smoke-test' http://127.0.0.1:8099/ready)" = 503
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer smoke-test' http://127.0.0.1:8099/q1/gps)" = 404
       - name: Show container log on failure
         if: failure()
         run: docker logs jarvis-voice-test || true

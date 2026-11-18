@@ -6,25 +6,6 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class GpsData:
-    """GPS position from the modem (AT+CGPSINFO).
-
-    All fields are mandatory. If a field is missing in the modem response,
-    None is returned instead of a partially filled GpsData object.
-    `speed` is reported by the modem in knots. `fix_time` is the local
-    monotonic-independent wall clock time (time.time()) the fix was received.
-    """
-
-    latitude: float
-    longitude: float
-    altitude: float
-    speed: float
-    date: str
-    time: str
-    fix_time: float | None = None
-
-
-@dataclass
 class SmsData:
     """SMS message read from modem storage (AT+CMGL).
 

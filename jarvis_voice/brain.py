@@ -21,6 +21,11 @@ import aiohttp
 
 LOG = logging.getLogger(__name__)
 REPLY_TURN = ContextVar("jarvis_reply_turn", default=None)
+REPLY_ACCEPTED = ContextVar("jarvis_reply_accepted", default=False)
+AFFIRMATIVE_REPLIES = frozenset({
+    "да", "да подтверждаю", "подтверждаю", "согласен", "согласна",
+    "да выполняй", "да открывай", "yes", "yes please", "i confirm", "confirm",
+})
 ACTION_TOOLS = frozenset({"call_ha_service", "send_camera_photo", "announce", "remember", "forget", "remind", "remind_when", "run_when", "cancel_reminder", "open_assigned_gate", "handle_call_reminder", "save_scenario", "run_scenario", "resume_task", "cancel_task", "delete_scenario", "set_notification_policy", "learn_device_correction", "forget_device_correction", "set_autonomy_rule", "remove_autonomy_rule", "save_test_rule", "delete_test_rule", "send_family_message", "cancel_family_message"})
 
 def search_stem(word):
@@ -344,23 +349,29 @@ class Brain:
     def _needs_confirmation(self, key, arguments, question, preconfirmed=False, required=False):
         """Return a confirmation request unless the person agreed in the previous turn.
 
-        The model cannot confirm on its own: a confirmed call is accepted only when
-        the matching request was issued during the immediately preceding user turn.
+        The server verifies the actual user reply and matches the exact request
+        to the last pending confirmation from the preceding turn.
         """
         if preconfirmed or (not required and self.options.get("confirm_risky_actions", False) is not True):
             return None
         turn = REPLY_TURN.get()
         turn = self.turn if turn is None else turn
         pending = self.pending_confirmations.get(key)
-        if (arguments.get("confirmed") is True and pending and pending["key"] == key
-                and pending["turn"] == turn - 1):
+        parameters = json.dumps(
+            {name: value for name, value in arguments.items() if name != "confirmed"},
+            sort_keys=True,
+        )
+        if (REPLY_ACCEPTED.get() and arguments.get("confirmed") is True
+                and pending and pending is self.pending_confirm
+                and pending["parameters"] == parameters
+                and pending["turn"] == turn - 1 and turn == self.turn):
             self.pending_confirmations.pop(key, None)
             if self.pending_confirm is pending:
                 self.pending_confirm = None
             return None
         if pending and pending["turn"] > turn:
             return {"needs_confirmation": True, "question": question, "instruction": "Есть более новый запрос подтверждения; не выполняй устаревшее действие."}
-        self.pending_confirm = {"key": key, "turn": turn}
+        self.pending_confirm = {"key": key, "turn": turn, "parameters": parameters}
         self.pending_confirmations[key] = self.pending_confirm
         if len(self.pending_confirmations) > 32:
             oldest = min(self.pending_confirmations, key=lambda item: self.pending_confirmations[item]["turn"])
@@ -995,6 +1006,8 @@ class Brain:
             self.reset_history()
         self.turn += 1
         token = REPLY_TURN.set(self.turn)
+        words = " ".join(re.findall(r"[\w]+", phrase.casefold()))
+        accepted = REPLY_ACCEPTED.set(words in AFFIRMATIVE_REPLIES)
         try:
             if on_progress is not None:
                 # Do not serialize live turns behind slow tools or another LLM request.
@@ -1002,6 +1015,7 @@ class Brain:
             async with self.lock:
                 return await self._timed_reply(phrase, camera_entity, None, phone_actions)
         finally:
+            REPLY_ACCEPTED.reset(accepted)
             REPLY_TURN.reset(token)
 
     async def _timed_reply(self, phrase, camera_entity, on_progress, phone_actions):

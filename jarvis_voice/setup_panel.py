@@ -26,7 +26,6 @@ from resilience import validate_speech_fallback
 from llm import DEEPSEEK_URL, EFFORTS, active_profile, base_url, list_models, merge_profiles
 from q1_audio import capture_pcm, play_pcm
 from q1_hardware import VIDEO_LINK, VIDEO_PATH, list_serial, list_video, probe_audio
-from q1_protocol import gps_status
 
 LOG = logging.getLogger(__name__)
 ASSETS = Path(__file__).with_name("web")
@@ -757,11 +756,6 @@ class SetupPanel:
                         "data_contexts": contexts,
                     }
                 )
-            if check == "gps":
-                result = await gps_status(service.modem)
-                status = result["modem_gps_status"]
-                fix = "координаты получены" if result["fix"] else "координат пока нет"
-                return web.json_response({"message": f"{status} · {fix}"})
             if check in {"microphone", "microphone_sample"}:
                 if service.mic_lock.locked():
                     raise RuntimeError("Микрофон сейчас занят.")

@@ -1,6 +1,7 @@
 """Single-owner SIM7600 AT controller. USB audio lives on a separate raw PCM port."""
 import asyncio
 import logging
+import os
 import re
 import time
 
@@ -76,11 +77,15 @@ class Modem:
                 LOG.exception("Event listener failed: %s", name)
 
     async def _supervise(self):
+        last_error = None
         while True:
             rx = None
             disconnected = False
             try:
-                self.serial = serial.Serial(self.port, self.baudrate, timeout=0.15, write_timeout=2)
+                self.serial = serial.Serial(
+                    self.port, self.baudrate, timeout=0.15, write_timeout=2,
+                    exclusive=True if os.name == "posix" else None,
+                )
                 self.orphaned = 0
                 rx = asyncio.create_task(self._reader())
                 await asyncio.sleep(0.3)
@@ -89,6 +94,7 @@ class Modem:
                 self.firmware = " ".join((await self.command("AT+CGMR"))[:-1]).strip()
                 await self._release_stale_calls()
                 self.call_state = "idle"
+                last_error = None
                 LOG.info("SIM7600 connected: %s %s", self.model, self.firmware)
                 await self._emit("modem_connected", model=self.model, firmware=self.firmware)
                 while True:
@@ -102,8 +108,11 @@ class Modem:
                     await self._check_call_alive()
             except asyncio.CancelledError:
                 break
-            except Exception:
-                LOG.exception("SIM7600 disconnected; retrying")
+            except Exception as exc:
+                error = (type(exc), str(exc))
+                if error != last_error:
+                    LOG.warning("SIM7600 on %s unavailable; retrying: %s", self.port, exc)
+                    last_error = error
                 disconnected = True
             finally:
                 self.call_state = "offline"

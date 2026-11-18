@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -17,8 +16,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
-    UnitOfLength,
-    UnitOfSpeed,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -26,7 +23,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import MAX_STATE_LENGTH, REG_STATUS, REG_STATUS_OPTIONS
 from .coordinator import SIM7600DataUpdateCoordinator
 from .entity import SIM7600Entity
-from .types import GpsData, SmsData
+from .types import SmsData
 
 
 def truncate_state(value: str | None) -> str | None:
@@ -34,32 +31,6 @@ def truncate_state(value: str | None) -> str | None:
     if value is None or len(value) <= MAX_STATE_LENGTH:
         return value
     return value[: MAX_STATE_LENGTH - 1] + "…"
-
-
-def parse_gnss_timestamp(date_str: str, time_str: str) -> datetime | None:
-    """Combine +CGPSINFO date (ddmmyy) and time (hhmmss.s) into a UTC datetime."""
-    try:
-        day, month, year = int(date_str[0:2]), int(date_str[2:4]), int(date_str[4:6])
-        hour, minute = int(time_str[0:2]), int(time_str[2:4])
-        seconds = float(time_str[4:])
-        whole = int(seconds)
-        micro = int(round((seconds - whole) * 1_000_000))
-        return datetime(
-            2000 + year,
-            month,
-            day,
-            hour,
-            minute,
-            whole,
-            min(micro, 999_999),
-            tzinfo=UTC,
-        )
-    except (ValueError, IndexError):
-        return None
-
-
-def _gps(data: dict[str, Any]) -> GpsData | None:
-    return data.get("gps")
 
 
 def _reg_status(value: int | None) -> str | None:
@@ -166,40 +137,6 @@ SENSORS: tuple[SIM7600SensorEntityDescription, ...] = (
             sms.message if (sms := data.get("last_sms")) is not None else None
         ),
         attributes_fn=_sms_attributes,
-    ),
-    SIM7600SensorEntityDescription(
-        key="speed",
-        translation_key="speed",
-        device_class=SensorDeviceClass.SPEED,
-        # +CGPSINFO reports speed over ground in knots; HA converts the unit.
-        native_unit_of_measurement=UnitOfSpeed.KNOTS,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: gps.speed if (gps := _gps(data)) is not None else None,
-    ),
-    SIM7600SensorEntityDescription(
-        key="altitude",
-        translation_key="altitude",
-        device_class=SensorDeviceClass.DISTANCE,
-        native_unit_of_measurement=UnitOfLength.METERS,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: gps.altitude if (gps := _gps(data)) is not None else None,
-    ),
-    SIM7600SensorEntityDescription(
-        key="gnss_timestamp",
-        translation_key="gnss_timestamp",
-        device_class=SensorDeviceClass.TIMESTAMP,
-        value_fn=lambda data: (
-            parse_gnss_timestamp(gps.date, gps.time)
-            if (gps := _gps(data)) is not None
-            else None
-        ),
-    ),
-    SIM7600SensorEntityDescription(
-        key="gps_last_fix",
-        translation_key="gps_last_fix",
-        device_class=SensorDeviceClass.TIMESTAMP,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda data: data.get("gps_last_fix"),
     ),
     SIM7600SensorEntityDescription(
         key="balance",

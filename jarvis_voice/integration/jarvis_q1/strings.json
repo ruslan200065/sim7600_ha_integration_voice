@@ -53,8 +53,6 @@
       "call_state": { "name": "Call state" },
       "signal": { "name": "Cellular signal (CSQ)" },
       "signal_dbm": { "name": "Cellular signal" },
-      "gps_latitude": { "name": "GPS latitude" },
-      "gps_longitude": { "name": "GPS longitude" },
       "last_transcript": {
         "name": "Last microphone transcript",
         "state_attributes": {
@@ -66,13 +64,11 @@
       "microphone_level": { "name": "Microphone level" }
     },
     "binary_sensor": {
-      "gps_fix": { "name": "GPS fix" },
       "q1_mic": { "name": "Microphone configured" },
       "microphone_sound": { "name": "Microphone sound" }
     },
     "button": {
       "listen": { "name": "Listen and respond" },
-      "gps_start": { "name": "Start GPS" },
       "hangup": { "name": "Hang up call" }
     },
     "camera": {
@@ -141,14 +137,6 @@
       "fields": {
         "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." },
         "color": { "name": "Color", "description": "LED color." }
-      }
-    },
-    "gps_start": {
-      "name": "Activate GPS",
-      "description": "Start the SIM7600 GNSS receiver.",
-      "fields": {
-        "entry_id": { "name": "Gateway", "description": "JARVIS Q1 config entry. Optional when only one gateway is configured." },
-        "assisted": { "name": "A-GPS mode", "description": "Use assisted GPS (requires mobile data) for a faster first fix." }
       }
     },
     "probe": {

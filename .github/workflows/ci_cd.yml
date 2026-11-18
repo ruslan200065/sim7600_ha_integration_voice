@@ -55,7 +55,7 @@ jobs:
         run: pip-licenses --summary --allow-only "MIT;Apache-2.0;BSD-3-Clause;BSD-2-Clause;Python-2.0;LGPL-2.1;LGPL-3.0;MPL-2.0"
 
       - name: Run Tests
-        run: PYTHONPATH=. pytest --import-mode=importlib
+        run: python -m pytest --import-mode=importlib tests
 
   snapshot:
     name: Create Snapshot Release

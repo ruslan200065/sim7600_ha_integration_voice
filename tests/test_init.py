@@ -28,7 +28,7 @@ from custom_components.sim7600.modem import (
     ModemConnectionError,
 )
 from custom_components.sim7600.sms_codec import CusdReply
-from custom_components.sim7600.types import GpsData, SmsData
+from custom_components.sim7600.types import SmsData
 
 IMEI = "861234567890123"
 
@@ -51,16 +51,6 @@ def _make_modem(port: str = "/dev/ttyUSB2") -> AsyncMock:
     modem.get_unread_sms.return_value = [
         SmsData(index=1, sender="+79991234567", timestamp="t", message="Секрет")
     ]
-    modem.set_gps.return_value = True
-    modem.get_gps_info.return_value = GpsData(
-        latitude=55.75,
-        longitude=37.61,
-        altitude=150.0,
-        speed=2.0,
-        date="071125",
-        time="123045.0",
-        fix_time=None,
-    )
     return modem
 
 
@@ -315,31 +305,38 @@ async def test_notify_unavailable_without_recipient(
 
 
 async def test_diagnostics_redacts_private_data(hass: HomeAssistant, modems) -> None:
-    """IMEI, phone numbers, SMS text and coordinates are redacted."""
+    """IMEI, phone numbers, SMS text are redacted."""
     entry = _entry(hass, **{CONF_DEFAULT_RECIPIENT: "+79991234567"})
     await _setup(hass, entry)
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     dumped = repr(diagnostics)
-    for secret in (IMEI, "+79991234567", "Секрет", "55.75", "37.61"):
+    for secret in (IMEI, "+79991234567", "Секрет"):
         assert secret not in dumped
     assert diagnostics["data"]["operator"] == "Operator"
-    assert diagnostics["data"]["gps"]["latitude"] == "**REDACTED**"
 
 
-# --- Device tracker ---
+# --- Device metadata ---
 
 
-async def test_device_tracker_and_sensors_created(hass: HomeAssistant, modems) -> None:
-    """Platforms create the tracker with the old unique_id and new sensors."""
+async def test_retired_gps_entities_removed_on_upgrade(
+    hass: HomeAssistant, modems
+) -> None:
+    """Upgrade keeps modem setup and removes obsolete GPS entities."""
+    entry = _entry(hass, gnss_interval=120)
+    registry = er.async_get(hass)
+    old = registry.async_get_or_create(
+        "device_tracker", DOMAIN, f"{entry.entry_id}_GPS", config_entry=entry
+    )
+    await _setup(hass, entry)
+    assert registry.async_get(old.entity_id) is None
+    assert registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_operator")
+
+
+async def test_device_metadata(hass: HomeAssistant, modems) -> None:
+    """The integration publishes modem device metadata."""
     entry = _entry(hass)
     await _setup(hass, entry)
     registry = er.async_get(hass)
-    assert registry.async_get_entity_id(
-        "device_tracker", DOMAIN, f"{entry.entry_id}_GPS"
-    )
-    assert registry.async_get_entity_id(
-        "sensor", DOMAIN, f"{entry.entry_id}_gnss_timestamp"
-    )
     assert not registry.async_get_entity_id(
         "sensor", DOMAIN, f"{entry.entry_id}_balance"
     )

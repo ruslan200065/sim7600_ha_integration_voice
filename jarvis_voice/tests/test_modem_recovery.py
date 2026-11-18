@@ -60,10 +60,10 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.modem.call_state, "idle")
         self.assertEqual(self.modem.active_number, "")
 
-    async def test_call_end_is_not_gps_response_and_fragments_are_joined(self):
+    async def test_call_end_is_not_signal_response_and_fragments_are_joined(self):
         self.modem.call_state = "connected"
-        self.port.reply = [b"NO CARRIER\r\n", b"+CG", b"PS: 1,2\r\n", b"OK\r\n"]
-        self.assertEqual(await self.modem.command("AT+CGPS?", timeout=1), ["+CGPS: 1,2", "OK"])
+        self.port.reply = [b"NO CARRIER\r\n", b"+C", b"SQ: 15,99\r\n", b"OK\r\n"]
+        self.assertEqual(await self.modem.command("AT+CSQ", timeout=1), ["+CSQ: 15,99", "OK"])
         self.assertEqual(self.modem.call_state, "idle")
 
     async def test_late_reply_is_dropped_without_closing_port(self):

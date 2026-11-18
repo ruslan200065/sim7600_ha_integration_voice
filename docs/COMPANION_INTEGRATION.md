@@ -16,9 +16,9 @@ This is deliberately not a hidden HA restart, and uninstalling the App does not 
 | --- | --- |
 | camera | Q1 USB UVC JPEG snapshot; enabled after `q1_video_device` is configured |
 | media_player | Q1 speaker; accepts `media_player.play_media`, HA media-source files and compatible `tts.speak` actions |
-| sensor | Modem call state, cellular signal, GPS latitude/longitude, last microphone transcript |
-| binary_sensor | GPS fix and microphone-configuration indicators (configured does not guarantee working capture) |
-| button | Listen and respond, enable GPS, end call |
+| sensor | Modem call state, cellular signal, last microphone transcript |
+| binary_sensor | Microphone indicators (configured does not guarantee working capture) |
+| button | Listen and respond, end call |
 
 HA creates entity IDs from the device and names; use the IDs listed under your own device, not guesses from this document.
 
@@ -28,7 +28,7 @@ HA creates entity IDs from the device and names; use the IDs listed under your o
 - `jarvis_q1.transcribe` with `seconds` (3–30) — streaming microphone STT, **no DeepSeek**; provides service response with recognized text, fires `jarvis_q1_transcript` event and updates a sensor.
 - `jarvis_q1.listen` with `seconds` — record a voice turn, send it to DeepSeek and optionally speak the result.
 - `jarvis_q1.call` with optional `prompt`; `jarvis_q1.hangup`.
-- `jarvis_q1.set_led` with color; `jarvis_q1.gps_start`; `jarvis_q1.probe`.
+- `jarvis_q1.set_led` with color; `jarvis_q1.probe`.
 
 Example announcement from any automation:
 

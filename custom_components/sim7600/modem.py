@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
+import os
 import re
 import time
 from collections.abc import Callable
@@ -26,7 +27,7 @@ from .sms_codec import (
     parse_cusd,
     sanitize_sms_text,
 )
-from .types import GpsData, SmsData
+from .types import SmsData
 
 # Lines that are always unsolicited result codes (never part of a response).
 ALWAYS_URC_PREFIXES = (
@@ -164,7 +165,9 @@ class SIM7600Modem:
             return
         try:
             reader, writer = await serial_asyncio_fast.open_serial_connection(
-                url=self.port, baudrate=self.baudrate
+                url=self.port,
+                baudrate=self.baudrate,
+                exclusive=True if os.name == "posix" else None,
             )
         except (serial.SerialException, OSError) as err:
             LOGGER.error("Failed to connect to SIM7600 on %s: %s", self.port, err)
@@ -667,61 +670,3 @@ class SIM7600Modem:
             if reply.status >= 2 and reply.message is None:
                 raise UssdError(f"USSD request failed with status {reply.status}")
             return reply
-
-    # ------------------------------------------------------------------
-    # GPS
-    # ------------------------------------------------------------------
-
-    async def set_gps(self, enable: bool) -> bool:
-        """Enable or disable GPS.
-
-        ERROR often means GPS is already enabled -> True.
-        No OK and no ERROR (timeout) -> one retry after 500 ms.
-        """
-        cmd = f"AT+CGPS={1 if enable else 0}"
-        lines = await self.send_command(cmd)
-        if "OK" not in lines and "ERROR" not in lines:
-            await asyncio.sleep(0.5)
-            lines = await self.send_command(cmd)
-        return "OK" in lines or "ERROR" in lines
-
-    async def get_gps_info(self) -> GpsData | None:
-        """Get GPS location information (speed in knots).
-
-        All fields are mandatory; a partial fix returns None.
-        """
-        lines = await self.send_command("AT+CGPSINFO")
-        for line in lines:
-            if not line.startswith("+CGPSINFO:"):
-                continue
-            content = line.replace("+CGPSINFO:", "").strip()
-            if not content or content == ",,,,,,,,":
-                return None
-            parts = content.split(",")
-            if len(parts) < 9:
-                return None
-            lat_raw, lat_dir, lon_raw, lon_dir, date_str, time_str = parts[:6]
-            alt_str, speed_str = parts[6], parts[7]
-            required = [lat_raw, lat_dir, lon_raw, lon_dir, date_str, time_str]
-            if not all(required + [alt_str, speed_str]):
-                return None
-            try:
-                latitude = float(lat_raw[:2]) + float(lat_raw[2:]) / 60.0
-                if lat_dir == "S":
-                    latitude = -latitude
-                longitude = float(lon_raw[:3]) + float(lon_raw[3:]) / 60.0
-                if lon_dir == "W":
-                    longitude = -longitude
-                return GpsData(
-                    latitude=latitude,
-                    longitude=longitude,
-                    altitude=float(alt_str),
-                    speed=float(speed_str),
-                    date=date_str,
-                    time=time_str,
-                    fix_time=time.time(),
-                )
-            except (ValueError, IndexError) as err:
-                LOGGER.debug("Error parsing GPS data: %s", err)
-                return None
-        return None

@@ -1,7 +1,8 @@
-"""Config flow for SIM7600 4G & GPS Gateway integration."""
+"""Config flow for SIM7600 4G Gateway integration."""
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from typing import Any
@@ -25,13 +26,11 @@ from .const import (
     CONF_BAUD_RATE,
     CONF_DEBUG_MODE,
     CONF_DEFAULT_RECIPIENT,
-    CONF_GNSS_INTERVAL,
     CONF_MANUAL_PATH,
     CONF_POLLING_INTERVAL,
     CONF_SERIAL_PORT,
     DEFAULT_BALANCE_INTERVAL,
     DEFAULT_BAUD,
-    DEFAULT_GNSS_INTERVAL,
     DEFAULT_POLLING_INTERVAL,
     DOMAIN,
     LOGGER,
@@ -70,7 +69,13 @@ def probe_modem(port: str, baudrate: int) -> str | None:
     Runs in the executor. Raises CannotConnect.
     """
     try:
-        with serial.Serial(port, baudrate, timeout=0.5, write_timeout=2) as ser:
+        with serial.Serial(
+            port,
+            baudrate,
+            timeout=0.5,
+            write_timeout=2,
+            exclusive=True if os.name == "posix" else None,
+        ) as ser:
             ser.reset_input_buffer()
             ser.write(b"ATE0\r")
             _read_until_final(ser, PROBE_TIMEOUT)
@@ -89,14 +94,10 @@ def probe_modem(port: str, baudrate: int) -> str | None:
 
 def _interval_schema(
     polling_interval: int = DEFAULT_POLLING_INTERVAL,
-    gnss_interval: int = DEFAULT_GNSS_INTERVAL,
     debug_mode: bool = False,
 ) -> dict[Any, Any]:
     return {
         vol.Optional(CONF_POLLING_INTERVAL, default=polling_interval): vol.All(
-            vol.Coerce(int), vol.Range(min=15)
-        ),
-        vol.Optional(CONF_GNSS_INTERVAL, default=gnss_interval): vol.All(
             vol.Coerce(int), vol.Range(min=15)
         ),
         vol.Optional(CONF_DEBUG_MODE, default=debug_mode): bool,
@@ -104,7 +105,7 @@ def _interval_schema(
 
 
 class Sim7600ConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
-    """Handle a config flow for SIM7600 4G & GPS Gateway."""
+    """Handle a config flow for SIM7600 4G Gateway."""
 
     VERSION = 1
 
@@ -302,9 +303,6 @@ class Sim7600OptionsFlow(OptionsFlow):
                 **_interval_schema(
                     polling_interval=self._current(
                         CONF_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL
-                    ),
-                    gnss_interval=self._current(
-                        CONF_GNSS_INTERVAL, DEFAULT_GNSS_INTERVAL
                     ),
                     debug_mode=self._current(CONF_DEBUG_MODE, False),
                 ),

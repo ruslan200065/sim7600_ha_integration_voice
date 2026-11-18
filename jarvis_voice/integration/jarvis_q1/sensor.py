@@ -1,4 +1,4 @@
-"""Q1 call state, signal, GPS coordinates and transcribed phrases as HA sensors."""
+"""Q1 call state, signal, and transcribed phrases as HA sensors."""
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
@@ -16,8 +16,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
         CallStateSensor(c),
         SignalCsqSensor(c),
         SignalDbmSensor(c),
-        GpsSensor(c, "gps_latitude", "latitude"),
-        GpsSensor(c, "gps_longitude", "longitude"),
         TranscriptSensor(c),
         MicrophoneLevel(c.microphone),
     ])
@@ -59,18 +57,6 @@ class SignalDbmSensor(JarvisEntity, SensorEntity):
     @property
     def native_value(self):
         return csq_to_dbm(parse_csq((self.coordinator.data or {}).get("signal")))
-
-
-class GpsSensor(JarvisEntity, SensorEntity):
-    _attr_icon = "mdi:crosshairs-gps"
-
-    def __init__(self, coordinator, key, field):
-        super().__init__(coordinator, key)
-        self._field = field
-
-    @property
-    def native_value(self):
-        return ((self.coordinator.data or {}).get("gps") or {}).get(self._field)
 
 
 class TranscriptSensor(JarvisEntity, RestoreEntity, SensorEntity):

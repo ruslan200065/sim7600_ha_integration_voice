@@ -14,19 +14,17 @@ from pytest_homeassistant_custom_component.common import async_capture_events
 from custom_components.sim7600 import coordinator as coordinator_module
 from custom_components.sim7600.const import (
     CONF_BALANCE_USSD,
-    CONF_GNSS_INTERVAL,
     CONF_POLLING_INTERVAL,
     DOMAIN,
     EVENT_INCOMING_CALL,
     EVENT_SMS_RECEIVED,
-    GPS_STALE_AFTER,
     NO_REGISTRATION_ISSUE_AFTER,
     SMS_CLEANUP_INTERVAL,
 )
 from custom_components.sim7600.coordinator import SIM7600DataUpdateCoordinator
 from custom_components.sim7600.modem import ModemTimeoutError
 from custom_components.sim7600.sms_codec import CusdReply
-from custom_components.sim7600.types import GpsData, SmsData
+from custom_components.sim7600.types import SmsData
 
 
 @pytest.fixture
@@ -34,26 +32,13 @@ def mock_entry() -> MagicMock:
     """Config entry mock."""
     entry = MagicMock()
     entry.entry_id = "test_entry"
-    entry.data = {CONF_POLLING_INTERVAL: 60, CONF_GNSS_INTERVAL: 300}
+    entry.data = {CONF_POLLING_INTERVAL: 60}
     entry.options = {}
     return entry
 
 
 @pytest.fixture
-def gps_data() -> GpsData:
-    """Sample GPS fix."""
-    return GpsData(
-        latitude=52.524,
-        longitude=13.409,
-        altitude=50.0,
-        speed=1.5,
-        date="250321",
-        time="023504.0",
-    )
-
-
-@pytest.fixture
-def mock_modem(gps_data: GpsData) -> AsyncMock:
+def mock_modem() -> AsyncMock:
     """Modem mock with typical answers."""
     modem = AsyncMock()
     modem.port = "/dev/ttyUSB2"
@@ -70,8 +55,6 @@ def mock_modem(gps_data: GpsData) -> AsyncMock:
     modem.get_gprs_registration_status.return_value = 1
     modem.get_sim_status.return_value = "READY"
     modem.get_unread_sms.return_value = []
-    modem.set_gps.return_value = True
-    modem.get_gps_info.return_value = gps_data
     modem.delete_sms.return_value = True
     modem.delete_read_sms.return_value = True
     return modem
@@ -120,46 +103,6 @@ async def test_modem_timeouts_raise_update_failed(
     mock_modem.get_operator.side_effect = ModemTimeoutError("silent")
     with pytest.raises(UpdateFailed):
         await _coordinator(hass, mock_modem, mock_entry)._async_update_data()
-
-
-async def test_state_persistence_gps_on_none_response(
-    hass: HomeAssistant, mock_modem: AsyncMock, mock_entry: MagicMock, gps_data: GpsData
-) -> None:
-    """A missing fix keeps the last fix while it is fresh."""
-    coordinator = _coordinator(hass, mock_modem, mock_entry)
-    await coordinator._async_update_data()
-    mock_modem.get_gps_info.return_value = None
-    coordinator.last_gnss_update = 0.0
-    data = await coordinator._async_update_data()
-    assert data["gps"] is not None
-    assert data["gps"].latitude == gps_data.latitude
-    assert data["gps_last_fix"] is not None
-
-
-async def test_gps_expires_after_ten_minutes(
-    hass: HomeAssistant, mock_modem: AsyncMock, mock_entry: MagicMock
-) -> None:
-    """Without a fix for 10 minutes the location becomes None."""
-    coordinator = _coordinator(hass, mock_modem, mock_entry)
-    await coordinator._async_update_data()
-    mock_modem.get_gps_info.return_value = None
-    coordinator._last_fix_time = time.time() - GPS_STALE_AFTER - 1
-    coordinator.last_gnss_update = 0.0
-    data = await coordinator._async_update_data()
-    assert data["gps"] is None
-    assert data["gps_last_fix"] is not None
-
-
-async def test_gps_logged_at_debug(
-    hass: HomeAssistant,
-    mock_modem: AsyncMock,
-    mock_entry: MagicMock,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Coordinates are never logged at INFO or above."""
-    with caplog.at_level(logging.INFO, logger="custom_components.sim7600"):
-        await _coordinator(hass, mock_modem, mock_entry)._async_update_data()
-    assert "52.5" not in caplog.text
 
 
 async def test_state_persistence_signal_on_none_response(
@@ -353,43 +296,6 @@ async def test_balance_updated_by_interval(
     await coordinator._async_update_data()
     mock_modem.send_ussd.assert_awaited_once_with("*100#")
     assert data["balance"] == "Баланс: 10 р."
-
-
-# --- GPS timing / retry / failures ---
-
-
-async def test_gps_not_fetched_before_interval(
-    hass: HomeAssistant, mock_modem: AsyncMock, mock_entry: MagicMock
-) -> None:
-    """GPS is not polled before the interval elapsed."""
-    coordinator = _coordinator(hass, mock_modem, mock_entry)
-    coordinator.gps_enabled = True
-    coordinator.last_gnss_update = time.time()
-    await coordinator._async_update_data()
-    mock_modem.get_gps_info.assert_not_called()
-
-
-async def test_gps_fetched_after_interval(
-    hass: HomeAssistant, mock_modem: AsyncMock, mock_entry: MagicMock
-) -> None:
-    """GPS is polled after the interval elapsed."""
-    coordinator = _coordinator(hass, mock_modem, mock_entry)
-    coordinator.gps_enabled = True
-    coordinator.last_gnss_update = 0.0
-    await coordinator._async_update_data()
-    mock_modem.get_gps_info.assert_called_once()
-
-
-async def test_gps_activation_retried_when_false(
-    hass: HomeAssistant, mock_modem: AsyncMock, mock_entry: MagicMock
-) -> None:
-    """set_gps() returning False is retried in the next cycle."""
-    mock_modem.set_gps.return_value = False
-    coordinator = _coordinator(hass, mock_modem, mock_entry)
-    await coordinator._async_update_data()
-    assert not coordinator.gps_enabled
-    await coordinator._async_update_data()
-    assert mock_modem.set_gps.call_count == 2
 
 
 async def test_consecutive_failures_log_warning_and_reset(

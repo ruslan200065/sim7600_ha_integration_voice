@@ -1,5 +1,5 @@
 {
-  "title": "SIM7600 4G & GPS Gateway",
+  "title": "SIM7600 4G Gateway",
   "config": {
     "flow_title": "SIM7600 ({port})",
     "step": {
@@ -10,7 +10,6 @@
           "serial_port": "Serial Port",
           "baud_rate": "Baud Rate",
           "polling_interval": "Polling Interval (seconds)",
-          "gnss_interval": "GNSS Interval (seconds)",
           "debug_mode": "Debug Mode"
         }
       },
@@ -21,7 +20,6 @@
           "manual_path": "Serial port path",
           "baud_rate": "Baud Rate",
           "polling_interval": "Polling Interval (seconds)",
-          "gnss_interval": "GNSS Interval (seconds)",
           "debug_mode": "Debug Mode"
         }
       },
@@ -30,7 +28,6 @@
         "description": "SIM7600 module detected on {port}. Configure polling intervals.",
         "data": {
           "polling_interval": "Polling Interval (seconds)",
-          "gnss_interval": "GNSS Interval (seconds)",
           "debug_mode": "Debug Mode"
         }
       }
@@ -53,7 +50,6 @@
         "description": "Adjust polling, the default SMS recipient for the notify entity and the optional balance USSD request.",
         "data": {
           "polling_interval": "Polling Interval (seconds)",
-          "gnss_interval": "GNSS Interval (seconds)",
           "debug_mode": "Debug Mode",
           "default_recipient": "Default SMS recipient",
           "balance_ussd": "Balance USSD code",
@@ -112,14 +108,7 @@
       "firmware_version": { "name": "Firmware version" },
       "sim_status": { "name": "SIM status" },
       "last_sms": { "name": "Last SMS" },
-      "speed": { "name": "Speed" },
-      "altitude": { "name": "Altitude" },
-      "gnss_timestamp": { "name": "GNSS time" },
-      "gps_last_fix": { "name": "Last GPS fix" },
       "balance": { "name": "Balance" }
-    },
-    "device_tracker": {
-      "gps": { "name": "GPS" }
     },
     "notify": {
       "sms": { "name": "SMS" }
