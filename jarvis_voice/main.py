@@ -1066,7 +1066,7 @@ class Server:
 
     @web.middleware
     async def auth(self, request, handler):
-        if request.path == "/health" or request.path.startswith("/q1/shared-photo/"):
+        if request.path in {"/health", "/q1/camera/video"} or request.path.startswith("/q1/shared-photo/"):
             return await handler(request)
         token=request.headers.get("Authorization","").removeprefix("Bearer ").strip()
         if not self.api_token or not secrets.compare_digest(token,self.api_token):
@@ -1341,6 +1341,23 @@ class Server:
         return web.Response(body=content,content_type="image/jpeg",
                             headers={"Cache-Control":"no-store"})
 
+    def camera_video_key(self, peer):
+        return hmac.digest(
+            self.api_token.encode(), f"jarvis-camera-video:{peer}".encode(), "sha256",
+        ).hex()
+
+    async def q1_video_source(self, request):
+        return web.json_response({"key": self.camera_video_key(request.remote)})
+
+    async def q1_camera_video(self, request):
+        provided = request.query.get("key", "")
+        if (
+            not self.api_token or not re.fullmatch(r"[a-f0-9]{64}", provided)
+            or not secrets.compare_digest(provided, self.camera_video_key(request.remote))
+        ):
+            raise web.HTTPUnauthorized()
+        return await self.camera_panel.video(request)
+
     async def q1_camera_setup(self,request):
         if not self.o.get("q1_video_device"):
             raise web.HTTPConflict(text="Configure q1_video_device")
@@ -1485,6 +1502,8 @@ class Server:
             ("GET","/q1/probe",self.q1_probe),
             ("GET","/q1/snapshot",self.q1_snapshot),
             ("GET","/q1/camera/live",self.camera_panel.mjpeg),
+            ("GET","/q1/camera/video-source",self.q1_video_source),
+            ("GET","/q1/camera/video",self.q1_camera_video),
             ("GET","/q1/shared-photo/{ticket}",self.shared_photo),
             ("POST","/q1/camera/apply_original",self.q1_camera_setup),
             ("POST","/q1/led",self.q1_led),

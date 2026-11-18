@@ -95,6 +95,20 @@ def preview_args(device, mode):
     return (*cmd, *codec, "-flush_packets", "1", "-f", "mpjpeg", "-boundary_tag", "jarvis", "pipe:1")
 
 
+
+def video_args(mode):
+    fps = str(Fraction(str(mode["fps"])))
+    return (
+        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+        "-probesize", "32", "-analyzeduration", "0",
+        "-f", "image2pipe", "-framerate", fps, "-vcodec", "mjpeg", "-threads", "1",
+        "-i", "pipe:0", "-an", "-c:v", "libx264", "-threads", "2",
+        "-preset", "ultrafast", "-tune", "zerolatency", "-crf", "23",
+        "-pix_fmt", "yuv420p", "-g", str(max(1, round(mode["fps"]))),
+        "-sc_threshold", "0", "-flush_packets", "1", "-f", "mpegts", "pipe:1",
+    )
+
+
 async def read_frame(stdout):
     """Read FFmpeg's bounded multipart JPEG frames without scanning JPEG bytes."""
     while (line := await stdout.readline()) == b"\r\n":
@@ -119,6 +133,8 @@ class CameraPanel:
         self.path = Path(service.camera_settings_path)
         self.device = None
         self.capture_task = None
+        self.capture_mode = None
+        self.video_task = None
         self.subscribers = set()
         self.lifecycle_lock = asyncio.Lock()
         self.viewers = set()
@@ -276,6 +292,7 @@ class CameraPanel:
                 if mode is None:
                     raise RuntimeError("Камера не сообщила поддерживаемый режим видео.")
                 await self.restore_controls(device, saved.get("controls", {}))
+                self.capture_mode = mode
                 proc = await asyncio.create_subprocess_exec(
                     *preview_args(device, mode), stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
@@ -294,6 +311,7 @@ class CameraPanel:
                     proc.kill()
                 await proc.communicate()
             self.last_frame = None
+            self.capture_mode = None
             self.device = None
             self.released.set()
 
@@ -322,6 +340,56 @@ class CameraPanel:
             if not response.prepared:
                 raise web.HTTPServiceUnavailable(text=str(exc)[:250]) from exc
         return response
+
+    async def video(self, request):
+        """Expose a video input for HA's HLS player; encode only while it reads."""
+        if self.video_task is not None:
+            raise web.HTTPConflict(text="Видеопоток уже открыт.")
+        self.video_task = asyncio.current_task()
+        response = web.StreamResponse(headers={
+            "Content-Type": "video/mp2t",
+            "Cache-Control": "no-store",
+        })
+        encoder = writer = None
+        try:
+            async with self.subscribe() as queue:
+                frame = await self.next_frame(queue)
+                mode = self.capture_mode
+                encoder = await asyncio.create_subprocess_exec(
+                    *video_args(mode), stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                )
+                writer = asyncio.create_task(self.feed_video(encoder.stdin, queue, frame, mode))
+                try:
+                    chunk = await asyncio.wait_for(encoder.stdout.read(8192), 8)
+                    if not chunk:
+                        raise RuntimeError("Кодировщик камеры не передал видео.")
+                    await response.prepare(request)
+                    while chunk and request.transport and not request.transport.is_closing():
+                        await asyncio.wait_for(response.write(chunk), 3)
+                        chunk = await asyncio.wait_for(encoder.stdout.read(8192), 6)
+                finally:
+                    writer.cancel()
+                    await asyncio.gather(writer, return_exceptions=True)
+        except (RuntimeError, TimeoutError, ValueError, OSError) as exc:
+            if not response.prepared:
+                raise web.HTTPServiceUnavailable(text=str(exc)[:250]) from exc
+        finally:
+            if encoder is not None and encoder.returncode is None:
+                with suppress(ProcessLookupError):
+                    encoder.kill()
+                await encoder.communicate()
+            self.video_task = None
+        return response
+
+    async def feed_video(self, stdin, queue, frame, mode):
+        try:
+            while mode == self.capture_mode:
+                stdin.write(frame)
+                await asyncio.wait_for(stdin.drain(), 3)
+                frame = await self.next_frame(queue)
+        finally:
+            stdin.close()
 
     async def preview(self, request):
         if request.headers.get("Sec-Fetch-Site") == "cross-site":
@@ -371,6 +439,9 @@ class CameraPanel:
             await asyncio.wait_for(ws.send_bytes(frame), 2)
 
     async def shutdown(self, _app):
+        if self.video_task is not None:
+            self.video_task.cancel()
+            await asyncio.gather(self.video_task, return_exceptions=True)
         await asyncio.gather(*(ws.close() for ws in tuple(self.viewers)))
         async with self.lifecycle_lock:
             if self.capture_task is not None:

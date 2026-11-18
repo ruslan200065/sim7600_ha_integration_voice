@@ -51,3 +51,17 @@ async def test_ha_camera_proxies_authenticated_mjpeg(
         "Cache-Control": "no-store",
     }
     assert [call.args[0] for call in response.write.await_args_list] == [FRAME, FRAME]
+
+
+async def test_ha_media_source_uses_dedicated_video_input() -> None:
+    key = "a" * 64
+    client = SimpleNamespace(
+        url="http://addon:8099", get=AsyncMock(return_value={"key": key})
+    )
+    camera = SimpleNamespace(coordinator=SimpleNamespace(client=client))
+    assert await Q1Camera.stream_source(camera) == (
+        f"http://addon:8099/q1/camera/video?key={key}"
+    )
+    client.get.assert_awaited_once_with("/q1/camera/video-source", timeout=5)
+    client.get.return_value = {"key": "https://another-host/"}
+    assert await Q1Camera.stream_source(camera) is None

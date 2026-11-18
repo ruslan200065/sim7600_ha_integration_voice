@@ -9,6 +9,11 @@
 - Add configured LLM failover before tools/speech and optional OpenAI-compatible speech backup.
 - Add per-call diagnostics, autonomous-rule editors and family-message UI.
 
+## 0.10.0
+
+- Камера JARVIS в разделе «Мультимедиа» Home Assistant передаёт видео H.264 через штатный HLS-плеер.
+- Видео использует разрешение и частоту кадров из вкладки «Камера». Просмотры используют общий USB-захват. Кодирование видео выполняется, пока поток запрашивает Home Assistant.
+
 ## 0.9.1
 
 - Сущность камеры Home Assistant передаёт живой MJPEG-поток в режиме «В реальном времени».

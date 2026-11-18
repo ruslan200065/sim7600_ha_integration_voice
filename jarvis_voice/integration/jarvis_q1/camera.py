@@ -1,9 +1,10 @@
 """Snapshots and on-demand MJPEG from the add-on's shared camera capture."""
 import asyncio
+import re
 
 from aiohttp import ClientError, ClientTimeout, web
 
-from homeassistant.components.camera import Camera
+from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
@@ -16,6 +17,19 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 
 class Q1Camera(JarvisEntity, Camera):
+    _attr_supported_features = CameraEntityFeature.STREAM
+
+    async def stream_source(self):
+        client = self.coordinator.client
+        try:
+            data = await client.get("/q1/camera/video-source", timeout=5)
+        except HomeAssistantError:
+            return None
+        key = data.get("key") if isinstance(data, dict) else None
+        if isinstance(key, str) and re.fullmatch(r"[a-f0-9]{64}", key):
+            return f"{client.url}/q1/camera/video?key={key}"
+        return None
+
     def __init__(self, coordinator):
         JarvisEntity.__init__(self, coordinator, "camera")
         Camera.__init__(self)
