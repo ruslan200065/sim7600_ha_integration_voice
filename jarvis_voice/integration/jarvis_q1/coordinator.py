@@ -5,6 +5,7 @@ from datetime import timedelta
 import logging
 
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .client import JarvisAuthError, JarvisError
@@ -32,6 +33,8 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
         self.last_answer = ""
         self.probe = {}
         self.microphone = None
+        self._event_store = Store(hass, 1, f"jarvis_q1.call_events.{entry.entry_id}")
+        self._saved_call_cursor = None
         self._call_event_stream = None
         self._call_event_cursor = 0
         self._last_call_state = None
@@ -68,13 +71,40 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
         if not isinstance(data, dict):
             raise UpdateFailed("JARVIS /status returned an unexpected payload")
         if "call_event_stream" in data:
-            self._replay_call_events(data["call_event_stream"], data.get("call_events", []))
+            stream = data["call_event_stream"]
+            events = data.get("call_events", [])
+            if data.get("call_events_durable"):
+                await self._read_durable_call_events(stream, events)
+            else:
+                self._replay_call_events(stream, events)
         else:
             self._fire_call_events(data)
         return data
 
-    def _replay_call_events(self, stream, events):
-        if self._call_event_stream is None:
+    async def _read_durable_call_events(self, stream, events):
+        if self._saved_call_cursor is None:
+            saved = await self._event_store.async_load() or {}
+            self._call_event_stream = saved.get("stream")
+            self._call_event_cursor = saved.get("sequence", 0)
+            self._saved_call_cursor = self._call_event_stream, self._call_event_cursor
+
+        self._replay_call_events(stream, events, durable=True)
+        cursor = self._call_event_stream, self._call_event_cursor
+        if self._saved_call_cursor != cursor:
+            await self._event_store.async_save({
+                "stream": stream, "sequence": self._call_event_cursor,
+            })
+            self._saved_call_cursor = cursor
+        if events and self._call_event_cursor >= events[0]["sequence"]:
+            try:
+                await self.client.post("/call-events/ack", {
+                    "stream": stream, "sequence": self._call_event_cursor,
+                }, timeout=5)
+            except JarvisError:
+                _LOGGER.debug("Call event acknowledgement will be retried", exc_info=True)
+
+    def _replay_call_events(self, stream, events, *, durable=False):
+        if self._call_event_stream is None and not durable:
             # Start at the next event when joining a running add-on.
             self._call_event_cursor = events[-1]["sequence"] if events else 0
         elif stream != self._call_event_stream:
@@ -89,7 +119,10 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
                 break
             if event["delivery"] == "companion":
                 self.hass.bus.async_fire(
-                    event["name"], {**event["data"], "entry_id": self.entry.entry_id},
+                    event["name"], {
+                        **event["data"], "entry_id": self.entry.entry_id,
+                        "event_id": f"{stream}:{sequence}",
+                    },
                 )
             self._call_event_cursor = sequence
 

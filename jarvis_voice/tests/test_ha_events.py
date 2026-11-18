@@ -5,11 +5,13 @@ import pathlib
 import sys
 import unittest
 from types import SimpleNamespace
+from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 with patch.dict(sys.modules, {"speech": SimpleNamespace(SpeechKit=object)}):
     from main import Server
+from call_outbox import CallOutbox
 
 
 class HomeAssistantEventTests(unittest.IsolatedAsyncioTestCase):
@@ -57,6 +59,46 @@ class HomeAssistantEventTests(unittest.IsolatedAsyncioTestCase):
                          ["jarvis_call_incoming", "jarvis_call_ended"])
         self.assertTrue(all(e["delivery"] == "companion" for e in calls))
         self.assertTrue(all(e["data"]["call_id"] == 8 for e in calls))
+
+    async def test_call_events_survive_restart_and_acknowledgement(self):
+        with TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "outbox.sqlite3"
+            service = self.service()
+            service.call_outbox = CallOutbox(path)
+            service.call_event_stream = service.call_outbox.stream
+            service.brain._ha.side_effect = OSError("Home Assistant offline")
+
+            await service.event("incoming_call", {"number": ""})
+            await service.event("caller_id", {"number": "+79990000001"})
+            await service.event("call_ended", {"call_id": 4})
+            await self.settle()
+
+            recovered = CallOutbox(path)
+            self.assertEqual(recovered.stream, service.call_event_stream)
+            calls = recovered.batch()
+            self.assertEqual([call["sequence"] for call in calls], [1, 2])
+            self.assertEqual(calls[0]["data"]["number"], "+79990000001")
+            self.assertEqual(
+                self.fired(service)[0][1]["event_id"], f"{recovered.stream}:1"
+            )
+            self.assertFalse(recovered.acknowledge("wrong-stream", 2))
+            self.assertEqual(recovered.batch(), calls)
+            self.assertTrue(recovered.acknowledge(recovered.stream, 1))
+            self.assertEqual(CallOutbox(path).batch(), calls[1:])
+
+    async def test_interrupted_send_becomes_replayable_after_restart(self):
+        with TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "outbox.sqlite3"
+            outbox = CallOutbox(path)
+            sequence = outbox.record({
+                "name": "jarvis_call_incoming",
+                "data": {"call_id": 1},
+                "delivery": "pending",
+            })
+            self.assertEqual(outbox.batch()[0]["delivery"], "pending")
+            recovered = CallOutbox(path)
+            self.assertEqual(recovered.batch()[0]["sequence"], sequence)
+            self.assertEqual(recovered.batch()[0]["delivery"], "companion")
 
     async def test_dtmf_inside_jarvis_dialog_is_not_forwarded(self):
         service = self.service()

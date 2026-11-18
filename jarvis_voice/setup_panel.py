@@ -679,6 +679,19 @@ class SetupPanel:
         result = await self.service.history.page(kind, offset)
         return web.json_response({**result, "sms": self.service.sms_status})
 
+    async def clear_history(self, request):
+        kind = request.match_info["kind"]
+        try:
+            if kind == "speech_cache":
+                cleared = await asyncio.to_thread(self.service.speech_cache.clear)
+            elif kind in {"call", "sms"}:
+                cleared = await self.service.history.clear(kind)
+            else:
+                raise web.HTTPNotFound()
+        except OSError as exc:
+            raise web.HTTPServiceUnavailable(text="Не удалось очистить локальные данные.") from exc
+        return web.json_response({"cleared": cleared})
+
     async def audit(self, request):
         try:
             limit = int(request.query.get("limit", 100))
@@ -892,6 +905,7 @@ class SetupPanel:
         app.router.add_get("/phone", self.phone_state)
         app.router.add_post("/phone/{action}", self.phone_action)
         app.router.add_get("/history", self.history)
+        app.router.add_delete("/history/{kind}", self.clear_history)
         app.router.add_get("/audit", self.audit)
         app.router.add_post("/history/refresh", self.refresh_sms)
         app.router.add_post("/checks/{check}", self.check)

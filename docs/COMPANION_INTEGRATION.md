@@ -72,3 +72,4 @@ The original Q1 archive confirms Microchip **speaker playback**, but not a micro
 This is reusable mic/speaker support, **not yet** a full native `assist_satellite` entity with wake-word, multi-turn Assist pipeline, and intercom. The explicit raw PCM endpoint is the foundation for a separate satellite layer.
 
 API traffic is authenticated by an App-generated secret shared only through Supervisor discovery; do not expose port 8099 to Internet.
+Call events that cannot be sent directly to Home Assistant remain in the add-on's SQLite outbox for up to 30 days. The companion acknowledges a batch after saving its cursor in Home Assistant storage. Event payloads include a stable `event_id`. Automations that must tolerate a lost response or a crash during delivery can use that ID to ignore duplicate deliveries.

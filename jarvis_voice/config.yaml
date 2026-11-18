@@ -70,6 +70,7 @@ options:
   reminder_calendar: ""
   reminder_person: ""
   speech_cache_enabled: true
+  history_retention_days: 365
   confirm_risky_actions: false
   ha_events: true
   call_summary: false
@@ -141,6 +142,7 @@ schema:
   reminder_calendar: str
   reminder_person: str
   speech_cache_enabled: bool
+  history_retention_days: int(1,3650)
   confirm_risky_actions: bool
   ha_events: bool
   call_summary: bool

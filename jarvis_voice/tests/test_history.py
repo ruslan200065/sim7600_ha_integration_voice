@@ -75,3 +75,14 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(second["items"]), 1)
         self.assertFalse(second["more"])
         self.assertEqual((await self.history.page("sms", 0))["total"], 1)
+
+    async def test_clear_sms_keeps_calls_and_prevents_reimport(self):
+        lines = ["+CMGL: 1,0,,30", sms_pdu("Тест"), "OK"]
+        await self.history.import_sms(lines)
+        await self.history.call("outgoing_call", {"call_id": 1})
+        self.assertEqual(await self.history.clear("sms"), 1)
+        restarted = History(self.path)
+        await restarted.start()
+        await restarted.import_sms(lines)
+        self.assertEqual((await restarted.page("sms", 0))["total"], 0)
+        self.assertEqual((await restarted.page("call", 0))["total"], 1)

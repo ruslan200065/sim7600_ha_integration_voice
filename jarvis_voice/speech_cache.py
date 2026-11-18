@@ -39,6 +39,16 @@ class SpeechCache:
             except OSError:
                 pass
 
+    def clear(self):
+        count = 0
+        for path in self.directory.glob("*.pcm"):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                continue
+            count += 1
+        return count
+
     @staticmethod
     def read(path):
         data = path.read_bytes()

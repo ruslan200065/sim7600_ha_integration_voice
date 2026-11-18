@@ -1133,6 +1133,24 @@ async function loadHistory(offset = 0) {
 historyType.addEventListener("change", () => loadHistory());
 historyNewer.addEventListener("click", () => loadHistory(historyOffset - historyPageSize));
 historyOlder.addEventListener("click", () => loadHistory(historyOffset + historyPageSize));
+for (const button of document.querySelectorAll("[data-clear-history]")) {
+  button.addEventListener("click", async () => {
+    if (!window.confirm(button.textContent + "?")) return;
+    button.disabled = true;
+    try {
+      const response = await request("history/" + button.dataset.clearHistory, "DELETE");
+      const result = await response.json();
+      await loadHistory(0);
+      historyStatus.dataset.error = "false";
+      historyStatus.textContent = "Удалено записей или файлов: " + result.cleared;
+    } catch (error) {
+      historyStatus.dataset.error = "true";
+      historyStatus.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
 document.querySelector("#history-refresh").addEventListener("click", async () => {
   try {
     await request("history/refresh", "POST");

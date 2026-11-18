@@ -79,6 +79,7 @@ class History:
             (cutoff,),
         )
         conn.execute("DELETE FROM history WHERE created_at < ?", (cutoff,))
+        conn.execute("DELETE FROM dismissed_sms WHERE created_at < ?", (cutoff,))
 
     def _run(self, operation, *args):
         with closing(sqlite3.connect(self.path)) as conn, conn:
@@ -112,6 +113,10 @@ class History:
                 part INTEGER NOT NULL,
                 body TEXT NOT NULL,
                 UNIQUE(history_id, part)
+            );
+            CREATE TABLE IF NOT EXISTS dismissed_sms (
+                digest TEXT PRIMARY KEY,
+                created_at REAL NOT NULL
             );
         """)
         self.path.chmod(0o600)
@@ -172,9 +177,11 @@ class History:
         """Store new SMS parts and return messages that became complete."""
         self._prune(conn)
         completed = []
+        cutoff = time.time() - self.retention_days * 86400 if self.retention_days else 0
         for digest, date, sender, text, ref, part, total in decode_messages(lines):
-            if conn.execute(
-                "SELECT 1 FROM sms_parts WHERE digest=?", (digest,)
+            if date < cutoff or conn.execute(
+                "SELECT 1 FROM sms_parts WHERE digest=? "
+                "UNION ALL SELECT 1 FROM dismissed_sms WHERE digest=?", (digest, digest)
             ).fetchone():
                 continue
             row = None
@@ -215,6 +222,28 @@ class History:
             if len(parts) == total:
                 completed.append({"number": sender, "text": body, "received_at": date, "parts": total})
         return completed
+
+    async def clear(self, kind):
+        if kind not in {"call", "sms"}:
+            raise ValueError("Unknown history category")
+        return await asyncio.to_thread(self._run, self._clear, kind)
+
+    def _clear(self, conn, kind):
+        conn.execute("BEGIN IMMEDIATE")
+        if kind == "sms":
+            conn.execute(
+                "INSERT OR IGNORE INTO dismissed_sms "
+                "SELECT sms_parts.digest, history.created_at FROM sms_parts "
+                "JOIN history ON history.id=sms_parts.history_id WHERE history.kind='sms' AND history.state='received'"
+            )
+            conn.execute(
+                "DELETE FROM sms_parts WHERE history_id IN "
+                "(SELECT id FROM history WHERE kind='sms' AND state='received')"
+            )
+            return conn.execute("DELETE FROM history WHERE kind='sms' AND state='received'").rowcount
+        return conn.execute(
+            "DELETE FROM history WHERE kind='call' AND state NOT IN (?,?,?)", ACTIVE_CALLS
+        ).rowcount
 
     async def page(self, kind, offset):
         return await asyncio.to_thread(self._run, self._page, kind, offset)

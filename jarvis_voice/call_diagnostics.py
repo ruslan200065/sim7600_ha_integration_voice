@@ -1,5 +1,7 @@
 """Explain observable call stages without claiming what a human heard."""
 
+from datetime import datetime
+
 STAGES = {'recognized':'stt', 'reply':'llm', 'playback':'playback',
           'connection':'connection', 'audio_rx':'audio_rx', 'stt':'stt', 'llm':'llm', 'tts':'tts'}
 LABELS = {'connection':'Соединение', 'audio_rx':'Приём аудио от модема',
@@ -15,11 +17,16 @@ def analyze_timeline(entries, call_id=None):
     stages = {key:{'stage':key,'label':label,'status':'unknown','evidence':[],'duration_ms':None}
               for key,label in LABELS.items()}
     failures = []
+    connected_at = first_audio_at = None
     for row in rows:
         stage = STAGES.get(row.get('stage'))
         if not stage:
             continue
         status = str(row.get('status', 'unknown'))
+        if stage == 'connection' and status == 'connected' and connected_at is None:
+            connected_at = row.get('at')
+        if stage == 'playback' and status == 'sent' and first_audio_at is None:
+            first_audio_at = row.get('at')
         item = stages[stage]
         item['status'] = status
         item['duration_ms'] = row.get('duration_ms')
@@ -43,5 +50,14 @@ def analyze_timeline(entries, call_id=None):
     else:
         reason = 'Недостаточно данных для подтверждения полного голосового тракта.'
         status = 'incomplete'
-    return {'call_id':call_id,'status':status,'reason':reason,'failure':failure,
+    first_audio_ms = None
+    if isinstance(connected_at, str) and isinstance(first_audio_at, str):
+        try:
+            elapsed = datetime.fromisoformat(first_audio_at) - datetime.fromisoformat(connected_at)
+        except (ValueError, TypeError):
+            pass
+        else:
+            if elapsed.total_seconds() >= 0:
+                first_audio_ms = round(elapsed.total_seconds() * 1000)
+    return {'first_audio_ms':first_audio_ms, 'call_id':call_id,'status':status,'reason':reason,'failure':failure,
             'stages':list(stages.values()),'past_failures':failures,'audibility_confirmed':False}

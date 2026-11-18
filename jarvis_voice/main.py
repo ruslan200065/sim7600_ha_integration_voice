@@ -35,7 +35,8 @@ from q1_protocol import led_set
 from q1_hardware import diagnostics, snapshot, apply_original_camera_controls
 from q1_media import Q1Media
 from setup_panel import SetupPanel
-from history import History
+from history import History, RETENTION_DAYS
+from call_outbox import CallOutbox
 from family import GATE_ACTIONS, family_profiles, lock_entities, profile_key
 from personal import Personal, condition_matches
 from speech_cache import SpeechCache
@@ -120,7 +121,12 @@ class Server:
         self.next_prompt = None
         self.shared_photos = {}
         data_dir = Path(os.environ.get("OPTIONS_PATH", "/data/options.json")).parent
-        self.history = History(data_dir / "history.sqlite3")
+        self.history = History(
+            data_dir / "history.sqlite3",
+            retention_days=options.get("history_retention_days", RETENTION_DAYS),
+        )
+        self.call_outbox_path = data_dir / "call_outbox.sqlite3"
+        self.call_outbox = None
         self.personal = Personal(data_dir / "personal.sqlite3")
         self.knowledge = Knowledge(data_dir / "knowledge.sqlite3")
         self.policies = NotificationPolicies(data_dir / "notifications.sqlite3")
@@ -174,6 +180,8 @@ class Server:
 
     async def setup(self):
         await self.history.start()
+        self.call_outbox = await asyncio.to_thread(CallOutbox, self.call_outbox_path)
+        self.call_event_stream = self.call_outbox.stream
         self.history_task = asyncio.create_task(self.write_history())
         self.http = ClientSession()
         self.brain = Brain(self.o, self.http, self.capture_camera, self.listen_room, self.share_photo,
@@ -284,29 +292,37 @@ class Server:
         """Send an event to the Home Assistant bus without blocking the caller."""
         if self.o.get("ha_events", True) is False or not getattr(self.brain, "hass_token", ""):
             if delivery is not None:
-                delivery["delivery"] = "companion"
+                self._set_call_delivery(delivery, "companion")
             return
         tasks = self.__dict__.setdefault("ha_event_tasks", set())
 
         if delivery is not None:
-            delivery["delivery"] = "pending"
+            self._set_call_delivery(delivery, "pending")
 
         async def send():
             try:
-                await self.brain._ha("POST", "/api/events/" + name, data, timeout=5)
+                payload = data
+                if delivery is not None and self.call_outbox is not None:
+                    payload = {**data, "event_id": f"{self.call_event_stream}:{delivery['sequence']}"}
+                await self.brain._ha("POST", "/api/events/" + name, payload, timeout=5)
             except Exception as exc:
                 if delivery is not None:
-                    delivery["delivery"] = "companion"
+                    self._set_call_delivery(delivery, "companion")
                 LOG.warning("Could not send %s to Home Assistant: %s", name, exc)
             else:
                 if delivery is not None:
-                    delivery["delivery"] = "direct"
+                    self._set_call_delivery(delivery, "direct")
 
         task = asyncio.create_task(send())
         tasks.add(task)
         task.add_done_callback(tasks.discard)
 
-    def _record_call_event(self, name, data, *, delivery="companion"):
+    def _set_call_delivery(self, event, state):
+        event["delivery"] = state
+        if self.call_outbox is not None:
+            self.call_outbox.update(event)
+
+    def _record_call_event(self, name, data, *, delivery="pending"):
         self.call_event_sequence += 1
         event = {
             "sequence": self.call_event_sequence,
@@ -314,6 +330,8 @@ class Server:
             "data": data,
             "delivery": delivery,
         }
+        if self.call_outbox is not None:
+            event["sequence"] = self.call_outbox.record(event)
         self.call_events.append(event)
         return event
 
@@ -1066,13 +1084,29 @@ class Server:
             status=200 if ready else 503,
         )
 
+    async def acknowledge_call_events(self, request):
+        data = await read_json(request)
+        sequence = data.get("sequence")
+        if type(sequence) is not int or not 0 < sequence < 2**63:
+            raise web.HTTPBadRequest(text="Invalid call event sequence")
+        if self.call_outbox is None or not await asyncio.to_thread(
+            self.call_outbox.acknowledge, data.get("stream"), sequence,
+        ):
+            raise web.HTTPConflict(text="Unknown call event stream")
+        return web.json_response({"ok": True})
+
     async def status(self, request):
+        call_events = (
+            await asyncio.to_thread(self.call_outbox.batch)
+            if self.call_outbox is not None else list(self.call_events)
+        )
         return web.json_response({"mode":self.mode,"call_state":self.modem.call_state,
              "active_number":self.modem.active_number,"signal":self.modem.signal,
              "model":self.modem.model,"firmware":self.modem.firmware,
              "last_error":self.last_error,"events":self.events[-10:],
             "call_event_stream": self.call_event_stream,
-            "call_events": list(self.call_events),
+            "call_events": call_events,
+            "call_events_durable": self.call_outbox is not None,
             "speaker_playing":self.media.playing,
             "capabilities":{
                 "camera_configured":bool(self.o.get("q1_video_device")),
@@ -1431,6 +1465,7 @@ class Server:
     def app(self):
         app=web.Application(middlewares=[self.auth],client_max_size=256*1024)
         for method,path,fn in (
+            ("POST","/call-events/ack",self.acknowledge_call_events),
             ("GET","/health",self.health),("GET","/ready",self.readiness),("GET","/status",self.status),
             ("POST","/notify",self.notify_event),("POST","/dial",self.dial),("POST","/hangup",self.hangup),
             ("POST","/answer",self.answer),("POST","/chat",self.chat),
