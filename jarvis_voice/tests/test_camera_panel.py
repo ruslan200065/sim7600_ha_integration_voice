@@ -9,7 +9,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from camera_panel import CameraPanel, default_mode, parse_controls, parse_modes, preview_args
+from camera_panel import CameraPanel, default_mode, parse_controls, parse_modes, preview_args, read_frame
 
 MODES = """
     [0]: 'YUYV' (YUYV 4:2:2)
@@ -86,6 +86,7 @@ while True:
     monkeypatch.setattr("camera_panel.asyncio.create_subprocess_exec", start_ffmpeg)
     app = web.Application()
     panel.register(app)
+    app.router.add_get("/q1/camera/live", panel.mjpeg)
     async with TestClient(TestServer(app)) as client:
         assert (await client.get("/camera")).status == 200
         assert not spawned
@@ -94,6 +95,13 @@ while True:
             assert panel.last_frame[1] == bytes.fromhex("ffd8ffd9")
             assert len(spawned) == 1
             assert spawned[0].returncode is None
+            stream = await client.get("/q1/camera/live")
+            assert stream.status == 200
+            assert await read_frame(stream.content) == bytes.fromhex("ffd8ffd9")
+            assert len(spawned) == 1
+        assert await read_frame(stream.content) == bytes.fromhex("ffd8ffd9")
+        assert spawned[0].returncode is None
+        stream.close()
         await asyncio.wait_for(panel.released.wait(), 3)
         assert panel.last_frame is None
         assert spawned[0].returncode is not None

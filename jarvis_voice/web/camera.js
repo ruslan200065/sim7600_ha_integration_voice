@@ -214,19 +214,8 @@
     if (!mode) return;
     saving = true;
     save.disabled = toggle.disabled = true;
-    const restart = Boolean(socket);
     try {
       await request("camera", "PATCH", {mode});
-      if (restart && socket) {
-        const previous = stop();
-        await new Promise(resolve => {
-          if (previous.readyState === WebSocket.CLOSED) resolve();
-          else {
-            previous.addEventListener("close", resolve, {once: true});
-            setTimeout(resolve, 800);
-          }
-        });
-      }
       report("Режим сохранён.");
     } catch (error) {
       report(error.message, true);
@@ -235,7 +224,6 @@
       saving = false;
       save.disabled = toggle.disabled = !modes.length;
     }
-    if (restart) start();
   });
   document.addEventListener("jarvis-tab", () => {
     if (visible()) loadCamera();

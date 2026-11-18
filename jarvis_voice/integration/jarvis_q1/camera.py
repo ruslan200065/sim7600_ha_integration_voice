@@ -1,4 +1,8 @@
-"""A snapshot camera entity. Uses the real Q1 UVC camera via App proxy."""
+"""Snapshots and on-demand MJPEG from the add-on's shared camera capture."""
+import asyncio
+
+from aiohttp import ClientError, ClientTimeout, web
+
 from homeassistant.components.camera import Camera
 from homeassistant.exceptions import HomeAssistantError
 
@@ -30,3 +34,30 @@ class Q1Camera(JarvisEntity, Camera):
             return await self.coordinator.client.get("/q1/snapshot", timeout=17, raw=True)
         except HomeAssistantError:
             return None
+
+
+    async def handle_async_mjpeg_stream(self, request):
+        client = self.coordinator.client
+        response = None
+        try:
+            async with client.session.get(
+                client.url + "/q1/camera/live",
+                headers=client.headers,
+                timeout=ClientTimeout(total=None, sock_connect=5, sock_read=15),
+                allow_redirects=False,
+            ) as upstream:
+                if upstream.status != 200 or upstream.content_type != "multipart/x-mixed-replace":
+                    raise web.HTTPServiceUnavailable(text="JARVIS camera stream unavailable")
+                response = web.StreamResponse(headers={
+                    "Content-Type": upstream.headers["Content-Type"],
+                    "Cache-Control": "no-store",
+                })
+                await response.prepare(request)
+                async for chunk in upstream.content.iter_chunked(64 * 1024):
+                    if request.transport is None or request.transport.is_closing():
+                        break
+                    await asyncio.wait_for(response.write(chunk), 3)
+        except (ClientError, TimeoutError, OSError) as exc:
+            if response is None or not response.prepared:
+                raise web.HTTPServiceUnavailable(text="JARVIS camera stream unavailable") from exc
+        return response

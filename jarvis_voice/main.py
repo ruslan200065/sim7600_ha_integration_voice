@@ -1473,6 +1473,7 @@ class Server:
 
     def app(self):
         app=web.Application(middlewares=[self.auth],client_max_size=256*1024)
+        app.on_shutdown.append(self.camera_panel.shutdown)
         for method,path,fn in (
             ("POST","/call-events/ack",self.acknowledge_call_events),
             ("GET","/health",self.health),("GET","/ready",self.readiness),("GET","/status",self.status),
@@ -1483,6 +1484,7 @@ class Server:
             ("POST","/q1/listen",self.q1_listen),("POST","/q1/speak",self.q1_speak),
             ("GET","/q1/probe",self.q1_probe),
             ("GET","/q1/snapshot",self.q1_snapshot),
+            ("GET","/q1/camera/live",self.camera_panel.mjpeg),
             ("GET","/q1/shared-photo/{ticket}",self.shared_photo),
             ("POST","/q1/camera/apply_original",self.q1_camera_setup),
             ("POST","/q1/led",self.q1_led),

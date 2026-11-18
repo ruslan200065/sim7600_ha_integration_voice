@@ -14,5 +14,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/ruslan200065/sim7600_ha_integration_voice/issues",
   "requirements": [],
-  "version": "0.6.0"
+  "version": "0.6.1"
 }

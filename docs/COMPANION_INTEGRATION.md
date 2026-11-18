@@ -73,3 +73,9 @@ This is reusable mic/speaker support, **not yet** a full native `assist_satellit
 
 API traffic is authenticated by an App-generated secret shared only through Supervisor discovery; do not expose port 8099 to Internet.
 Call events that cannot be sent directly to Home Assistant remain in the add-on's SQLite outbox for up to 30 days. The companion acknowledges a batch after saving its cursor in Home Assistant storage. Event payloads include a stable `event_id`. Automations that must tolerate a lost response or a crash during delivery can use that ID to ignore duplicate deliveries.
+
+## Живая камера на панели Home Assistant
+
+В карточке «Изображение сущности» выбери сущность камеры JARVIS и установи режим просмотра «В реальном времени» (`camera_view: live`). Поток использует настройки вкладки «Камера» JARVIS. Открытые карточки и вкладка используют один процесс захвата. Если карточка остаётся открытой, она продолжает получать видео.
+
+После обновления дополнения до 0.9.1 перезапусти Home Assistant Core, чтобы загрузилась поставляемая интеграция `jarvis_q1` 0.6.1. При ручной установке обнови также файлы интеграции.

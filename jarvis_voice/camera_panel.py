@@ -1,6 +1,6 @@
 """On-demand UVC preview, camera mode discovery and controls."""
 import asyncio
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from fractions import Fraction
 import json
 from pathlib import Path
@@ -118,7 +118,10 @@ class CameraPanel:
         self.service = service
         self.path = Path(service.camera_settings_path)
         self.device = None
-        self.viewer = None
+        self.capture_task = None
+        self.subscribers = set()
+        self.lifecycle_lock = asyncio.Lock()
+        self.viewers = set()
         self.released = asyncio.Event()
         self.released.set()
         self.last_frame = None
@@ -201,6 +204,8 @@ class CameraPanel:
                 else:
                     raise ValueError("Неверные настройки камеры.")
                 await asyncio.to_thread(self.write_settings, device, settings)
+            if "mode" in data:
+                await self.restart_capture(device)
             return web.json_response({"ok": True})
         except (ValueError, RuntimeError, OSError) as exc:
             raise web.HTTPConflict(text=str(exc)[:250]) from exc
@@ -217,31 +222,51 @@ class CameraPanel:
                 with suppress(RuntimeError):
                     await _run("v4l2-ctl", "-d", device, "-c", f"{name}={value}", timeout=2)
 
-    async def preview(self, request):
-        if request.headers.get("Sec-Fetch-Site") == "cross-site":
-            raise web.HTTPForbidden()
+    @asynccontextmanager
+    async def subscribe(self):
+        """Start one capture for the first viewer and stop it after the last."""
+        device = self.configured_device()
+        queue = asyncio.Queue(maxsize=1)
+        async with self.lifecycle_lock:
+            if len(self.subscribers) >= 8:
+                raise RuntimeError("Слишком много подключений к камере.")
+            self.subscribers.add(queue)
+            if self.capture_task is None or self.capture_task.done():
+                self.start_capture(device)
         try:
-            device = self.configured_device()
-        except ValueError as exc:
-            raise web.HTTPConflict(text=str(exc)) from exc
-        if self.device is not None:
-            try:
-                await asyncio.wait_for(self.released.wait(), 1)
-            except TimeoutError as exc:
-                raise web.HTTPConflict(text="Предпросмотр уже открыт.") from exc
-            if self.device is not None:
-                raise web.HTTPConflict(text="Предпросмотр уже открыт.")
-        # Reserve before the first await, including capability probing.
+            yield queue
+        finally:
+            async with self.lifecycle_lock:
+                self.subscribers.discard(queue)
+                if not self.subscribers and self.capture_task is not None:
+                    self.capture_task.cancel()
+                    await asyncio.gather(self.capture_task, return_exceptions=True)
+                    self.capture_task = None
+                    self.device = None
+                    self.released.set()
+
+    def start_capture(self, device):
         self.device = device
         self.released.clear()
-        ws = web.WebSocketResponse(heartbeat=10, max_msg_size=1024)
-        self.viewer = ws
-        proc = receiver = None
-        ready = asyncio.Event()
-        ready.set()
+        self.capture_task = asyncio.create_task(self.capture(device))
+
+    async def restart_capture(self, device):
+        async with self.lifecycle_lock:
+            if not self.subscribers:
+                return
+            self.capture_task.cancel()
+            await asyncio.gather(self.capture_task, return_exceptions=True)
+            self.start_capture(device)
+
+    def publish(self, item):
+        for queue in self.subscribers:
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait(item)
+
+    async def capture(self, device):
+        proc = None
         try:
-            await ws.prepare(request)
-            receiver = asyncio.create_task(self.wait_for_viewer(ws, ready))
             async with self.service.camera_lock, self.settings_lock:
                 modes = await self.modes(device)
                 saved = await asyncio.to_thread(self.read_settings, device)
@@ -250,43 +275,86 @@ class CameraPanel:
                     mode = default_mode(modes)
                 if mode is None:
                     raise RuntimeError("Камера не сообщила поддерживаемый режим видео.")
-                if receiver.done():
-                    return ws
                 await self.restore_controls(device, saved.get("controls", {}))
-                if receiver.done():
-                    return ws
                 proc = await asyncio.create_subprocess_exec(
                     *preview_args(device, mode), stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
-            producer = asyncio.create_task(self.stream_frames(ws, proc.stdout, ready))
-            try:
-                done, _ = await asyncio.wait({producer, receiver}, return_when=asyncio.FIRST_COMPLETED)
-                if producer in done:
-                    await producer
-            finally:
-                producer.cancel()
-                await asyncio.gather(producer, return_exceptions=True)
-        except (ConnectionError, asyncio.IncompleteReadError, TimeoutError, ValueError, RuntimeError, OSError) as exc:
-            if ws.prepared and not ws.closed:
-                with suppress(ConnectionError, RuntimeError):
-                    message = "Камера перестала передавать кадры." if isinstance(exc, TimeoutError) else str(exc)
-                    await asyncio.wait_for(ws.send_json({"error": message[:250]}), 1)
+            clock = asyncio.get_running_loop().time
+            while True:
+                frame = await asyncio.wait_for(read_frame(proc.stdout), 4)
+                self.last_frame = (clock(), frame)
+                self.publish(frame)
+        except (TimeoutError, asyncio.IncompleteReadError, ValueError, RuntimeError, OSError) as exc:
+            message = str(exc) or "Камера перестала передавать кадры."
+            self.publish(RuntimeError(message[:250]))
         finally:
-            if receiver is not None:
-                receiver.cancel()
-                await asyncio.gather(receiver, return_exceptions=True)
             if proc is not None and proc.returncode is None:
                 with suppress(ProcessLookupError):
                     proc.kill()
-                # Drain the pipe before wait so a full buffer cannot hold the process open.
                 await proc.communicate()
             self.last_frame = None
             self.device = None
-            self.viewer = None
             self.released.set()
-            if ws.prepared:
-                await ws.close()
+
+    @staticmethod
+    async def next_frame(queue):
+        frame = await asyncio.wait_for(queue.get(), 12)
+        if isinstance(frame, RuntimeError):
+            raise frame
+        return frame
+
+    async def mjpeg(self, request):
+        """Authenticated app API used by the Home Assistant camera entity."""
+        response = web.StreamResponse(headers={
+            "Content-Type": "multipart/x-mixed-replace; boundary=jarvis",
+            "Cache-Control": "no-store",
+        })
+        try:
+            async with self.subscribe() as queue:
+                frame = await self.next_frame(queue)
+                await response.prepare(request)
+                while request.transport and not request.transport.is_closing():
+                    header = BOUNDARY + f"Content-Type: image/jpeg\r\nContent-Length: {len(frame)}\r\n\r\n".encode("ascii")
+                    await asyncio.wait_for(response.write(header + frame + b"\r\n"), 3)
+                    frame = await self.next_frame(queue)
+        except (RuntimeError, TimeoutError, ValueError, OSError) as exc:
+            if not response.prepared:
+                raise web.HTTPServiceUnavailable(text=str(exc)[:250]) from exc
+        return response
+
+    async def preview(self, request):
+        if request.headers.get("Sec-Fetch-Site") == "cross-site":
+            raise web.HTTPForbidden()
+        ws = web.WebSocketResponse(heartbeat=10, max_msg_size=1024)
+        await ws.prepare(request)
+        self.viewers.add(ws)
+        ready = asyncio.Event()
+        ready.set()
+        receiver = asyncio.create_task(self.wait_for_viewer(ws, ready))
+        try:
+            async with self.subscribe() as queue:
+                producer = asyncio.create_task(self.stream_frames(ws, queue, ready))
+                try:
+                    done, _ = await asyncio.wait(
+                        {producer, receiver}, return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if producer in done:
+                        await producer
+                finally:
+                    producer.cancel()
+                    await asyncio.gather(producer, return_exceptions=True)
+        except (RuntimeError, TimeoutError, ValueError, OSError) as exc:
+            if not ws.closed:
+                with suppress(TimeoutError, RuntimeError, OSError):
+                    await asyncio.wait_for(ws.send_json({
+                        "error": str(exc)[:250] or "Камера перестала передавать кадры.",
+                    }), 1)
+        finally:
+            receiver.cancel()
+            await asyncio.gather(receiver, return_exceptions=True)
+            self.viewers.discard(ws)
+            await ws.close()
         return ws
 
     @staticmethod
@@ -295,23 +363,20 @@ class CameraPanel:
             if message.data == "next":
                 ready.set()
 
-    async def stream_frames(self, ws, stdout, ready):
-        clock = asyncio.get_running_loop().time
-        last_sent = clock()
+    async def stream_frames(self, ws, queue, ready):
         while not ws.closed:
-            frame = await asyncio.wait_for(read_frame(stdout), 4)
-            self.last_frame = (clock(), frame)
-            if ready.is_set():
-                ready.clear()
-                await asyncio.wait_for(ws.send_bytes(frame), 2)
-                last_sent = clock()
-            elif clock() - last_sent > 6:
-                # A suspended page may keep answering protocol pings without consuming frames.
-                return
+            await asyncio.wait_for(ready.wait(), 6)
+            ready.clear()
+            frame = await self.next_frame(queue)
+            await asyncio.wait_for(ws.send_bytes(frame), 2)
 
     async def shutdown(self, _app):
-        if self.viewer is not None and self.viewer.prepared:
-            await self.viewer.close()
+        await asyncio.gather(*(ws.close() for ws in tuple(self.viewers)))
+        async with self.lifecycle_lock:
+            if self.capture_task is not None:
+                self.capture_task.cancel()
+                await asyncio.gather(self.capture_task, return_exceptions=True)
+                self.publish(RuntimeError("Захват камеры остановлен."))
 
     def register(self, app):
         app.on_shutdown.append(self.shutdown)

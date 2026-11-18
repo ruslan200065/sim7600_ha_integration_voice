@@ -9,6 +9,11 @@
 - Add configured LLM failover before tools/speech and optional OpenAI-compatible speech backup.
 - Add per-call diagnostics, autonomous-rule editors and family-message UI.
 
+## 0.9.1
+
+- Сущность камеры Home Assistant передаёт живой MJPEG-поток в режиме «В реальном времени».
+- Карточка Home Assistant и вкладка JARVIS используют один захват с общими настройками. Захват останавливается после закрытия последнего просмотра.
+
 ## 0.9.0
 
 - Вкладка «Камера» с предпросмотром USB-камеры, выбором FPS, разрешения и формата.
