@@ -40,7 +40,7 @@ PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NOTIFY]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-_TARGET_SCHEMA = {
+_TARGET_SCHEMA: dict[vol.Marker, object] = {
     vol.Optional(ATTR_ENTRY_ID): cv.string,
     vol.Optional(ATTR_DEVICE_ID): cv.string,
 }

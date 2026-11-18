@@ -1,5 +1,5 @@
-pytest-homeassistant-custom-component
-pytest-asyncio
+# Last stable Home Assistant series supported by the Python 3.12 CI job.
+pytest-homeassistant-custom-component==0.13.205
 ruff
 mypy>=1.10.0
 types-pyserial

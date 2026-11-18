@@ -32,10 +32,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements_test.txt
-          # Install integration requirements from manifest
-          pip install $(jq -r '.requirements | .[]' custom_components/sim7600/manifest.json)
+          python -m pip install uv
+          uv pip install --system -r requirements_test.txt \
+            $(jq -r '.requirements | .[]' custom_components/sim7600/manifest.json)
 
       - name: Ruff Check
         run: ruff check custom_components tests
