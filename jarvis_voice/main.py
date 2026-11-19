@@ -1347,6 +1347,7 @@ class Server:
         ).hex()
 
     async def q1_video_source(self, request):
+        self.require_ha_camera_video()
         return web.json_response({"key": self.camera_video_key(request.remote)})
 
     async def q1_camera_video(self, request):
@@ -1356,7 +1357,12 @@ class Server:
             or not secrets.compare_digest(provided, self.camera_video_key(request.remote))
         ):
             raise web.HTTPUnauthorized()
+        self.require_ha_camera_video()
         return await self.camera_panel.video(request)
+
+    def require_ha_camera_video(self):
+        if self.o.get("ha_camera_h264") is not True:
+            raise web.HTTPServiceUnavailable(text="H.264 для Home Assistant отключён в настройках JARVIS.")
 
     async def q1_camera_setup(self,request):
         if not self.o.get("q1_video_device"):

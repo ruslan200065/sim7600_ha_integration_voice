@@ -1,4 +1,7 @@
 configuration:
+  ha_camera_h264:
+    name: H.264 для Home Assistant
+    description: Включает программное кодирование видео для раздела «Мультимедиа». По умолчанию выключено.
   at_port:
     name: AT-порт модема
     description: Порт управления SIM7600. Если доступен путь /dev/serial/by-id, выберите его в веб-панели.
