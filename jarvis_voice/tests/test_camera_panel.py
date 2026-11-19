@@ -5,11 +5,12 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from camera_panel import CameraPanel, default_mode, parse_controls, parse_modes, preview_args, read_frame
+from camera_panel import CameraPanel, default_mode, parse_controls, parse_modes, preview_args, read_frame, video_args
 
 MODES = """
     [0]: 'YUYV' (YUYV 4:2:2)
@@ -125,3 +126,13 @@ async def test_unsupported_mode_and_control_rejected(monkeypatch, tmp_path):
         assert (await client.patch("/camera", json={"control": "brightness", "value": 24})).status == 200
         run.assert_awaited_once_with("v4l2-ctl", "-d", "/dev/video0", "-c", "brightness=24")
         assert panel.read_settings("/dev/video0")["mode"] == modes[-1]
+
+def test_hls_encoding_limits_preserve_full_hd():
+    mode = {"width": 1920, "height": 1080, "fps": 30}
+    args = video_args(mode)
+    assert args[args.index("-framerate") + 1] == "30"
+    assert args[args.index("-maxrate") + 1] == "3M"
+    assert args.count("-threads") == 2
+    assert all(args[index + 1] == "1" for index, arg in enumerate(args) if arg == "-threads")
+    with pytest.raises(ValueError, match="1920×1080"):
+        video_args({**mode, "fps": 60})

@@ -13,6 +13,9 @@ from q1_hardware import _run, camera_device
 # Prefer the camera's encoded JPEG to avoid transcoding on the host.
 FORMATS = {"MJPG": "mjpeg", "YUYV": "yuyv422", "NV12": "nv12", "H264": "h264"}
 MAX_FRAME = 4_000_000
+MAX_MEDIA_PIXELS = 1920 * 1080
+MAX_MEDIA_FPS = 30
+MEDIA_BITRATE = "3M"
 CONTROL = re.compile(r"^\s*([a-z][a-z0-9_]+)\s+0x[0-9a-f]+\s+\((\w+)\)\s*:\s*(.*)$")
 CONTROL_VALUE = re.compile(r"(min|max|step|default|value)=(-?\d+)")
 BOUNDARY = b"--jarvis\r\n"
@@ -87,7 +90,7 @@ def preview_args(device, mode):
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
         "-f", "v4l2", "-input_format", FORMATS[mode["format"]],
         "-video_size", f'{mode["width"]}x{mode["height"]}',
-        "-framerate", str(fps), "-i", device, "-an",
+        "-framerate", str(fps), "-threads", "1", "-i", device, "-an",
     )
     codec = ("-c:v", "copy") if mode["format"] == "MJPG" else (
         "-c:v", "mjpeg", "-threads", "1", "-q:v", "5",
@@ -97,14 +100,16 @@ def preview_args(device, mode):
 
 
 def video_args(mode):
+    if mode["width"] * mode["height"] > MAX_MEDIA_PIXELS or mode["fps"] > MAX_MEDIA_FPS:
+        raise ValueError("Для видео в Home Assistant выберите режим до 1920×1080 и 30 кадров/с.")
     fps = str(Fraction(str(mode["fps"])))
     return (
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-        "-probesize", "32", "-analyzeduration", "0",
+        "-probesize", "32", "-analyzeduration", "0", "-filter_threads", "1",
         "-f", "image2pipe", "-framerate", fps, "-vcodec", "mjpeg", "-threads", "1",
-        "-i", "pipe:0", "-an", "-c:v", "libx264", "-threads", "2",
-        "-preset", "ultrafast", "-tune", "zerolatency", "-crf", "23",
-        "-pix_fmt", "yuv420p", "-g", str(max(1, round(mode["fps"]))),
+        "-i", "pipe:0", "-an", "-c:v", "libx264", "-threads", "1",
+        "-preset", "ultrafast", "-tune", "zerolatency", "-crf", "24",
+        "-maxrate", MEDIA_BITRATE, "-bufsize", MEDIA_BITRATE, "-pix_fmt", "yuv420p", "-g", str(max(1, round(mode["fps"]))),
         "-sc_threshold", "0", "-flush_packets", "1", "-f", "mpegts", "pipe:1",
     )
 
@@ -356,7 +361,7 @@ class CameraPanel:
                 frame = await self.next_frame(queue)
                 mode = self.capture_mode
                 encoder = await asyncio.create_subprocess_exec(
-                    *video_args(mode), stdin=asyncio.subprocess.PIPE,
+                    "nice", "-n", "10", *video_args(mode), stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                 )
                 writer = asyncio.create_task(self.feed_video(encoder.stdin, queue, frame, mode))

@@ -9,6 +9,11 @@
 - Add configured LLM failover before tools/speech and optional OpenAI-compatible speech backup.
 - Add per-call diagnostics, autonomous-rule editors and family-message UI.
 
+## 0.10.1
+
+- Программное кодирование H.264 для Home Assistant работает с пониженным приоритетом, одним потоком кодирования и ограниченным битрейтом.
+- Для HLS поддерживаются режимы до 1920×1080 при 30 кадрах в секунду.
+
 ## 0.10.0
 
 - Камера JARVIS в разделе «Мультимедиа» Home Assistant передаёт видео H.264 через штатный HLS-плеер.
