@@ -5,6 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+from homeassistant.components.camera import CameraEntityFeature
+from homeassistant.components.camera.const import DATA_COMPONENT
+from homeassistant.components.camera.media_source import CameraMediaSource
+from homeassistant.core import HomeAssistant
 
 from jarvis_voice.integration.jarvis_q1.camera import Q1Camera
 
@@ -49,19 +53,20 @@ async def test_ha_camera_proxies_authenticated_mjpeg(
     assert make_response.call_args.kwargs["headers"] == {
         "Content-Type": CONTENT_TYPE,
         "Cache-Control": "no-store",
+        "X-Accel-Buffering": "no",
     }
     assert [call.args[0] for call in response.write.await_args_list] == [FRAME, FRAME]
 
 
-async def test_ha_media_source_uses_dedicated_video_input() -> None:
-    key = "a" * 64
-    client = SimpleNamespace(
-        url="http://addon:8099", get=AsyncMock(return_value={"key": key})
+async def test_ha_media_resolves_to_direct_camera_stream(hass: HomeAssistant) -> None:
+    entity_id = "camera.jarvis_signal_q1_camera"
+    camera = Q1Camera(SimpleNamespace())
+    camera.entity_id = entity_id
+    assert CameraEntityFeature.STREAM not in camera.supported_features
+    assert not camera.camera_capabilities.frontend_stream_types
+    hass.data[DATA_COMPONENT] = SimpleNamespace(get_entity=lambda _: camera)
+    result = await CameraMediaSource(hass).async_resolve_media(
+        SimpleNamespace(identifier=entity_id)
     )
-    camera = SimpleNamespace(coordinator=SimpleNamespace(client=client))
-    assert await Q1Camera.stream_source(camera) == (
-        f"http://addon:8099/q1/camera/video?key={key}"
-    )
-    client.get.assert_awaited_once_with("/q1/camera/video-source", timeout=5)
-    client.get.return_value = {"key": "https://another-host/"}
-    assert await Q1Camera.stream_source(camera) is None
+    assert result.url == f"/api/camera_proxy_stream/{entity_id}"
+    assert result.mime_type == "image/jpeg"

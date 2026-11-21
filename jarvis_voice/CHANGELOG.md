@@ -9,6 +9,11 @@
 - Add configured LLM failover before tools/speech and optional OpenAI-compatible speech backup.
 - Add per-call diagnostics, autonomous-rule editors and family-message UI.
 
+## 0.11.0
+
+- Камера JARVIS в «Мультимедиа» Home Assistant открывает непрерывный MJPEG-поток с выбранными разрешением и FPS. Старый HLS-режим и программный H.264-кодировщик удалены.
+- Камера и предпросмотр продолжают использовать общий захват, который останавливается после отключения последнего зрителя.
+
 ## 0.10.2
 
 - Программное кодирование H.264 для раздела «Мультимедиа» выключено по умолчанию. Явное включение доступно в конфигурации дополнения через параметр `ha_camera_h264`.
