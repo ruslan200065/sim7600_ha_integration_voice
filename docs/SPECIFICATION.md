@@ -403,7 +403,7 @@ Tests werden **vor der Implementierung** definiert und dienen als ausführbare S
 
 ## 12. CI/CD-Pipeline
 
-**Trigger:** Push auf `main`, `develop`, `feature/*`; PR auf `main`, `develop`
+**Trigger:** Push auf `main`; PR auf `main`
 
 | Stage | Tool | Konfiguration |
 |---|---|---|
@@ -411,16 +411,11 @@ Tests werden **vor der Implementierung** definiert und dienen als ausführbare S
 | Format | `ruff format --check .` | `pyproject.toml` |
 | Typ-Check | `mypy custom_components/sim7600` | `.mypy.ini` |
 | Tests | `pytest --import-mode=importlib` | `pyproject.toml` |
-| Snapshot Release | `softprops/action-gh-release@v2` | nur `develop`/`feature/*` |
+| Snapshot Release | `softprops/action-gh-release@v2` | manuell auf `main` |
 
 **Snapshot-Schema:** `<version>-dev.<short_sha>` (z. B. `0.1-dev.08ccabd`)
 
-**Git-Flow:**
-- `main` — Produktion
-- `develop` — Integration
-- `feature/*` — Features
-- `release/*` — Release-Vorbereitung
-- `hotfix/*` — Notfall-Patches
+**Git-Workflow:** `main` ist der einzige Branch. Releases verwenden Tags.
 
 **Lokale CI-Parität (vor jedem Push):**
 ```bash

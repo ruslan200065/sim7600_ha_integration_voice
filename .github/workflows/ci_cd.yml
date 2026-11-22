@@ -4,12 +4,9 @@ on:
   push:
     branches:
       - main
-      - develop
-      - 'feature/*'
   pull_request:
     branches:
       - main
-      - develop
   # Snapshot releases are created manually only (no auto-commits to branches).
   workflow_dispatch:
 
@@ -59,7 +56,7 @@ jobs:
   snapshot:
     name: Create Snapshot Release
     needs: test
-    # Manual only: Actions -> CI/CD Pipeline -> Run workflow (pick develop or a feature branch).
+    # Manual only: Actions -> CI/CD Pipeline -> Run workflow on main.
     if: success() && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:

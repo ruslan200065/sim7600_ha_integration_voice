@@ -22,6 +22,6 @@ This file contains the architectural standards, conventions, and workflows for t
 4. **Validation:** Analyze `git diff` to ensure all changes are intentional and logical.
 5. **Synchronization:** 
    - Ensure local CI parity passes.
-   - Perform Git synchronization (push/pull) according to Git Flow only after successful local validation.
+   - Perform Git synchronization (push/pull) on `main` only after successful local validation.
 6. **CI Monitoring:** Monitor the GitHub Actions pipeline for the pushed changes.
 7. **Autonomous Fix:** If CI fails, analyze logs in Plan Mode and apply fixes until CI is green.
