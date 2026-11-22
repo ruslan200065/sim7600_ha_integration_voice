@@ -40,7 +40,10 @@ class EventJournal:
                                 (entity, state, previous, source.strip(), stamp.timestamp(), json.dumps(clean, ensure_ascii=False)))
             identifier = cursor.lastrowid
             db.execute('DELETE FROM home_events WHERE at<?', (stamp.timestamp()-30*86400,))
-            db.execute('DELETE FROM home_events WHERE id NOT IN (SELECT id FROM home_events ORDER BY id DESC LIMIT 10000)')
+            db.execute(
+                'DELETE FROM home_events WHERE id <= ('
+                'SELECT id FROM home_events ORDER BY id DESC LIMIT 1 OFFSET 10000)'
+            )
         return identifier
 
     def list(self, profile, visible, since=None, limit=50, offset=0):

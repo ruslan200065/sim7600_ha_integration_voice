@@ -20,7 +20,7 @@ import os
 import secrets
 import socket
 import time
-from contextlib import aclosing
+from contextlib import AsyncExitStack, aclosing
 from pathlib import Path
 import signal
 from aiohttp import web, ClientError, ClientSession, ClientTimeout
@@ -34,6 +34,7 @@ from q1_audio import audio_route, capture_pcm, recognize_microphone_live, play_s
 from q1_protocol import led_set
 from q1_hardware import diagnostics, snapshot, apply_original_camera_controls, camera_device
 from camera_panel import CameraPanel
+from processes import start_process, stop_process
 from q1_media import Q1Media
 from setup_panel import SetupPanel
 from history import History, RETENTION_DAYS
@@ -220,30 +221,16 @@ class Server:
         if self.incoming_call_timer is not None:
             self.incoming_call_timer.cancel()
             self.incoming_call_timer = None
-        if self.events_task:
-            self.events_task.cancel()
-            await asyncio.gather(self.events_task, return_exceptions=True)
-        if self.registry_task:
-            self.registry_task.cancel()
-            await asyncio.gather(self.registry_task, return_exceptions=True)
-        if self.microphone_task:
-            self.microphone_task.cancel()
-            await asyncio.gather(self.microphone_task, return_exceptions=True)
-        if self.reminder_task:
-            self.reminder_task.cancel()
-            await asyncio.gather(self.reminder_task, return_exceptions=True)
-        if self.sms_task:
-            self.sms_task.cancel()
-            await asyncio.gather(self.sms_task, return_exceptions=True)
-        if self.auto_answer_task:
-            self.auto_answer_task.cancel()
-            await asyncio.gather(self.auto_answer_task, return_exceptions=True)
-        if self.session:
-            self.session.cancel()
-            try:
-                await self.session
-            except asyncio.CancelledError:
-                pass
+        tasks = [
+            task for task in (
+                self.events_task, self.registry_task, self.microphone_task,
+                self.reminder_task, self.sms_task, self.auto_answer_task,
+                self.pcm_lost_task, self.session,
+            ) if task is not None
+        ]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         if self.modem.call_state not in ("idle", "offline"):
             try:
                 await asyncio.wait_for(self.modem.hangup(), 5)
@@ -264,6 +251,10 @@ class Server:
         for brain in [getattr(self, "brain", None), *self.family_brains.values(), getattr(self, "_room_brain", None)]:
             if brain and getattr(brain, "features", None):
                 await brain.features.workflows.close()
+        pending_events = tuple(getattr(self, "ha_event_tasks", ()))
+        for task in pending_events:
+            task.cancel()
+        await asyncio.gather(*pending_events, return_exceptions=True)
         if self.http:
             await self.http.close()
 
@@ -1399,7 +1390,7 @@ class Server:
             raise web.HTTPConflict(text="Microphone already in use")
         async with self.mic_lock:
             device, env = audio_route(device, "capture")
-            proc=await asyncio.create_subprocess_exec(
+            proc=await start_process(
                 "arecord","-q","-D",device,"-f","S16_LE","-r","16000","-c","1","-t","raw",
                 "-d",str(seconds),
                 stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,env=env)
@@ -1418,17 +1409,12 @@ class Server:
                     )
                 await response.prepare(request)
                 while frame:
-                    await response.write(frame)
+                    await asyncio.wait_for(response.write(frame), 4)
                     frame = await asyncio.wait_for(proc.stdout.read(3200), timeout=4)
             except (ConnectionResetError, TimeoutError):
                 pass
             finally:
-                if proc.returncode is None:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                await proc.communicate()
+                await stop_process(proc)
                 if response.prepared:
                     try:
                         await response.write_eof()
@@ -1499,31 +1485,28 @@ class Server:
 
 
 async def main():
-    o=load_options()
-    service=Server(o)
-    await service.setup()
-    runner=web.AppRunner(service.app())
-    panel = web.AppRunner(SetupPanel(service).app())
-    try:
-        await runner.setup()
-        await web.TCPSite(runner, host="0.0.0.0", port=8099).start()
-        await panel.setup()
-        await web.TCPSite(panel, host="0.0.0.0", port=8098).start()
-        await service.discover_companion()
-        LOG.info("JARVIS API listening on 8099 and HA ingress on 8098")
-        stop=asyncio.Event()
-        loop=asyncio.get_running_loop()
+    service = Server(load_options())
+    stopping = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    async with AsyncExitStack() as cleanup:
+        cleanup.push_async_callback(service.close)
         for signum in (signal.SIGTERM, signal.SIGINT):
             try:
-                loop.add_signal_handler(signum, stop.set)
+                loop.add_signal_handler(signum, stopping.set)
             except (NotImplementedError, RuntimeError):
-                pass
-        await stop.wait()
+                continue
+            cleanup.callback(loop.remove_signal_handler, signum)
+
+        await service.setup()
+        for app, port in ((service.app(), 8099), (SetupPanel(service).app(), 8098)):
+            runner = web.AppRunner(app, shutdown_timeout=5)
+            cleanup.push_async_callback(runner.cleanup)
+            await runner.setup()
+            await web.TCPSite(runner, host="0.0.0.0", port=port).start()
+        await service.discover_companion()
+        LOG.info("JARVIS API listening on 8099 and HA ingress on 8098")
+        await stopping.wait()
         LOG.info("Shutdown requested, releasing modem and audio")
-    finally:
-        await panel.cleanup()
-        await runner.cleanup()
-        await service.close()
 
 
 if __name__=="__main__":

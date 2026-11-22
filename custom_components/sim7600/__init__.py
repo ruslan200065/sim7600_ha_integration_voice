@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import Platform
@@ -229,7 +231,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     try:
         await coordinator.async_config_entry_first_refresh()
-    except Exception:
+    except (Exception, asyncio.CancelledError):
         # Close the port so nothing reopens it before the next retry.
         await modem.close()
         raise
@@ -238,7 +240,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _async_migrate_unique_ids(hass, entry)
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    except Exception:
+    except (Exception, asyncio.CancelledError):
         await modem.close()
         raise
 

@@ -126,6 +126,23 @@ async def modem(fake: FakeSerial):
 # --- Connect / echo ---
 
 
+@pytest.mark.parametrize(
+    ("reply", "error"),
+    [
+        ("x" * (modem_module.MAX_SERIAL_LINE_BYTES + 1), "Oversized serial modem line"),
+        ("x\n" * (modem_module.MAX_QUEUED_LINES + 1), "queue overflow"),
+    ],
+)
+async def test_excess_serial_input_disconnects_pending_command(
+    modem: SIM7600Modem, fake: FakeSerial, reply: str, error: str
+) -> None:
+    await modem.connect()
+    fake.responses["AT+CSQ"] = reply
+    with pytest.raises(ModemConnectionError, match=error):
+        await modem.send_command("AT+CSQ")
+    assert fake.writer.closed
+
+
 async def test_connect_disables_echo(modem: SIM7600Modem, fake: FakeSerial) -> None:
     """ATE0 is the first command after opening the port."""
     await modem.connect()

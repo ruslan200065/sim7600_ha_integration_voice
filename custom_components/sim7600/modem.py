@@ -70,6 +70,9 @@ INIT_COMMANDS = (
 DEFAULT_TIMEOUT = 5.0
 INIT_TIMEOUT = 2.0
 MAX_CONSECUTIVE_TIMEOUTS = 3
+MAX_SERIAL_LINE_BYTES = 4096
+MAX_QUEUED_LINES = 1024
+MAX_RESPONSE_LINES = 4096
 SETTLE_QUIET = 0.1
 SETTLE_MAX = 0.5
 SMS_PROMPT_TIMEOUT = 10.0
@@ -128,7 +131,9 @@ class SIM7600Modem:
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._read_task: asyncio.Task[None] | None = None
-        self._queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(
+            maxsize=MAX_QUEUED_LINES
+        )
         self._lock = asyncio.Lock()
         self._ussd_lock = asyncio.Lock()
         self._ussd_future: asyncio.Future[CusdReply] | None = None
@@ -173,8 +178,14 @@ class SIM7600Modem:
             LOGGER.error("Failed to connect to SIM7600 on %s: %s", self.port, err)
             raise ModemConnectionError(str(err)) from err
 
+        if self._closed:
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+            raise ModemConnectionError(f"Modem on {self.port} was closed")
+
         self._reader, self._writer = reader, writer
-        self._queue = asyncio.Queue()
+        self._queue = asyncio.Queue(maxsize=MAX_QUEUED_LINES)
         self._resync = False
         self._consecutive_timeouts = 0
         self._expect_body = False
@@ -237,6 +248,9 @@ class SIM7600Modem:
         if writer is not None:
             with contextlib.suppress(Exception):
                 writer.close()
+        # Consumers must see link failure even if incoming serial data filled the queue.
+        while not self._queue.empty():
+            self._queue.get_nowait()
         self._queue.put_nowait(("lost", str(err)))
         if self._ussd_future is not None and not self._ussd_future.done():
             self._ussd_future.set_exception(ModemConnectionError(str(err)))
@@ -261,10 +275,14 @@ class SIM7600Modem:
     def _process_buffer(self, buffer: bytes) -> bytes:
         while b"\n" in buffer:
             raw, buffer = buffer.split(b"\n", 1)
+            if len(raw) > MAX_SERIAL_LINE_BYTES:
+                raise ModemConnectionError("Oversized serial modem line")
             self._handle_line(raw.decode(errors="replace").rstrip("\r"))
+        if len(buffer) > MAX_SERIAL_LINE_BYTES:
+            raise ModemConnectionError("Oversized serial modem line")
         if self._expect_prompt and buffer.strip() == b">":
             self._expect_prompt = False
-            self._queue.put_nowait(("prompt", ">"))
+            self._enqueue_response("prompt", ">")
             return b""
         return buffer
 
@@ -275,7 +293,7 @@ class SIM7600Modem:
 
         if self._expect_body:
             self._expect_body = False
-            self._queue.put_nowait(("body", stripped))
+            self._enqueue_response("body", stripped)
             return
         if self._urc_body_for is not None:
             header, self._urc_body_for = self._urc_body_for, None
@@ -283,6 +301,8 @@ class SIM7600Modem:
             return
         if self._urc_partial is not None:
             self._urc_partial = f"{self._urc_partial}\n{line}"
+            if len(self._urc_partial) > MAX_SERIAL_LINE_BYTES:
+                raise ModemConnectionError("Oversized modem notification")
             if self._urc_partial.count('"') % 2 == 0:
                 partial, self._urc_partial = self._urc_partial, None
                 self._dispatch_urc(partial)
@@ -301,7 +321,13 @@ class SIM7600Modem:
             return
         if stripped.startswith(BODY_HEADERS):
             self._expect_body = True
-        self._queue.put_nowait(("line", stripped))
+        self._enqueue_response("line", stripped)
+
+    def _enqueue_response(self, kind: str, line: str) -> None:
+        try:
+            self._queue.put_nowait((kind, line))
+        except asyncio.QueueFull as err:
+            raise ModemConnectionError("Serial modem response queue overflow") from err
 
     def _is_urc(self, line: str) -> bool:
         pending = self._pending_prefix
@@ -402,6 +428,11 @@ class SIM7600Modem:
                     if kind == "prompt":
                         continue
                     lines.append(line)
+                    if len(lines) > MAX_RESPONSE_LINES:
+                        self._handle_connection_lost(
+                            ModemConnectionError("Too many modem response lines")
+                        )
+                        raise ModemConnectionError("Too many modem response lines")
                     if kind == "line" and is_final_result(line):
                         self._consecutive_timeouts = 0
                         return lines

@@ -15,6 +15,8 @@ import os
 import re
 from pathlib import Path
 
+from processes import start_process, stop_process
+
 LOG = logging.getLogger(__name__)
 
 Q1_USB_IDS = {
@@ -51,18 +53,13 @@ def camera_device(device):
 
 
 async def _run(*args, timeout=8):
-    proc = await asyncio.create_subprocess_exec(
+    proc = await start_process(
         *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except (TimeoutError, asyncio.CancelledError) as exc:
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-        await proc.communicate()
+        await stop_process(proc)
         if isinstance(exc, TimeoutError):
             raise RuntimeError(f"{args[0]} timed out") from exc
         raise

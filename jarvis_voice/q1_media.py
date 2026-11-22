@@ -7,6 +7,7 @@ import asyncio
 import logging
 from aiohttp import ClientTimeout
 from yarl import URL
+from processes import start_process, stop_process
 from q1_audio import audio_route
 
 LOG = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ class Q1Media:
                     response.raise_for_status()
                     async for chunk in response.content.iter_chunked(8192):
                         stdin.write(chunk)
-                        await stdin.drain()
+                        await asyncio.wait_for(stdin.drain(), 5)
                     return
             raise ValueError("Too many media redirects")
         finally:
@@ -81,7 +82,7 @@ class Q1Media:
     async def _play(self, session, url, route, allowed_hosts):
         source = dest = feed = None
         try:
-            source = await asyncio.create_subprocess_exec(
+            source = await start_process(
                 "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
                 "-protocol_whitelist", "pipe",
                 "-format_whitelist", FORMAT_WHITELIST,
@@ -90,15 +91,15 @@ class Q1Media:
                 stderr=asyncio.subprocess.DEVNULL)
             feed = asyncio.create_task(self._download(session, url, allowed_hosts, source.stdin))
             sink, env = route
-            dest = await asyncio.create_subprocess_exec(
+            dest = await start_process(
                 "aplay","-q","-D",sink,"-t","raw","-f","S16_LE","-r","16000","-c","1",
                 stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env)
-            while chunk := await source.stdout.read(8192):
+            while chunk := await asyncio.wait_for(source.stdout.read(8192), 20):
                 dest.stdin.write(chunk)
-                await dest.stdin.drain()
+                await asyncio.wait_for(dest.stdin.drain(), 5)
             dest.stdin.close()
-            await dest.wait()
-            await source.wait()
+            await asyncio.wait_for(dest.wait(), 8)
+            await asyncio.wait_for(source.wait(), 8)
             await feed
             if dest.returncode != 0 or source.returncode != 0:
                 LOG.warning("Q1 media playback ended with errors ffmpeg=%s aplay=%s",source.returncode,dest.returncode)
@@ -110,11 +111,8 @@ class Q1Media:
             if feed:
                 feed.cancel()
                 await asyncio.gather(feed, return_exceptions=True)
-            for proc in (source,dest):
-                if proc and proc.returncode is None:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    await proc.communicate()
-            self.playing = False
+            try:
+                processes = [proc for proc in (source, dest) if proc is not None]
+                await asyncio.gather(*(stop_process(proc) for proc in processes))
+            finally:
+                self.playing = False

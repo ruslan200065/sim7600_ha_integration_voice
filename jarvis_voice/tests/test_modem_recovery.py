@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import serial
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from modem import Modem
+from modem import MAX_LINE_BYTES, Modem
 
 
 class FakePort:
@@ -24,7 +24,7 @@ class FakePort:
             self.lines.put(line)
         return len(data)
 
-    def readline(self):
+    def readline(self, size=-1):
         if not self.is_open:
             raise serial.SerialException("Closed")
         try:
@@ -51,6 +51,12 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
         self.reader.cancel()
         await asyncio.gather(self.reader, return_exceptions=True)
         self.port.close()
+
+    async def test_unterminated_overlong_line_stops_reader(self):
+        self.port.lines.put(b"x" * MAX_LINE_BYTES)
+        self.port.lines.put(b"x")
+        with self.assertRaisesRegex(serial.SerialException, "line exceeds"):
+            await asyncio.wait_for(self.reader, 1)
 
     async def test_busy_completes_dial_and_clears_caller(self):
         self.port.reply = [b"BUSY\r\n"]

@@ -4,6 +4,8 @@ import logging
 import os
 import re
 
+from processes import start_process, stop_process
+
 LOG = logging.getLogger(__name__)
 
 
@@ -31,19 +33,14 @@ async def capture_pcm(device, seconds=4):
     if not device:
         raise RuntimeError("q1_mic_device not set")
     device, env = audio_route(device, "capture")
-    proc=await asyncio.create_subprocess_exec(
+    proc=await start_process(
         "arecord","-q","-D",device,"-f","S16_LE","-r","16000","-c","1",
         "-d",str(max(1,min(int(seconds),15))),"-t","raw",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
     try:
         data,err=await asyncio.wait_for(proc.communicate(),seconds+6)
     except (TimeoutError, asyncio.CancelledError) as exc:
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-        await proc.communicate()
+        await stop_process(proc)
         if isinstance(exc, TimeoutError):
             raise RuntimeError("Q1 microphone capture timeout") from exc
         raise
@@ -56,18 +53,13 @@ async def play_pcm(device, pcm):
     if not device:
         raise RuntimeError("q1_speaker_device not set")
     device, env = audio_route(device, "playback")
-    proc=await asyncio.create_subprocess_exec(
+    proc=await start_process(
         "aplay","-q","-D",device,"-t","raw","-f","S16_LE","-r","16000","-c","1",
         stdin=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,env=env)
     try:
         _,err=await asyncio.wait_for(proc.communicate(pcm), timeout=8)
     except (TimeoutError, asyncio.CancelledError):
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-        await proc.communicate()
+        await stop_process(proc)
         raise
     if proc.returncode:
         raise RuntimeError("aplay failed: "+err.decode(errors="replace")[:200])
@@ -78,24 +70,19 @@ async def play_stream(device, stream):
     if not device:
         raise RuntimeError("q1_speaker_device not set")
     device, env = audio_route(device, "playback")
-    proc=await asyncio.create_subprocess_exec(
+    proc=await start_process(
         "aplay","-q","-D",device,"-t","raw","-f","S16_LE","-r","16000","-c","1",
         stdin=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,env=env)
     try:
         async for frame in stream:
             proc.stdin.write(frame)
-            await proc.stdin.drain()
+            await asyncio.wait_for(proc.stdin.drain(), 5)
         proc.stdin.close()
-        await proc.wait()
+        await asyncio.wait_for(proc.wait(), 8)
         if proc.returncode:
             raise RuntimeError("aplay failed")
     finally:
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
+        await stop_process(proc)
 
 
 async def recognize_microphone_live(speech, device, timeout=12):
@@ -103,7 +90,7 @@ async def recognize_microphone_live(speech, device, timeout=12):
     if not device:
         raise RuntimeError("Configure q1_mic_device first")
     device, env = audio_route(device, "capture")
-    proc=await asyncio.create_subprocess_exec(
+    proc=await start_process(
         "arecord","-q","-D",device,"-f","S16_LE","-r","16000","-c","1",
         "-t","raw", stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,env=env)
     queue=asyncio.Queue(maxsize=30)
@@ -130,13 +117,5 @@ async def recognize_microphone_live(speech, device, timeout=12):
         return ""
     finally:
         reader.cancel()
-        try:
-            await reader
-        except asyncio.CancelledError:
-            pass
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-        await proc.communicate()
+        await asyncio.gather(reader, return_exceptions=True)
+        await stop_process(proc)

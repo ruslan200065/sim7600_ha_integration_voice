@@ -8,6 +8,7 @@ import re
 
 from aiohttp import web
 
+from processes import start_process, stop_process
 from q1_hardware import _run, camera_device
 
 # Prefer the camera's encoded JPEG to avoid transcoding on the host.
@@ -277,7 +278,7 @@ class CameraPanel:
                 if mode is None:
                     raise RuntimeError("Камера не сообщила поддерживаемый режим видео.")
                 await self.restore_controls(device, saved.get("controls", {}))
-                proc = await asyncio.create_subprocess_exec(
+                proc = await start_process(
                     *preview_args(device, mode), stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
@@ -290,13 +291,13 @@ class CameraPanel:
             message = str(exc) or "Камера перестала передавать кадры."
             self.publish(RuntimeError(message[:250]))
         finally:
-            if proc is not None and proc.returncode is None:
-                with suppress(ProcessLookupError):
-                    proc.kill()
-                await proc.communicate()
-            self.last_frame = None
-            self.device = None
-            self.released.set()
+            try:
+                if proc is not None:
+                    await stop_process(proc)
+            finally:
+                self.last_frame = None
+                self.device = None
+                self.released.set()
 
     @staticmethod
     async def next_frame(queue):

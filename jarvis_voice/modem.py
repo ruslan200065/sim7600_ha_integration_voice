@@ -18,6 +18,8 @@ CALL_STATUS = re.compile(
 )
 NEW_SMS = re.compile(r'\+CMTI:\s*"([A-Z]{2})"\s*,\s*(\d+)$')
 PCM_TIMEOUT = 5
+MAX_LINE_BYTES = 4096
+MAX_RESPONSE_LINES = 4096
 
 
 def is_terminal(value):
@@ -185,10 +187,12 @@ class Modem:
         response = []
         previous = None
         while True:
-            line = await asyncio.to_thread(port.readline)
+            line = await asyncio.to_thread(port.readline, MAX_LINE_BYTES + 1 - len(partial))
             if not line:
                 continue
             partial += line
+            if len(partial) > MAX_LINE_BYTES:
+                raise serial.SerialException("Modem line exceeds the size limit")
             if not partial.endswith(b"\n"):
                 continue
             value = partial.decode("utf-8", "replace").strip()
@@ -232,6 +236,8 @@ class Modem:
                 previous = future
             if value != self.pending_command:
                 response.append(value)
+                if len(response) > MAX_RESPONSE_LINES:
+                    raise serial.SerialException("Modem response exceeds the line limit")
             if is_terminal(value):
                 future.set_result(response)
 
