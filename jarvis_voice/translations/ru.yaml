@@ -91,7 +91,7 @@ configuration:
     description: Правила диалога, отправляемые в DeepSeek.
   api_token:
     name: Токен локального REST API
-    description: Оставьте пустым для автоматической генерации. Веб-панель использует вход в Home Assistant.
+    description: Оставьте пустым для автоматической генерации. Текущий токен доступен в панели JARVIS, в разделе «Голос и интеграции → Ручное подключение».
   media_allowed_hosts:
     name: Разрешённые источники аудио
     description: Имена хостов, с которых динамик может загружать звук по HTTP или HTTPS.
@@ -99,4 +99,4 @@ configuration:
     name: Установить интеграцию JARVIS Q1
     description: Аддон обновляет интеграцию в папке Home Assistant. После обновления её кода перезапустите Core.
 network:
-  8099/tcp: Локальный REST API. Для веб-панели порт открывать не нужно.
+  8099/tcp: Локальный REST API. Для JARVIS Q1 внутри Home Assistant OS оставьте порт закрытым.

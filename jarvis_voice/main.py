@@ -125,6 +125,7 @@ class Server(TelephonyService, AutomationService, DeviceService, HttpApi):
         self.inbox = FamilyInbox(data_dir / "family_inbox.sqlite3")
         self.events_journal = EventJournal(data_dir / "events.sqlite3")
         self.escalation = EscalationPolicies(data_dir / "escalation.sqlite3")
+        self.discovery_task = None
         self.events_task = None
         self.speech_cache = SpeechCache(data_dir / "speech_cache")
         self.microphone = MicrophoneMonitor(
@@ -263,6 +264,7 @@ class Server(TelephonyService, AutomationService, DeviceService, HttpApi):
         tasks = [
             task
             for task in (
+                self.discovery_task,
                 self.events_task,
                 self.registry_task,
                 self.microphone_task,
@@ -335,7 +337,9 @@ async def main():
             cleanup.push_async_callback(runner.cleanup)
             await runner.setup()
             await web.TCPSite(runner, host="0.0.0.0", port=port).start()
-        await service.discover_companion()
+        service.discovery_task = asyncio.create_task(
+            service.retry_companion_discovery()
+        )
         LOG.info("JARVIS API listening on 8099 and HA ingress on 8098")
         await stopping.wait()
         LOG.info("Shutdown requested, releasing modem and audio")

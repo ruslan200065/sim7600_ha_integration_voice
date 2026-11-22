@@ -189,6 +189,21 @@ def test_disabled_option(env):
     assert not root.exists()
 
 
+def test_legacy_options_without_switch_use_app_default(env, monkeypatch):
+    base, root, options = env
+    src = make_source(base)
+    options.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("JARVIS_INTEGRATION_SOURCE", str(src))
+    monkeypatch.setenv("JARVIS_CUSTOM_COMPONENTS", str(root))
+    assert run(options, src, root) == "installed"
+    assert inst.installed_companion_status() == {
+        "bundled_version": "0.5.0",
+        "installed_version": "0.5.0",
+        "managed": True,
+        "directory_exists": True,
+    }
+
+
 def test_only_explicit_boolean_enables_installation(env):
     base, root, options = env
     options.write_text(

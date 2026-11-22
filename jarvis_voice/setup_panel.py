@@ -11,6 +11,7 @@ import secrets
 from pathlib import Path
 
 from aiohttp import ClientError, ClientTimeout, web
+from install_integration import installed_companion_status
 from intelligence_panel import register_intelligence
 from panel_operations import PanelOperations
 from panel_tools import PanelTools
@@ -159,6 +160,42 @@ class SetupPanel(PanelOperations, PanelTools):
             }
         )
 
+    async def companion(self, _request):
+        info = await self.supervisor("GET", "info")
+        status = await asyncio.to_thread(installed_companion_status)
+        return web.json_response(
+            {
+                **status,
+                "auto_install": info.get("options", {}).get(
+                    "auto_install_integration", True
+                ),
+            }
+        )
+
+    async def companion_credentials(self, _request):
+        try:
+            host = await self.service.companion_address()
+        except (
+            ClientError,
+            TimeoutError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+            RuntimeError,
+        ) as exc:
+            raise web.HTTPBadGateway(
+                text="Supervisor не вернул адрес приложения."
+            ) from exc
+        return web.json_response(
+            {"host": host, "port": 8099, "token": self.service.api_token}
+        )
+
+    async def companion_discover(self, _request):
+        if not await self.service.discover_companion():
+            raise web.HTTPBadGateway(text="Supervisor не принял запрос обнаружения.")
+        return web.json_response({"published": True})
+
     async def save(self, request):
         try:
             data = await request.json()
@@ -231,6 +268,9 @@ class SetupPanel(PanelOperations, PanelTools):
         app.router.add_get("/", self.home)
         app.router.add_static("/assets", ASSETS)
         app.router.add_get("/state", self.state)
+        app.router.add_get("/companion", self.companion)
+        app.router.add_post("/companion/credentials", self.companion_credentials)
+        app.router.add_post("/companion/discover", self.companion_discover)
         app.router.add_get("/entities", self.entities)
         app.router.add_get("/knowledge", self.knowledge)
         app.router.add_patch("/knowledge/{entity}", self.knowledge)

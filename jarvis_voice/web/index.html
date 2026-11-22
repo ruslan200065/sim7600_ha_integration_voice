@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="assets/panel.css">
   <script src="assets/panel_request.js" defer></script>
   <script src="assets/panel.js" defer></script>
+  <script src="assets/companion.js" defer></script>
   <script src="assets/telephony.js" defer></script>
   <script src="assets/operations.js" defer></script>
   <script src="assets/intelligence.js" defer></script>
@@ -79,6 +80,23 @@
             <div class="fields" id="camera-controls"></div>
           </section>
         </section>
+    <section class="card" id="companion-setup" data-view="voice" hidden>
+      <h3>Подключение к Home Assistant</h3>
+      <p>Открой «Настройки → Устройства и службы» и подключи обнаруженный JARVIS Q1. После установки или обновления файлов интеграции перезапусти Home Assistant Core.</p>
+      <p id="companion-status" role="status"></p>
+      <button type="button" id="companion-discover">Повторить обнаружение</button>
+      <details id="companion-manual">
+        <summary>Ручное подключение</summary>
+        <p>Добавь интеграцию JARVIS Q1 или выбери «Перенастроить» у существующей записи.</p>
+        <button type="button" id="companion-reveal">Показать адрес и токен</button>
+        <div id="companion-values" class="fields" hidden>
+          <label>Хост<input id="companion-host" readonly></label>
+          <label>Порт<input id="companion-port" readonly></label>
+          <label>Токен API<input id="companion-token" readonly autocomplete="off"></label>
+        </div>
+      </details>
+    </section>
+
         <form id="settings" autocomplete="off">
           <fieldset id="controls" disabled>
             <section class="view" data-view="calls">

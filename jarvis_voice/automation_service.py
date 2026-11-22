@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import os
-import socket
 from datetime import datetime, timezone
 
 from aiohttp import ClientError, ClientTimeout, web
@@ -263,33 +262,62 @@ class AutomationService:
         if not any(chat.get("message_id") for chat in chats):
             raise RuntimeError("Telegram did not confirm delivery")
 
+    async def companion_address(self):
+        """Use the DNS name assigned by Supervisor on its internal network."""
+        token = os.environ.get("SUPERVISOR_TOKEN", "")
+        if not token:
+            raise RuntimeError("Supervisor is unavailable")
+        async with self.http.get(
+            "http://supervisor/addons/self/info",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=ClientTimeout(total=4),
+            allow_redirects=False,
+        ) as response:
+            response.raise_for_status()
+            result = await response.json()
+        info = result["data"]
+        host = info.get("hostname") or info["slug"].replace("_", "-")
+        if not isinstance(host, str) or not host.strip():
+            raise ValueError("Supervisor did not supply the App hostname")
+        return host
+
     async def discover_companion(self):
-        supervisor_token = os.environ.get("SUPERVISOR_TOKEN", "")
-        if not supervisor_token:
-            LOG.warning("Supervisor token unavailable; manual companion setup required")
-            return
-        payload = {
-            "service": "jarvis_q1",
-            "config": {
-                "host": socket.gethostname(),
-                "port": 8099,
-                "token": self.api_token,
-            },
-        }
+        token = os.environ.get("SUPERVISOR_TOKEN", "")
+        if not token:
+            return False
         try:
+            host = await self.companion_address()
             async with self.http.post(
                 "http://supervisor/discovery",
-                json=payload,
-                headers={"Authorization": "Bearer " + supervisor_token},
-                timeout=ClientTimeout(total=8),
-            ) as resp:
-                if resp.status not in (200, 201):
-                    LOG.warning(
-                        "Supervisor discovery HTTP %s: %s",
-                        resp.status,
-                        (await resp.text())[:100],
-                    )
-                else:
-                    LOG.info("JARVIS Q1 companion discovery sent")
-        except Exception as exc:
-            LOG.warning("Supervisor discovery unavailable: %s", exc)
+                json={
+                    "service": "jarvis_q1",
+                    "config": {"host": host, "port": 8099, "token": self.api_token},
+                },
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=ClientTimeout(total=5),
+                allow_redirects=False,
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
+            if result.get("result") == "ok":
+                LOG.info("JARVIS Q1 companion discovery published")
+                return True
+        except (
+            ClientError,
+            TimeoutError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+        ):
+            LOG.warning("JARVIS Q1 discovery could not be published")
+        return False
+
+    async def retry_companion_discovery(self):
+        if not os.environ.get("SUPERVISOR_TOKEN"):
+            return
+        for delay in (0, 3, 12):
+            if delay:
+                await asyncio.sleep(delay)
+            if await self.discover_companion():
+                return

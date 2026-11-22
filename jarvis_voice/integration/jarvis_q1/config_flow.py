@@ -109,9 +109,12 @@ class JarvisQ1Flow(ConfigFlow, domain=DOMAIN):
     # --- Supervisor discovery ----------------------------------------------
     async def async_step_hassio(self, discovery_info: HassioServiceInfo):
         config = discovery_info.config or {}
+        host = normalize_host(config.get("host")) or discovery_info.slug.replace(
+            "_", "-"
+        )
         data, error = self._normalize(
             {
-                CONF_HOST: config.get("host", ""),
+                CONF_HOST: host,
                 CONF_PORT: config.get("port", DEFAULT_PORT),
                 CONF_TOKEN: config.get("token", ""),
             }
@@ -120,6 +123,14 @@ class JarvisQ1Flow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="invalid_discovery_info")
         await self.async_set_unique_id(UNIQUE_ID)
         # Rediscovery after an App restart/token rotation updates the entry and reloads it.
+        entry = self.hass.config_entries.async_entry_for_domain_unique_id(
+            DOMAIN, UNIQUE_ID
+        )
+        if (
+            entry is not None
+            and entry.data.get(CONF_SOURCE, entry.source) != SOURCE_HASSIO
+        ):
+            self._abort_if_unique_id_configured()
         self._abort_if_unique_id_configured(updates=data)
         self._pending = {**data, CONF_SOURCE: SOURCE_HASSIO}
         return await self.async_step_hassio_confirm()
@@ -181,7 +192,9 @@ class JarvisQ1Flow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = error
             else:
                 return self.async_update_reload_and_abort(
-                    entry, data={**entry.data, **data}, reason="reconfigure_successful"
+                    entry,
+                    data={**entry.data, **data, CONF_SOURCE: "user"},
+                    reason="reconfigure_successful",
                 )
         defaults = {**entry.data, **(user_input or {})}
         return self.async_show_form(

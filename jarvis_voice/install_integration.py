@@ -103,6 +103,30 @@ def _is_managed(path: Path) -> bool:
     )
 
 
+def installed_companion_status() -> dict:
+    """Read file versions without modifying either integration tree."""
+    source = Path(os.environ.get("JARVIS_INTEGRATION_SOURCE", SOURCE))
+    dest = Path(os.environ.get("JARVIS_CUSTOM_COMPONENTS", ROOT)) / DEST_NAME
+
+    def version(path):
+        if not _is_bundle(path):
+            return None
+        try:
+            value = json.loads(
+                (path / "manifest.json").read_text(encoding="utf-8")
+            ).get("version")
+        except (OSError, ValueError, AttributeError):
+            return None
+        return value if isinstance(value, str) else None
+
+    return {
+        "bundled_version": version(source),
+        "installed_version": version(dest),
+        "managed": _is_managed(dest),
+        "directory_exists": dest.exists() or dest.is_symlink(),
+    }
+
+
 def recover(root: Path) -> bool:
     """Repair state left by an interrupted install. Return False if unsafe to continue."""
     dest, stage, backup = root / DEST_NAME, root / STAGE_NAME, root / BACKUP_NAME
@@ -202,7 +226,7 @@ def main(
     options = load_options(options_path)
     if options is None:
         return "no_options"
-    if options.get("auto_install_integration") is not True:
+    if options.get("auto_install_integration", True) is not True:
         LOG.info("Companion integration auto-install disabled")
         return "disabled"
     return install(source, root)

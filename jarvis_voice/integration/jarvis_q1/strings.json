@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Connect to JARVIS Q1",
-        "description": "Connect to the local JARVIS Voice App.",
+        "description": "Open the JARVIS Q1 app, then Voice and integrations > Connect to Home Assistant > Manual setup. Copy the hostname, port, and API token from that panel.",
         "data": {
           "host": "App hostname or IP",
           "port": "HTTP port",
@@ -17,7 +17,7 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate JARVIS Q1",
-        "description": "The App at {host} rejected the API token. Enter the current token from the App configuration.",
+        "description": "The App at {host} rejected the API token. Open the JARVIS Q1 app and copy the current API token from Voice and integrations > Connect to Home Assistant > Manual setup.",
         "data": {
           "token": "App API token"
         }
