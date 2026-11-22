@@ -1,4 +1,5 @@
 """Tests for the companion integration installer (no Home Assistant needed)."""
+
 import json
 import sys
 from pathlib import Path
@@ -13,7 +14,8 @@ def make_source(base: Path, version="0.5.0", code="VALUE = 1\n") -> Path:
     src = base / "src" / "jarvis_q1"
     (src / "translations").mkdir(parents=True, exist_ok=True)
     (src / "manifest.json").write_text(
-        json.dumps({"domain": "jarvis_q1", "version": version}), encoding="utf-8")
+        json.dumps({"domain": "jarvis_q1", "version": version}), encoding="utf-8"
+    )
     (src / "__init__.py").write_text(code, encoding="utf-8")
     (src / "translations" / "en.json").write_text("{}", encoding="utf-8")
     return src
@@ -70,7 +72,9 @@ def test_update_when_code_changes_but_manifest_same(env):
     run(options, src, root)
     (src / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
     assert run(options, src, root) == "installed"
-    assert (root / "jarvis_q1" / "__init__.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert (root / "jarvis_q1" / "__init__.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 2\n"
     assert (root / "jarvis_q1" / inst.MARKER).is_file()
     assert not (root / inst.BACKUP_NAME).exists()
 
@@ -169,15 +173,36 @@ def test_failure_restores_previous_and_removes_stage(env, monkeypatch):
     with pytest.raises(OSError):
         run(options, src, root)
     monkeypatch.undo()
-    assert (root / "jarvis_q1" / "__init__.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert (root / "jarvis_q1" / "__init__.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 1\n"
     assert not (root / inst.STAGE_NAME).exists()
     assert not (root / inst.BACKUP_NAME).exists()
 
 
 def test_disabled_option(env):
     base, root, options = env
-    options.write_text(json.dumps({"auto_install_integration": False}), encoding="utf-8")
+    options.write_text(
+        json.dumps({"auto_install_integration": False}), encoding="utf-8"
+    )
     assert run(options, make_source(base), root) == "disabled"
+    assert not root.exists()
+
+
+def test_only_explicit_boolean_enables_installation(env):
+    base, root, options = env
+    options.write_text(
+        json.dumps({"auto_install_integration": "false"}), encoding="utf-8"
+    )
+    assert run(options, make_source(base), root) == "disabled"
+    assert not root.exists()
+
+
+def test_foreign_bundle_is_ignored(env):
+    base, root, options = env
+    src = make_source(base)
+    (src / "manifest.json").write_text('{"domain": "unrelated"}', encoding="utf-8")
+    assert run(options, src, root) == "no_source"
     assert not root.exists()
 
 

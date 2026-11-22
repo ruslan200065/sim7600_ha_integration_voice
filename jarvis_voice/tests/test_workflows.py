@@ -1,9 +1,10 @@
 """Workflow cancellation and verification must not promise undo or duplicate writes."""
+
 import asyncio
-from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from workflows import WorkflowManager, expected_outcome, outcome_matches, validate_steps
@@ -14,10 +15,21 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as directory:
             manager = WorkflowManager(Path(directory) / "data.sqlite3", "owner")
             calls = []
+
             async def runner(tool, arguments):
                 calls.append((tool, arguments))
                 return {"accepted": True}
-            task = manager.start("Light", [{"tool": "call_ha_service", "arguments": {"entity_id": "light.test", "service": "turn_on"}}], runner)
+
+            task = manager.start(
+                "Light",
+                [
+                    {
+                        "tool": "call_ha_service",
+                        "arguments": {"entity_id": "light.test", "service": "turn_on"},
+                    }
+                ],
+                runner,
+            )
             self.assertTrue(manager.cancel(task["id"])["cancelled"])
             await asyncio.sleep(0)
             self.assertEqual(calls, [])
@@ -29,12 +41,16 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             manager = WorkflowManager(Path(directory) / "data.sqlite3", "owner")
             entered = asyncio.Event()
             calls = []
+
             async def runner(tool, arguments):
                 calls.append(arguments["entity_id"])
                 entered.set()
                 await asyncio.Future()
-            steps = [{"tool": "call_ha_service", "arguments": {"entity_id": "light.first"}},
-                     {"tool": "call_ha_service", "arguments": {"entity_id": "light.second"}}]
+
+            steps = [
+                {"tool": "call_ha_service", "arguments": {"entity_id": "light.first"}},
+                {"tool": "call_ha_service", "arguments": {"entity_id": "light.second"}},
+            ]
             pending = asyncio.create_task(manager.execute("Lights", steps, runner))
             await entered.wait()
             identifier = manager.list_tasks()[0]["id"]
@@ -49,10 +65,14 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as directory:
             manager = WorkflowManager(Path(directory) / "data.sqlite3", "owner")
             entered = asyncio.Event()
+
             async def runner(*args):
                 entered.set()
                 await asyncio.Future()
-            pending = asyncio.create_task(manager.execute("Wait", [{"tool": "get_entity_state"}], runner))
+
+            pending = asyncio.create_task(
+                manager.execute("Wait", [{"tool": "get_entity_state"}], runner)
+            )
             await entered.wait()
             pending.cancel()
             with self.assertRaises(asyncio.CancelledError):
@@ -63,10 +83,18 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as directory:
             manager = WorkflowManager(Path(directory) / "data.sqlite3", "owner")
             calls = []
+
             async def runner(tool, arguments):
                 calls.append(arguments["entity_id"])
                 return {"accepted": len(calls) != 2}
-            steps = [{"tool": "call_ha_service", "arguments": {"entity_id": "light." + str(i)}} for i in range(3)]
+
+            steps = [
+                {
+                    "tool": "call_ha_service",
+                    "arguments": {"entity_id": "light." + str(i)},
+                }
+                for i in range(3)
+            ]
             result = await manager.execute("Ordered", steps, runner)
             self.assertEqual(calls, ["light.0", "light.1"])
             self.assertEqual(result["status"], "needs_attention")
@@ -74,20 +102,58 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(result["results"]), 2)
             await manager.close()
 
+    async def test_concurrent_resume_dispatches_only_one_retry(self):
+        with TemporaryDirectory() as directory:
+            manager = WorkflowManager(Path(directory) / "data.sqlite3", "owner")
+            blocked = asyncio.Event()
+            resumed = asyncio.Event()
+
+            async def unconfirmed(*args):
+                return {"accepted": False}
+
+            async def confirmed(*args):
+                resumed.set()
+                await blocked.wait()
+                return {"accepted": True}
+
+            first = await manager.execute(
+                "Lights", [{"tool": "call_ha_service"}], unconfirmed
+            )
+            retry = asyncio.create_task(
+                manager.resume(first["id"], confirmed, confirmed=True)
+            )
+            try:
+                await asyncio.wait_for(resumed.wait(), timeout=1)
+                self.assertIn("error", await manager.resume(first["id"], confirmed))
+                self.assertEqual(manager.get(first["id"])["status"], "resumed")
+                blocked.set()
+                self.assertEqual((await retry)["status"], "completed")
+            finally:
+                await manager.close()
+
     async def test_scenarios_are_persistent_private_and_revalidated(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "data.sqlite3"
             first = WorkflowManager(path, "first")
             second = WorkflowManager(path, "second")
-            steps = [{"tool": "call_ha_service", "arguments": {"entity_id": "light.test", "service": "turn_on"}}]
+            steps = [
+                {
+                    "tool": "call_ha_service",
+                    "arguments": {"entity_id": "light.test", "service": "turn_on"},
+                }
+            ]
             first.save("Leaving", steps)
             steps[0]["arguments"]["service"] = "turn_off"
-            self.assertEqual(first.scenario("Leaving")[0]["arguments"]["service"], "turn_on")
+            self.assertEqual(
+                first.scenario("Leaving")[0]["arguments"]["service"], "turn_on"
+            )
             self.assertEqual(second.list_scenarios(), [])
             with self.assertRaises(ValueError):
                 second.scenario("Leaving")
             self.assertFalse(second.delete("Leaving"))
-            self.assertEqual(WorkflowManager(path, "first").list_scenarios()[0]["name"], "Leaving")
+            self.assertEqual(
+                WorkflowManager(path, "first").list_scenarios()[0]["name"], "Leaving"
+            )
             self.assertTrue(first.delete("Leaving"))
             self.assertEqual(first.list_scenarios(), [])
             with self.assertRaises(ValueError):
@@ -99,15 +165,21 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as directory:
             manager = WorkflowManager(Path(directory) / "data.sqlite3", "owner")
             started = asyncio.Event()
+
             async def blocked(*args):
                 started.set()
                 await asyncio.Future()
+
             first = manager.start("Slow", [{"tool": "get_entity_state"}], blocked)
             await started.wait()
+
             async def fast(*args):
                 return {"state": "on"}
+
             async with asyncio.timeout(0.5):
-                result = await manager.execute("Fast", [{"tool": "get_entity_state"}], fast)
+                result = await manager.execute(
+                    "Fast", [{"tool": "get_entity_state"}], fast
+                )
             self.assertEqual(result["status"], "completed")
             manager.cancel(first["id"])
             await manager.close()
@@ -116,18 +188,38 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 class VerificationTests(unittest.TestCase):
     def test_unrelated_attribute_update_does_not_verify_light_on(self):
         expected = expected_outcome("turn_on", {"entity_id": "light.test"})
-        self.assertFalse(outcome_matches({"state": "off", "attributes": {"last_updated": "new"}}, expected))
+        self.assertFalse(
+            outcome_matches(
+                {"state": "off", "attributes": {"last_updated": "new"}}, expected
+            )
+        )
         self.assertTrue(outcome_matches({"state": "on"}, expected))
         self.assertFalse(outcome_matches({"state": "unavailable"}, expected))
 
-    def test_toggle_uses_before_state_without_resending_and_unknown_is_unverifiable(self):
-        self.assertEqual(expected_outcome("toggle", {}, {"state": "on"}), {"state": "off"})
+    def test_toggle_uses_before_state_without_resending_and_unknown_is_unverifiable(
+        self,
+    ):
+        self.assertEqual(
+            expected_outcome("toggle", {}, {"state": "on"}), {"state": "off"}
+        )
         self.assertIsNone(expected_outcome("toggle", {}, {"state": "unavailable"}))
         self.assertIsNone(expected_outcome("press", {"entity_id": "button.test"}))
         self.assertIsNone(expected_outcome("turn_on", {"entity_id": "scene.test"}))
 
     def test_parameter_values_are_verified_in_native_attributes(self):
         expected = expected_outcome("set_temperature", {"temperature": 22})
-        self.assertTrue(outcome_matches({"state": "heat", "attributes": {"temperature": 22}}, expected))
-        self.assertFalse(outcome_matches({"state": "heat", "attributes": {"temperature": 18}}, expected))
-        self.assertTrue(outcome_matches({"state": "42"}, expected_outcome("set_value", {"value": 42})))
+        self.assertTrue(
+            outcome_matches(
+                {"state": "heat", "attributes": {"temperature": 22}}, expected
+            )
+        )
+        self.assertFalse(
+            outcome_matches(
+                {"state": "heat", "attributes": {"temperature": 18}}, expected
+            )
+        )
+        self.assertTrue(
+            outcome_matches(
+                {"state": "42"}, expected_outcome("set_value", {"value": 42})
+            )
+        )

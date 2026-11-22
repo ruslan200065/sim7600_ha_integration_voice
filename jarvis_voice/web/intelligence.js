@@ -4,9 +4,9 @@
   let profile = '', ticket = 0, catalog = [], data;
   const el = (tag, text, cls) => {const node=document.createElement(tag); if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;};
   const status=el('p','','notice'), body=el('div'); root.append(status,body);
-  async function request(method='GET',payload,extra='') {
-    const response=await fetch('intelligence?profile='+encodeURIComponent(profile)+extra,{method,cache:'no-store',headers:{'Content-Type':'application/json','X-Jarvis-Setup':'1'},body:payload===undefined?undefined:JSON.stringify(payload)});
-    if(!response.ok)throw new Error((await response.text()).slice(0,200)||'Ошибка загрузки'); return response.json();
+  async function api(method = "GET", payload, extra = "") {
+    const response = await request("intelligence?profile=" + encodeURIComponent(profile) + extra, method, payload);
+    return response.json();
   }
   function input(type='text',value=''){const node=el('input');node.type=type;node.value=value;return node;}
   function select(items,value){const node=el('select');for(const [id,name]of items)node.append(new Option(name,id));if(value!==undefined)node.value=value;return node;}
@@ -16,7 +16,7 @@
   function entities(){return [['','Выберите устройство'],...catalog.map(row=>[row.id,[row.name,row.area,row.id].filter(Boolean).join(' · ')])];}
   function profiles(){return data.profiles.map(row=>[row.id,row.name]);}
   function name(id){return data.profiles.find(row=>row.id===id)?.name||id;}
-  async function mutate(payload,preview=false){try{status.textContent='Проверяем…';const result=await request('POST',payload);if(preview){const row=result.preview;status.textContent=(row.condition_known?(row.would_trigger?'Условие сейчас выполнено. ':'Условие сейчас не выполнено. '):'Состояние условия неизвестно. ')+ 'Получатель: '+name(row.recipient)+'. Никаких действий не выполнялось.';}else{await load();status.textContent='Сохранено.';}}catch(error){status.textContent=error.message;}}
+  async function mutate(payload,preview=false){try{status.textContent='Проверяем…';const result=await api('POST',payload);if(preview){const row=result.preview;status.textContent=(row.condition_known?(row.would_trigger?'Условие сейчас выполнено. ':'Условие сейчас не выполнено. '):'Состояние условия неизвестно. ')+ 'Получатель: '+name(row.recipient)+'. Никаких действий не выполнялось.';}else{await load();status.textContent='Сохранено.';}}catch(error){status.textContent=error.message;}}
   function draw(){body.replaceChildren();
     const heading=card('Понимание дома и надёжность');const who=select(profiles(),profile);who.setAttribute('aria-label','Участник для настройки');who.onchange=()=>{profile=who.value;load();};heading.append(label('Участник',who),button('Обновить',()=>load()));
     const autonomy=card('Что Джарвис может делать самостоятельно');autonomy.append(el('p','Эти правила дополнительно ограничивают обычные права участника и не расширяют доступ.','hint'));
@@ -36,6 +36,9 @@
     const changes=card('Что изменилось дома');for(const row of data.home_changes.events)changes.append(el('p',new Date(row.at).toLocaleString('ru-RU')+' · '+(row.attributes.friendly_name||row.entity_id)+': '+(row.previous??'—')+' → '+row.state+' · '+row.source));if(!data.home_changes.events.length)changes.append(el('p','Доступных событий пока нет.','hint'));if(data.home_changes.next_offset!==null)changes.append(button('Следующая страница событий',()=>load('&offset='+data.home_changes.next_offset)));
     const diagnostics=card('Диагностика звонка');if(data.calls?.length){const call=select(data.calls.map(row=>[row.id,'Звонок '+row.id+(row.at?' · '+new Date(row.at).toLocaleString('ru-RU'):'' )]),data.diagnostics_call_id);call.setAttribute('aria-label','Звонок для диагностики');call.onchange=()=>load('&call_id='+encodeURIComponent(call.value));diagnostics.append(label('Выбрать звонок',call));}diagnostics.append(el('p',data.diagnostics.reason));if(data.diagnostics.first_audio_ms!=null)diagnostics.append(el('p','От соединения до первой передачи аудио: '+data.diagnostics.first_audio_ms+' мс'));for(const row of data.diagnostics.stages)diagnostics.append(el('p',row.label+' · '+({unknown:'Нет данных',ready:'Готово',sent:'Передано',received:'Получено',completed:'Завершено',failed:'Сбой',timeout:'Превышено время'}[row.status]||row.status)+(row.duration_ms!=null?' · '+Math.round(row.duration_ms)+' мс':'')));
   }
-  async function load(extra=''){const current=++ticket;status.textContent='Загрузка…';try{const result=await request('GET',undefined,extra);if(current!==ticket)return;data=result;profile=data.profile;if(!catalog.length){const response=await fetch('entities',{cache:'no-store'});if(response.ok)catalog=(await response.json()).entities||[];}if(current!==ticket)return;draw();status.textContent='';}catch(error){if(current===ticket)status.textContent=error.message;}}
-  document.querySelector('[data-tab="intelligence"]')?.addEventListener('click',()=>load());window.addEventListener('hashchange',()=>{if(location.hash==='#intelligence')load();});if(location.hash==='#intelligence')load();
+  async function load(extra=''){const current=++ticket;status.textContent='Загрузка…';try{const result=await api('GET',undefined,extra);if(current!==ticket)return;data=result;profile=data.profile;if(!catalog.length){const response=await fetch('entities',{cache:'no-store'});if(response.ok)catalog=(await response.json()).entities||[];}if(current!==ticket)return;draw();status.textContent='';}catch(error){if(current===ticket)status.textContent=error.message;}}
+  document.addEventListener("jarvis-tab", event => {
+    if (event.detail === "intelligence") load();
+  });
+  if (location.hash === "#intelligence") load();
 })();

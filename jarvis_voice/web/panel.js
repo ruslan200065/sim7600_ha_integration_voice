@@ -26,7 +26,6 @@ const domainChoices = document.querySelector("#domain-choices");
 const save = document.querySelector("#save");
 const saveState = document.querySelector("#save-state");
 const volumeValue = document.querySelector("#volume-value");
-const phoneRecipient = document.querySelector("#phone-recipient");
 const pickers = new Map();
 let catalog = [];
 let catalogError = false;
@@ -377,7 +376,6 @@ function setTab(key) {
   if (key === "personal") loadPersonal();
   if (key === "knowledge") loadKnowledge();
   if (key === "audit") loadAudit();
-  if (key === "calls" || key === "hardware") refreshPhone();
   if (key === "voice" && current) loadActiveModels();
 }
 for (const tab of tabs) tab.addEventListener("click", () => {
@@ -406,7 +404,7 @@ function updateVolume() {
   volumeValue.textContent = form.elements.namedItem("call_playback_volume").value + "%";
 }
 form.addEventListener("input", event => {
-  if (event.target === phoneRecipient || event.target.closest("#sandbox")) return;
+  if (event.target.id === "phone-recipient" || event.target.closest("#sandbox")) return;
   if (familyList.contains(event.target)) syncFamily();
   updateVolume();
   changed();
@@ -669,30 +667,6 @@ async function loadCatalog(attempt = 0) {
 }
 loadCatalog();
 
-
-async function request(path, method = "GET", data) {
-  let response;
-  try {
-    response = await fetch(path, {
-      method,
-      cache: "no-store",
-      headers: {"Content-Type": "application/json", "X-Jarvis-Setup": "1"},
-      body: data === undefined ? undefined : JSON.stringify(data),
-    });
-  } catch {
-    throw new Error("Нет связи с аддоном. Проверьте, что он запущен.");
-  }
-  if (response.status === 401 || response.status === 403) {
-    throw new Error("Сессия Home Assistant истекла. Обновите страницу.");
-  }
-  if (!response.ok) {
-    const detail = response.headers.get("Content-Type")?.startsWith("text/plain")
-      ? (await response.text()).slice(0, 250)
-      : "";
-    throw new Error(detail || "Ошибка HTTP " + response.status);
-  }
-  return response;
-}
 
 function showNotice(message, error = false) {
   notice.textContent = message;
@@ -990,206 +964,6 @@ sandboxSpeak.addEventListener("click", async () => {
   }
 });
 
-const phone = document.querySelector("#phone");
-const phoneStatus = document.querySelector("#phone-status");
-const phoneResult = document.querySelector("#phone-result");
-const phoneButtons = Array.from(document.querySelectorAll("[data-phone]"));
-const volteButton = document.querySelector("#volte");
-const phoneStates = {
-  offline: "Модем недоступен",
-  idle: "Готов к вызову",
-  ringing: "Входящий звонок",
-  dialing: "Исходящий звонок",
-  answering: "Подключение",
-  connected: "Разговор",
-};
-let phoneBusy = false;
-let phoneTicket = 0;
-let phoneInFlight = false;
-
-async function refreshPhone() {
-  if ((phone.hidden && document.querySelector('[data-view="hardware"]').hidden) || phoneBusy || phoneInFlight || document.hidden) return;
-  const ticket = ++phoneTicket;
-  phoneInFlight = true;
-  try {
-    const state = await (await request("phone")).json();
-    if (ticket !== phoneTicket) return;
-    phoneStatus.textContent = (phoneStates[state.state] || state.state)
-      + " · автоответ " + (state.auto_answer ? "включён" : "выключен");
-    const previous = phoneRecipient.value;
-    const choices = [
-      ...(state.owner_available ? [new Option("Владелец", "")] : []),
-      ...state.recipients.map(item => typeof item === "string"
-        ? new Option(item, item) : new Option(item.name, item.key)),
-    ];
-    if (!choices.length) choices.push(new Option("Добавьте номер в настройках", ""));
-    const signature = choices.map(option => option.textContent).join("\n");
-    if (phoneRecipient.dataset.signature !== signature) {
-      phoneRecipient.replaceChildren(...choices);
-      phoneRecipient.dataset.signature = signature;
-      if (choices.some(option => option.value === previous)) phoneRecipient.value = previous;
-    }
-    for (const button of phoneButtons) button.disabled = !state["can_" + button.dataset.phone];
-    volteButton.disabled = state.state !== "idle";
-  } catch {
-    if (ticket !== phoneTicket) return;
-    phoneStatus.textContent = "Состояние модема недоступно.";
-    for (const button of phoneButtons) button.disabled = true;
-    volteButton.disabled = true;
-  } finally {
-    phoneInFlight = false;
-  }
-}
-
-volteButton.addEventListener("click", async () => {
-  phoneBusy = true;
-  volteButton.disabled = true;
-  const result = document.querySelector("#volte-result");
-  result.dataset.error = "false";
-  try {
-    result.textContent = (await (await request("phone/volte", "POST")).json()).message;
-  } catch (error) {
-    result.textContent = error.message;
-    result.dataset.error = "true";
-  } finally {
-    phoneBusy = false;
-    await refreshPhone();
-  }
-});
-
-const historyType = document.querySelector("#history-type");
-const historyStatus = document.querySelector("#history-status");
-const historyItems = document.querySelector("#history-items");
-const historyNewer = document.querySelector("#history-newer");
-const historyPage = document.querySelector("#history-page");
-const historyOlder = document.querySelector("#history-older");
-const historyStates = {
-  ringing: "Звонит", dialing: "Набор", connected: "Разговор",
-  missed: "Пропущен", failed: "Без соединения", completed: "Завершён",
-  interrupted: "Прерван", received: "Получено",
-};
-let historyOffset = 0;
-let historyPageSize = 50;
-let historyHasMore = false;
-let historyRequest = 0;
-
-async function loadHistory(offset = 0) {
-  const ticket = ++historyRequest;
-  const params = new URLSearchParams();
-  if (historyType.value) params.set("type", historyType.value);
-  params.set("offset", offset);
-  historyNewer.disabled = true;
-  historyOlder.disabled = true;
-  try {
-    const result = await (await request("history?" + params)).json();
-    if (ticket !== historyRequest) return;
-    historyPageSize = result.page_size;
-    const pageCount = Math.max(1, Math.ceil(result.total / historyPageSize));
-    if (offset >= pageCount * historyPageSize) {
-      await loadHistory((pageCount - 1) * historyPageSize);
-      return;
-    }
-    historyOffset = offset;
-    historyHasMore = result.more;
-    historyPage.textContent = "Страница " + (Math.floor(offset / historyPageSize) + 1) + " из " + pageCount;
-    historyItems.replaceChildren();
-    for (const item of result.items) {
-      const row = document.createElement("li");
-      const heading = document.createElement("strong");
-      const time = new Date(item.created_at * 1000).toLocaleString();
-      const direction = item.direction === "incoming" ? "Входящий звонок" : "Исходящий звонок";
-      const state = historyStates[item.state] || item.state || "";
-      const duration = item.connected_at && item.ended_at
-        ? " · " + Math.max(0, Math.round(item.ended_at - item.connected_at)) + " с"
-        : "";
-      heading.textContent = time + " · " + (item.kind === "sms" ? "SMS" : direction)
-        + " · " + (item.number || "Номер скрыт") + " · " + state + duration;
-      row.append(heading);
-      if (item.text) {
-        const body = document.createElement("p");
-        body.textContent = item.text;
-        row.append(body);
-      }
-      historyItems.append(row);
-    }
-    const storage = Object.entries(result.sms.storage || {})
-      .map(([name, count]) => name + " " + count.used + "/" + count.total).join(" · ");
-    historyStatus.dataset.error = String(Boolean(result.sms.error));
-    historyStatus.textContent = result.sms.error || [
-      result.total ? "Записей: " + result.total : "Записей пока нет.",
-      storage ? "Память SMS: " + storage : "",
-    ].filter(Boolean).join(" ");
-  } catch (error) {
-    if (ticket !== historyRequest) return;
-    historyStatus.textContent = error.message;
-    historyStatus.dataset.error = "true";
-  } finally {
-    if (ticket === historyRequest) {
-      historyNewer.disabled = historyOffset === 0;
-      historyOlder.disabled = !historyHasMore;
-    }
-  }
-}
-
-historyType.addEventListener("change", () => loadHistory());
-historyNewer.addEventListener("click", () => loadHistory(historyOffset - historyPageSize));
-historyOlder.addEventListener("click", () => loadHistory(historyOffset + historyPageSize));
-for (const button of document.querySelectorAll("[data-clear-history]")) {
-  button.addEventListener("click", async () => {
-    if (!window.confirm(button.textContent + "?")) return;
-    button.disabled = true;
-    try {
-      const response = await request("history/" + button.dataset.clearHistory, "DELETE");
-      const result = await response.json();
-      await loadHistory(0);
-      historyStatus.dataset.error = "false";
-      historyStatus.textContent = "Удалено записей или файлов: " + result.cleared;
-    } catch (error) {
-      historyStatus.dataset.error = "true";
-      historyStatus.textContent = error.message;
-    } finally {
-      button.disabled = false;
-    }
-  });
-}
-document.querySelector("#history-refresh").addEventListener("click", async () => {
-  try {
-    await request("history/refresh", "POST");
-    await new Promise(resolve => setTimeout(resolve, 1200));
-  } catch (error) {
-    historyStatus.textContent = error.message;
-    historyStatus.dataset.error = "true";
-    return;
-  }
-  await loadHistory(historyOffset);
-});
-loadHistory();
-
-setTab(location.hash.slice(1));
-setInterval(refreshPhone, 3000);
-for (const button of phoneButtons) {
-  button.addEventListener("click", async () => {
-    phoneBusy = true;
-    for (const control of phoneButtons) control.disabled = true;
-    phoneResult.textContent = "Команда отправляется…";
-    phoneResult.dataset.error = "false";
-    try {
-      const member = phoneRecipient.value;
-      await request("phone/" + button.dataset.phone, "POST",
-        button.dataset.phone === "dial" && member ? {member} : undefined);
-      phoneResult.textContent = button.dataset.phone === "dial"
-        ? "Модем принял команду вызова. Состояние обновится ниже."
-        : "Команда принята.";
-    } catch (error) {
-      phoneResult.textContent = error.message;
-      phoneResult.dataset.error = "true";
-    } finally {
-      phoneBusy = false;
-      await refreshPhone();
-    }
-  });
-}
-
 request("state")
   .then(response => response.json())
   .then(render)
@@ -1266,3 +1040,5 @@ for(const [id,direction] of [["fallback-up",-1],["fallback-down",1]]){
   select.dispatchEvent(new Event("input",{bubbles:true}));
  });
 }
+
+setTab(location.hash.slice(1));

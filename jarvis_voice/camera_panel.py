@@ -1,14 +1,14 @@
 """On-demand UVC preview, camera mode discovery and controls."""
+
 import asyncio
+import json
+import re
 from contextlib import asynccontextmanager, suppress
 from fractions import Fraction
-import json
 from pathlib import Path
-import re
 
 from aiohttp import web
-
-from processes import start_process, stop_process
+from processes import cancel_task, start_process, stop_process
 from q1_hardware import _run, camera_device
 
 # Prefer the camera's encoded JPEG to avoid transcoding on the host.
@@ -39,18 +39,30 @@ def parse_modes(text):
             # Bound the workload of devices that require software JPEG encoding.
             if pixel_format != "MJPG" and (width * height > 1920 * 1080 or fps > 30):
                 continue
-            mode = {"format": pixel_format, "width": width, "height": height, "fps": fps}
+            mode = {
+                "format": pixel_format,
+                "width": width,
+                "height": height,
+                "fps": fps,
+            }
             if mode not in modes:
                 modes.append(mode)
     return modes
 
 
 def default_mode(modes):
-    return min(modes, key=lambda mode: (
-        mode["format"] != "MJPG",
-        abs(mode["width"] - 640) + abs(mode["height"] - 480),
-        abs(mode["fps"] - 15),
-    )) if modes else None
+    return (
+        min(
+            modes,
+            key=lambda mode: (
+                mode["format"] != "MJPG",
+                abs(mode["width"] - 640) + abs(mode["height"] - 480),
+                abs(mode["fps"] - 15),
+            ),
+        )
+        if modes
+        else None
+    )
 
 
 def parse_controls(text):
@@ -63,7 +75,8 @@ def parse_controls(text):
             current = None
             flags = details.partition("flags=")[2]
             if kind not in {"int", "bool", "menu", "intmenu"} or any(
-                flag in flags for flag in ("read-only", "write-only", "disabled", "volatile")
+                flag in flags
+                for flag in ("read-only", "write-only", "disabled", "volatile")
             ):
                 continue
             values = {key: int(value) for key, value in CONTROL_VALUE.findall(details)}
@@ -72,7 +85,10 @@ def parse_controls(text):
             if not {"min", "max", "value"} <= values.keys():
                 continue
             current = {
-                "id": name, "type": kind, **values, "choices": [],
+                "id": name,
+                "type": kind,
+                **values,
+                "choices": [],
                 "inactive": "inactive" in flags or "grabbed" in flags,
             }
             controls.append(current)
@@ -85,16 +101,48 @@ def parse_controls(text):
 def preview_args(device, mode):
     fps = Fraction(str(mode["fps"]))
     cmd = (
-        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-        "-f", "v4l2", "-input_format", FORMATS[mode["format"]],
-        "-video_size", f'{mode["width"]}x{mode["height"]}',
-        "-framerate", str(fps), "-threads", "1", "-i", device, "-an",
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "v4l2",
+        "-input_format",
+        FORMATS[mode["format"]],
+        "-video_size",
+        f"{mode['width']}x{mode['height']}",
+        "-framerate",
+        str(fps),
+        "-threads",
+        "1",
+        "-i",
+        device,
+        "-an",
     )
-    codec = ("-c:v", "copy") if mode["format"] == "MJPG" else (
-        "-c:v", "mjpeg", "-threads", "1", "-q:v", "5",
+    codec = (
+        ("-c:v", "copy")
+        if mode["format"] == "MJPG"
+        else (
+            "-c:v",
+            "mjpeg",
+            "-threads",
+            "1",
+            "-q:v",
+            "5",
+        )
     )
-    return (*cmd, *codec, "-flush_packets", "1", "-f", "mpjpeg", "-boundary_tag", "jarvis", "pipe:1")
-
+    return (
+        *cmd,
+        *codec,
+        "-flush_packets",
+        "1",
+        "-f",
+        "mpjpeg",
+        "-boundary_tag",
+        "jarvis",
+        "pipe:1",
+    )
 
 
 async def read_frame(stdout):
@@ -123,6 +171,7 @@ class CameraPanel:
         self.capture_task = None
         self.subscribers = set()
         self.lifecycle_lock = asyncio.Lock()
+        self.closing = False
         self.viewers = set()
         self.released = asyncio.Event()
         self.released.set()
@@ -132,7 +181,9 @@ class CameraPanel:
     def configured_device(self):
         value = self.service.o.get("q1_video_device", "")
         if not value:
-            raise ValueError("Выберите видеоустройство в разделе «Оборудование» и примените настройки.")
+            raise ValueError(
+                "Выберите видеоустройство в разделе «Оборудование» и примените настройки."
+            )
         return camera_device(value)
 
     async def modes(self, device):
@@ -151,25 +202,38 @@ class CameraPanel:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
-        return data if isinstance(data, dict) and data.get("device") == self.device_key(device) else {}
+        if not isinstance(data, dict) or data.get("device") != self.device_key(device):
+            return {}
+        if not isinstance(data.get("controls"), dict):
+            data.pop("controls", None)
+        return data
 
     def write_settings(self, device, settings):
         temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"device": self.device_key(device), **settings}), encoding="utf-8")
+        temporary.write_text(
+            json.dumps({"device": self.device_key(device), **settings}),
+            encoding="utf-8",
+        )
         temporary.replace(self.path)
 
     async def state(self, _request):
         try:
             device = self.configured_device()
             modes, controls, saved = await asyncio.gather(
-                self.modes(device), self.controls(device),
+                self.modes(device),
+                self.controls(device),
                 asyncio.to_thread(self.read_settings, device),
             )
-            return web.json_response({
-                "device": device, "modes": modes,
-                "mode": saved.get("mode") if saved.get("mode") in modes else default_mode(modes),
-                "controls": controls,
-            })
+            return web.json_response(
+                {
+                    "device": device,
+                    "modes": modes,
+                    "mode": saved.get("mode")
+                    if saved.get("mode") in modes
+                    else default_mode(modes),
+                    "controls": controls,
+                }
+            )
         except (ValueError, RuntimeError, OSError) as exc:
             raise web.HTTPConflict(text=str(exc)[:250]) from exc
 
@@ -182,13 +246,24 @@ class CameraPanel:
             async with self.settings_lock:
                 settings = await asyncio.to_thread(self.read_settings, device)
                 if set(data) == {"mode"}:
-                    mode = next((item for item in await self.modes(device) if item == data["mode"]), None)
+                    mode = next(
+                        (
+                            item
+                            for item in await self.modes(device)
+                            if item == data["mode"]
+                        ),
+                        None,
+                    )
                     if mode is None:
                         raise ValueError("Выберите поддерживаемый режим камеры.")
                     settings["mode"] = mode
                 elif set(data) == {"control", "value"}:
                     control = next(
-                        (row for row in await self.controls(device) if row["id"] == data["control"]),
+                        (
+                            row
+                            for row in await self.controls(device)
+                            if row["id"] == data["control"]
+                        ),
                         None,
                     )
                     value = data["value"]
@@ -196,11 +271,15 @@ class CameraPanel:
                         raise ValueError("Эта настройка камеры сейчас недоступна.")
                     allowed = [choice["value"] for choice in control["choices"]]
                     step = max(1, control.get("step", 1))
-                    if (not control["min"] <= value <= control["max"]
-                            or (value - control["min"]) % step
-                            or (allowed and value not in allowed)):
+                    if (
+                        not control["min"] <= value <= control["max"]
+                        or (value - control["min"]) % step
+                        or (allowed and value not in allowed)
+                    ):
                         raise ValueError("Значение вне диапазона камеры.")
-                    await _run("v4l2-ctl", "-d", device, "-c", f'{control["id"]}={value}')
+                    await _run(
+                        "v4l2-ctl", "-d", device, "-c", f"{control['id']}={value}"
+                    )
                     settings.setdefault("controls", {})[control["id"]] = value
                     self.service.camera_frame = None
                 else:
@@ -222,7 +301,9 @@ class CameraPanel:
             if re.fullmatch(r"[a-z][a-z0-9_]+", name) and type(value) is int:
                 # Driver may reject values after a firmware or device change.
                 with suppress(RuntimeError):
-                    await _run("v4l2-ctl", "-d", device, "-c", f"{name}={value}", timeout=2)
+                    await _run(
+                        "v4l2-ctl", "-d", device, "-c", f"{name}={value}", timeout=2
+                    )
 
     @asynccontextmanager
     async def subscribe(self):
@@ -230,6 +311,8 @@ class CameraPanel:
         device = self.configured_device()
         queue = asyncio.Queue(maxsize=1)
         async with self.lifecycle_lock:
+            if self.closing:
+                raise RuntimeError("Захват камеры остановлен.")
             if len(self.subscribers) >= 8:
                 raise RuntimeError("Слишком много подключений к камере.")
             self.subscribers.add(queue)
@@ -240,12 +323,8 @@ class CameraPanel:
         finally:
             async with self.lifecycle_lock:
                 self.subscribers.discard(queue)
-                if not self.subscribers and self.capture_task is not None:
-                    self.capture_task.cancel()
-                    await asyncio.gather(self.capture_task, return_exceptions=True)
-                    self.capture_task = None
-                    self.device = None
-                    self.released.set()
+                if not self.subscribers:
+                    await self.stop_capture()
 
     def start_capture(self, device):
         self.device = device
@@ -254,11 +333,24 @@ class CameraPanel:
 
     async def restart_capture(self, device):
         async with self.lifecycle_lock:
-            if not self.subscribers:
+            if self.closing or not self.subscribers:
                 return
-            self.capture_task.cancel()
-            await asyncio.gather(self.capture_task, return_exceptions=True)
+            await self.stop_capture()
+            for queue in self.subscribers:
+                if not queue.empty():
+                    queue.get_nowait()
             self.start_capture(device)
+
+    async def stop_capture(self):
+        """Stop the current worker while the caller holds the lifecycle lock."""
+        try:
+            if self.capture_task is not None:
+                await cancel_task(self.capture_task)
+        finally:
+            self.capture_task = None
+            self.last_frame = None
+            self.device = None
+            self.released.set()
 
     def publish(self, item):
         for queue in self.subscribers:
@@ -279,7 +371,8 @@ class CameraPanel:
                     raise RuntimeError("Камера не сообщила поддерживаемый режим видео.")
                 await self.restore_controls(device, saved.get("controls", {}))
                 proc = await start_process(
-                    *preview_args(device, mode), stdout=asyncio.subprocess.PIPE,
+                    *preview_args(device, mode),
+                    stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
             clock = asyncio.get_running_loop().time
@@ -287,7 +380,13 @@ class CameraPanel:
                 frame = await asyncio.wait_for(read_frame(proc.stdout), 4)
                 self.last_frame = (clock(), frame)
                 self.publish(frame)
-        except (TimeoutError, asyncio.IncompleteReadError, ValueError, RuntimeError, OSError) as exc:
+        except (
+            TimeoutError,
+            asyncio.IncompleteReadError,
+            ValueError,
+            RuntimeError,
+            OSError,
+        ) as exc:
             message = str(exc) or "Камера перестала передавать кадры."
             self.publish(RuntimeError(message[:250]))
         finally:
@@ -308,17 +407,25 @@ class CameraPanel:
 
     async def mjpeg(self, request):
         """Authenticated app API used by the Home Assistant camera entity."""
-        response = web.StreamResponse(headers={
-            "Content-Type": "multipart/x-mixed-replace; boundary=jarvis",
-            "Cache-Control": "no-store",
-        })
+        response = web.StreamResponse(
+            headers={
+                "Content-Type": "multipart/x-mixed-replace; boundary=jarvis",
+                "Cache-Control": "no-store",
+            }
+        )
         try:
             async with self.subscribe() as queue:
                 frame = await self.next_frame(queue)
                 await response.prepare(request)
                 while request.transport and not request.transport.is_closing():
-                    header = BOUNDARY + f"Content-Type: image/jpeg\r\nContent-Length: {len(frame)}\r\n\r\n".encode("ascii")
-                    await asyncio.wait_for(response.write(header + frame + b"\r\n"), 3)
+                    header = BOUNDARY + (
+                        f"Content-Type: image/jpeg\r\nContent-Length: {len(frame)}\r\n\r\n"
+                    ).encode("ascii")
+                    async with asyncio.timeout(3):
+                        # Each viewer shares the same JPEG bytes.
+                        await response.write(header)
+                        await response.write(frame)
+                        await response.write(b"\r\n")
                     frame = await self.next_frame(queue)
         except (RuntimeError, TimeoutError, ValueError, OSError) as exc:
             if not response.prepared:
@@ -339,7 +446,8 @@ class CameraPanel:
                 producer = asyncio.create_task(self.stream_frames(ws, queue, ready))
                 try:
                     done, _ = await asyncio.wait(
-                        {producer, receiver}, return_when=asyncio.FIRST_COMPLETED,
+                        {producer, receiver},
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
                     if producer in done:
                         await producer
@@ -349,9 +457,15 @@ class CameraPanel:
         except (RuntimeError, TimeoutError, ValueError, OSError) as exc:
             if not ws.closed:
                 with suppress(TimeoutError, RuntimeError, OSError):
-                    await asyncio.wait_for(ws.send_json({
-                        "error": str(exc)[:250] or "Камера перестала передавать кадры.",
-                    }), 1)
+                    await asyncio.wait_for(
+                        ws.send_json(
+                            {
+                                "error": str(exc)[:250]
+                                or "Камера перестала передавать кадры.",
+                            }
+                        ),
+                        1,
+                    )
         finally:
             receiver.cancel()
             await asyncio.gather(receiver, return_exceptions=True)
@@ -373,12 +487,11 @@ class CameraPanel:
             await asyncio.wait_for(ws.send_bytes(frame), 2)
 
     async def shutdown(self, _app):
-        await asyncio.gather(*(ws.close() for ws in tuple(self.viewers)))
+        self.closing = True
         async with self.lifecycle_lock:
-            if self.capture_task is not None:
-                self.capture_task.cancel()
-                await asyncio.gather(self.capture_task, return_exceptions=True)
-                self.publish(RuntimeError("Захват камеры остановлен."))
+            await self.stop_capture()
+            self.publish(RuntimeError("Захват камеры остановлен."))
+        await asyncio.gather(*(ws.close() for ws in tuple(self.viewers)))
 
     def register(self, app):
         app.on_shutdown.append(self.shutdown)

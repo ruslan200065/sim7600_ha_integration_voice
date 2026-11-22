@@ -143,6 +143,44 @@ async def test_excess_serial_input_disconnects_pending_command(
     assert fake.writer.closed
 
 
+async def test_close_wakes_command_waiting_for_reply(
+    modem: SIM7600Modem, fake: FakeSerial
+) -> None:
+    await modem.connect()
+    started = asyncio.Event()
+
+    def no_reply(_command: str) -> None:
+        started.set()
+
+    fake.responses["AT+CSQ"] = no_reply
+    command = asyncio.create_task(modem.send_command("AT+CSQ"))
+    async with asyncio.timeout(1):
+        await started.wait()
+        await modem.close()
+        with pytest.raises(ModemConnectionError, match="disconnected"):
+            await command
+
+
+async def test_cancelled_command_discards_late_reply(
+    modem: SIM7600Modem, fake: FakeSerial
+) -> None:
+    await modem.connect()
+    started = asyncio.Event()
+
+    def late_reply(_command: str) -> None:
+        started.set()
+
+    fake.responses["AT+CSQ"] = late_reply
+    command = asyncio.create_task(modem.send_command("AT+CSQ"))
+    async with asyncio.timeout(1):
+        await started.wait()
+        command.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await command
+        asyncio.get_running_loop().call_later(0.005, fake.feed, "STALE\r\nOK\r\n")
+        assert await modem.send_command("AT") == ["OK"]
+
+
 async def test_connect_disables_echo(modem: SIM7600Modem, fake: FakeSerial) -> None:
     """ATE0 is the first command after opening the port."""
     await modem.connect()

@@ -1,8 +1,8 @@
 """Regression tests for subprocess ownership during shutdown."""
 
 import asyncio
-from pathlib import Path
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -25,6 +25,8 @@ async def test_cancelling_spawn_reaps_late_child(monkeypatch):
     monkeypatch.setattr("processes.asyncio.create_subprocess_exec", delayed_spawn)
     owner = asyncio.create_task(start_process("test-child"))
     await started.wait()
+    owner.cancel()
+    await asyncio.sleep(0)
     owner.cancel()
     await asyncio.sleep(0)
     assert not owner.done()

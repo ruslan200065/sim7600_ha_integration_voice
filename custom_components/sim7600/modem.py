@@ -195,32 +195,49 @@ class SIM7600Modem:
         self._read_task = asyncio.get_running_loop().create_task(
             self._read_loop(reader), name=f"sim7600_reader_{self.port}"
         )
-        for command in INIT_COMMANDS:
-            lines = await self._execute(command, INIT_TIMEOUT, count_timeout=False)
-            if not lines or lines[-1] != "OK":
-                LOGGER.debug("Init command %s answered %s", command, lines)
+        try:
+            for command in INIT_COMMANDS:
+                lines = await self._execute(command, INIT_TIMEOUT, count_timeout=False)
+                if not lines or lines[-1] != "OK":
+                    LOGGER.debug("Init command %s answered %s", command, lines)
+        except (ModemError, asyncio.CancelledError):
+            await self.disconnect()
+            raise
 
-    async def disconnect(self) -> None:
-        """Close the serial port. A later command reconnects."""
+    def _release_transport(
+        self, message: str
+    ) -> tuple[asyncio.Task[None] | None, asyncio.StreamWriter | None]:
         task, self._read_task = self._read_task, None
-        writer = self._writer
+        writer, self._writer = self._writer, None
         self._reader = None
-        self._writer = None
-        if task is not None and task is not asyncio.current_task():
+        if task is asyncio.current_task():
+            task = None
+        if task is not None:
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
         if writer is not None:
             with contextlib.suppress(Exception):
                 writer.close()
+            # Give an in-flight command a terminal response even on a full queue.
+            while not self._queue.empty():
+                self._queue.get_nowait()
+            self._queue.put_nowait(("lost", message))
+        future = self._ussd_future
+        if future is not None and not future.done():
+            future.set_exception(ModemConnectionError(message))
+        return task, writer
+
+    async def disconnect(self) -> None:
+        """Close the serial port. A later command reconnects."""
+        task, writer = self._release_transport("Serial modem disconnected")
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        if writer is not None:
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
 
     async def close(self) -> None:
         """Close the port permanently (config entry unloaded)."""
         self._closed = True
-        if self._ussd_future is not None and not self._ussd_future.done():
-            self._ussd_future.set_exception(ModemConnectionError("Modem closed"))
         await self.disconnect()
 
     def _handle_connection_lost(
@@ -238,22 +255,7 @@ class SIM7600Modem:
         if self._writer is None:
             return
         LOGGER.warning("Serial connection to %s lost: %s", self.port, err)
-        writer = self._writer
-        task = self._read_task
-        self._reader = None
-        self._writer = None
-        self._read_task = None
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
-        if writer is not None:
-            with contextlib.suppress(Exception):
-                writer.close()
-        # Consumers must see link failure even if incoming serial data filled the queue.
-        while not self._queue.empty():
-            self._queue.get_nowait()
-        self._queue.put_nowait(("lost", str(err)))
-        if self._ussd_future is not None and not self._ussd_future.done():
-            self._ussd_future.set_exception(ModemConnectionError(str(err)))
+        self._release_transport(str(err))
 
     # ------------------------------------------------------------------
     # Reader task and line classification
@@ -454,6 +456,9 @@ class SIM7600Modem:
             LOGGER.debug("Sending AT command: %s", command)
             await self._write(f"{command}\r".encode())
             lines = await self._collect(command, timeout, count_timeout)
+        except asyncio.CancelledError:
+            self._resync = True
+            raise
         finally:
             self._pending_prefix = None
             self._expect_body = False

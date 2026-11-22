@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from history import History, PAGE_SIZE
+from history import PAGE_SIZE, History
 
 
 def sms_pdu(text, part=None):
@@ -70,7 +70,9 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
         await self.history.import_sms(["+CMGL: 1,0,,30", sms_pdu("Тест"), "OK"])
         first = await self.history.page("call", 0)
         second = await self.history.page("call", PAGE_SIZE)
-        self.assertEqual((first["total"], first["page_size"]), (PAGE_SIZE + 1, PAGE_SIZE))
+        self.assertEqual(
+            (first["total"], first["page_size"]), (PAGE_SIZE + 1, PAGE_SIZE)
+        )
         self.assertTrue(first["more"])
         self.assertEqual(len(second["items"]), 1)
         self.assertFalse(second["more"])

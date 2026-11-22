@@ -5,13 +5,13 @@ from __future__ import annotations
 from homeassistant.components.notify import NotifyEntity, NotifyEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import SIM7600DataUpdateCoordinator
 from .entity import SIM7600Entity
-from .modem import InvalidInputError, ModemError
+from .services import send_sms
 
 
 async def async_setup_entry(
@@ -52,19 +52,4 @@ class SIM7600SmsNotifyEntity(SIM7600Entity, NotifyEntity):
                 translation_key="no_default_recipient",
             )
         text = f"{title}\n{message}" if title else message
-        try:
-            await self.coordinator.modem.send_sms(recipient, text)
-        except InvalidInputError as err:
-            raise ServiceValidationError(
-                str(err),
-                translation_domain=DOMAIN,
-                translation_key="invalid_input",
-                translation_placeholders={"error": str(err)},
-            ) from err
-        except ModemError as err:
-            raise HomeAssistantError(
-                f"Sending SMS failed: {err}",
-                translation_domain=DOMAIN,
-                translation_key="send_sms_failed",
-                translation_placeholders={"error": str(err)},
-            ) from err
+        await send_sms(self.coordinator.modem, recipient, text)

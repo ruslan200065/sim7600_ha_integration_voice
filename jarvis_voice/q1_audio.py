@@ -1,13 +1,11 @@
 """Optional UAC/ALSA Q1 input/output, only when ALSA device nodes exist."""
+
 import asyncio
-import logging
 import os
 import re
 
-from processes import start_process, stop_process
-
-LOG = logging.getLogger(__name__)
-
+from audio import FRAME, RATE
+from processes import cancel_task, start_process, stop_process
 
 # Plain hardware/default PCMs only: ALSA strings can otherwise describe plugins
 # such as file:FILE=... that write arbitrary files.
@@ -32,47 +30,72 @@ def audio_route(device, direction):
 async def capture_pcm(device, seconds=4):
     if not device:
         raise RuntimeError("q1_mic_device not set")
-    device, env = audio_route(device, "capture")
-    proc=await start_process(
-        "arecord","-q","-D",device,"-f","S16_LE","-r","16000","-c","1",
-        "-d",str(max(1,min(int(seconds),15))),"-t","raw",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+    duration = max(1, min(int(seconds), 15))
+    route = audio_route(device, "capture")
+    proc = await start_pcm_process(
+        route, "capture", seconds=duration, stderr=asyncio.subprocess.PIPE
+    )
     try:
-        data,err=await asyncio.wait_for(proc.communicate(),seconds+6)
-    except (TimeoutError, asyncio.CancelledError) as exc:
+        data, err = await asyncio.wait_for(proc.communicate(), duration + 6)
+    except TimeoutError as exc:
         await stop_process(proc)
-        if isinstance(exc, TimeoutError):
-            raise RuntimeError("Q1 microphone capture timeout") from exc
+        raise RuntimeError("Q1 microphone capture timeout") from exc
+    except BaseException:
+        await stop_process(proc)
         raise
     if proc.returncode:
-        raise RuntimeError("arecord failed: "+err.decode(errors="replace")[:200])
+        raise RuntimeError("arecord failed: " + err.decode(errors="replace")[:200])
     return data
+
+
+async def start_pcm_process(
+    route, direction, *, seconds=None, stderr=asyncio.subprocess.DEVNULL
+):
+    """Start ALSA with the mono S16 format shared by modem, capture, and playback."""
+    device, env = route
+    capture = direction == "capture"
+    command = "arecord" if capture else "aplay"
+    duration = ("-d", str(seconds)) if seconds is not None else ()
+    return await start_process(
+        command,
+        "-q",
+        "-D",
+        device,
+        "-t",
+        "raw",
+        "-f",
+        "S16_LE",
+        "-r",
+        str(RATE),
+        "-c",
+        "1",
+        *duration,
+        stdin=None if capture else asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE if capture else None,
+        stderr=stderr,
+        env=env,
+    )
 
 
 async def play_pcm(device, pcm):
     if not device:
         raise RuntimeError("q1_speaker_device not set")
-    device, env = audio_route(device, "playback")
-    proc=await start_process(
-        "aplay","-q","-D",device,"-t","raw","-f","S16_LE","-r","16000","-c","1",
-        stdin=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,env=env)
+    route = audio_route(device, "playback")
+    proc = await start_pcm_process(route, "playback", stderr=asyncio.subprocess.PIPE)
     try:
-        _,err=await asyncio.wait_for(proc.communicate(pcm), timeout=8)
-    except (TimeoutError, asyncio.CancelledError):
+        _, err = await asyncio.wait_for(proc.communicate(pcm), timeout=8)
+    except BaseException:
         await stop_process(proc)
         raise
     if proc.returncode:
-        raise RuntimeError("aplay failed: "+err.decode(errors="replace")[:200])
+        raise RuntimeError("aplay failed: " + err.decode(errors="replace")[:200])
 
 
 async def play_stream(device, stream):
     """Start output on the first SpeechKit chunk rather than buffering the full TTS."""
     if not device:
         raise RuntimeError("q1_speaker_device not set")
-    device, env = audio_route(device, "playback")
-    proc=await start_process(
-        "aplay","-q","-D",device,"-t","raw","-f","S16_LE","-r","16000","-c","1",
-        stdin=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,env=env)
+    proc = await start_pcm_process(audio_route(device, "playback"), "playback")
     try:
         async for frame in stream:
             proc.stdin.write(frame)
@@ -89,33 +112,28 @@ async def recognize_microphone_live(speech, device, timeout=12):
     """Stream Q1 ALSA/Pulse PCM to SpeechKit *as it arrives*, not after recording."""
     if not device:
         raise RuntimeError("Configure q1_mic_device first")
-    device, env = audio_route(device, "capture")
-    proc=await start_process(
-        "arecord","-q","-D",device,"-f","S16_LE","-r","16000","-c","1",
-        "-t","raw", stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,env=env)
-    queue=asyncio.Queue(maxsize=30)
+    proc = await start_pcm_process(audio_route(device, "capture"), "capture")
+    queue = asyncio.Queue(maxsize=30)
 
     async def producer():
         while True:
             try:
-                frame=await proc.stdout.readexactly(3200)
+                frame = await proc.stdout.readexactly(FRAME)
             except asyncio.IncompleteReadError:
                 return
             if queue.full():
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
+                queue.get_nowait()
             queue.put_nowait(frame)
 
-    reader=asyncio.create_task(producer())
+    reader = asyncio.create_task(producer())
     try:
         return await asyncio.wait_for(speech.recognize_live(queue), timeout=timeout)
-    except asyncio.TimeoutError:
-        if proc.returncode not in (None,0):
+    except TimeoutError:
+        if proc.returncode not in (None, 0):
             raise RuntimeError("arecord failed: no usable Q1 microphone capture")
         return ""
     finally:
-        reader.cancel()
-        await asyncio.gather(reader, return_exceptions=True)
-        await stop_process(proc)
+        try:
+            await cancel_task(reader)
+        finally:
+            await stop_process(proc)

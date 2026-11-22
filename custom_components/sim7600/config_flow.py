@@ -35,6 +35,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
+from .coordinator import entry_option
 from .sms_codec import PHONE_NUMBER_RE, USSD_CODE_RE
 
 BAUD_RATES = [9600, 19200, 38400, 57600, 115200]
@@ -113,7 +114,6 @@ class Sim7600ConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
         """Initialize the flow."""
         self._discovered_port: str | None = None
         self._usb_serial: str | None = None
-        self._ports: dict[str, str] = {}
         self._port_serials: dict[str, str | None] = {}
 
     @staticmethod
@@ -160,12 +160,12 @@ class Sim7600ConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
         ports = await self.hass.async_add_executor_job(serial.tools.list_ports.comports)
         if not ports:
             return self.async_abort(reason="no_devices")
-        self._ports = {}
+        labels = {}
         self._port_serials = {}
         for port in ports:
-            self._ports[port.device] = f"{port.device} ({port.description})"
+            labels[port.device] = f"{port.device} ({port.description})"
             self._port_serials[port.device] = getattr(port, "serial_number", None)
-        options = {**self._ports, MANUAL_PATH_OPTION: "Enter path manually"}
+        options = {**labels, MANUAL_PATH_OPTION: "Enter path manually"}
 
         return self.async_show_form(
             step_id="user",
@@ -270,11 +270,7 @@ class Sim7600OptionsFlow(OptionsFlow):
     """Options: intervals, debug, default SMS recipient, balance USSD."""
 
     def _current(self, key: str, default: Any) -> Any:
-        entry = self.config_entry
-        value = entry.options.get(key)
-        if value is None:
-            value = entry.data.get(key, default)
-        return default if value is None else value
+        return entry_option(self.config_entry, key, default)
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None

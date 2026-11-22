@@ -1,4 +1,5 @@
 """Local microphone level and sound activity sampling."""
+
 import asyncio
 
 from audio import rms
@@ -27,8 +28,28 @@ class MicrophoneMonitor:
         self.wake.set()
 
     def status(self):
-        return {"configured": bool(self.device), "enabled": self.enabled,
-                "level": self.level, "sound": None if self.level is None else self.level >= 3.0}
+        return {
+            "configured": bool(self.device),
+            "enabled": self.enabled,
+            "level": self.level,
+            "sound": None if self.level is None else self.level >= 3.0,
+        }
+
+    async def _sample(self):
+        if self.lock.locked():
+            self.level = None
+            return
+        self.sampling = True
+        try:
+            async with self.lock:
+                pcm = await capture_pcm(self.device, 1)
+            self.level = (
+                round(100 * rms(pcm) / 32768, 1) if self.enabled and pcm else None
+            )
+        except (RuntimeError, ValueError, OSError, TimeoutError):
+            self.level = None
+        finally:
+            self.sampling = False
 
     async def run(self):
         while True:
@@ -36,19 +57,7 @@ class MicrophoneMonitor:
             if not self.enabled:
                 await self.wake.wait()
                 continue
-            if not self.lock.locked():
-                try:
-                    self.sampling = True
-                    async with self.lock:
-                        pcm = await capture_pcm(self.device, 1)
-                    if self.enabled:
-                        self.level = round(100 * rms(pcm) / 32768, 1) if pcm else None
-                except (RuntimeError, OSError, TimeoutError):
-                    self.level = None
-                finally:
-                    self.sampling = False
-            else:
-                self.level = None
+            await self._sample()
             try:
                 async with asyncio.timeout(2):
                     await self.wake.wait()

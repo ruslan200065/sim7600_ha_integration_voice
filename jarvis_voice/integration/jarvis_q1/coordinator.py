@@ -1,13 +1,14 @@
 """One coordinator shared by all JARVIS Q1 entities."""
+
 from __future__ import annotations
 
-from datetime import timedelta
 import logging
+from datetime import timedelta
 
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
-from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .call_events import CallEventReplay, EventBatch
 from .client import JarvisAuthError, JarvisError
 from .const import (
     EVENT_CALL_ENDED,
@@ -24,7 +25,10 @@ _LOGGER = logging.getLogger(__name__)
 class JarvisCoordinator(DataUpdateCoordinator[dict]):
     def __init__(self, hass, entry, client):
         super().__init__(
-            hass, _LOGGER, name="JARVIS Q1",
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name="JARVIS Q1",
             update_interval=timedelta(seconds=STATUS_INTERVAL_SECONDS),
         )
         self.entry = entry
@@ -32,11 +36,8 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
         self.last_transcript = ""
         self.last_answer = ""
         self.probe = {}
-        self.microphone = None
-        self._event_store = Store(hass, 1, f"jarvis_q1.call_events.{entry.entry_id}")
-        self._saved_call_cursor = None
-        self._call_event_stream = None
-        self._call_event_cursor = 0
+        self.microphone = MicrophoneCoordinator(hass, client)
+        self._call_events = CallEventReplay(hass, entry.entry_id, client)
         self._last_call_state = None
         self._last_number = ""
 
@@ -55,7 +56,9 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
             return self.probe
         if not isinstance(result, dict):
             if raise_errors:
-                raise HomeAssistantError("JARVIS /q1/probe returned an unexpected payload")
+                raise HomeAssistantError(
+                    "JARVIS /q1/probe returned an unexpected payload"
+                )
             _LOGGER.warning("Hardware probe returned unexpected payload")
             return self.probe
         self.probe = result
@@ -71,60 +74,15 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
         if not isinstance(data, dict):
             raise UpdateFailed("JARVIS /status returned an unexpected payload")
         if "call_event_stream" in data:
-            stream = data["call_event_stream"]
-            events = data.get("call_events", [])
-            if data.get("call_events_durable"):
-                await self._read_durable_call_events(stream, events)
+            try:
+                batch = EventBatch.from_status(data)
+            except ValueError as exc:
+                _LOGGER.warning("Ignoring malformed JARVIS call event batch: %s", exc)
             else:
-                self._replay_call_events(stream, events)
+                await self._call_events.accept(batch)
         else:
             self._fire_call_events(data)
         return data
-
-    async def _read_durable_call_events(self, stream, events):
-        if self._saved_call_cursor is None:
-            saved = await self._event_store.async_load() or {}
-            self._call_event_stream = saved.get("stream")
-            self._call_event_cursor = saved.get("sequence", 0)
-            self._saved_call_cursor = self._call_event_stream, self._call_event_cursor
-
-        self._replay_call_events(stream, events, durable=True)
-        cursor = self._call_event_stream, self._call_event_cursor
-        if self._saved_call_cursor != cursor:
-            await self._event_store.async_save({
-                "stream": stream, "sequence": self._call_event_cursor,
-            })
-            self._saved_call_cursor = cursor
-        if events and self._call_event_cursor >= events[0]["sequence"]:
-            try:
-                await self.client.post("/call-events/ack", {
-                    "stream": stream, "sequence": self._call_event_cursor,
-                }, timeout=5)
-            except JarvisError:
-                _LOGGER.debug("Call event acknowledgement will be retried", exc_info=True)
-
-    def _replay_call_events(self, stream, events, *, durable=False):
-        if self._call_event_stream is None and not durable:
-            # Start at the next event when joining a running add-on.
-            self._call_event_cursor = events[-1]["sequence"] if events else 0
-        elif stream != self._call_event_stream:
-            self._call_event_cursor = 0
-        self._call_event_stream = stream
-
-        for event in events:
-            sequence = event["sequence"]
-            if sequence <= self._call_event_cursor:
-                continue
-            if event["delivery"] == "pending":
-                break
-            if event["delivery"] == "companion":
-                self.hass.bus.async_fire(
-                    event["name"], {
-                        **event["data"], "entry_id": self.entry.entry_id,
-                        "event_id": f"{stream}:{sequence}",
-                    },
-                )
-            self._call_event_cursor = sequence
 
     def _fire_call_events(self, data):
         current = data.get("call_state")
@@ -133,15 +91,22 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
             self._last_number = number
         transition = call_transition(self._last_call_state, current)
         if transition == "incoming":
-            self.hass.bus.async_fire(EVENT_CALL_INCOMING, {
-                "entry_id": self.entry.entry_id, "number": number or None,
-            })
+            self.hass.bus.async_fire(
+                EVENT_CALL_INCOMING,
+                {
+                    "entry_id": self.entry.entry_id,
+                    "number": number or None,
+                },
+            )
         elif transition == "ended":
-            self.hass.bus.async_fire(EVENT_CALL_ENDED, {
-                "entry_id": self.entry.entry_id,
-                "number": number or self._last_number or None,
-                "previous_state": self._last_call_state,
-            })
+            self.hass.bus.async_fire(
+                EVENT_CALL_ENDED,
+                {
+                    "entry_id": self.entry.entry_id,
+                    "number": number or self._last_number or None,
+                    "previous_state": self._last_call_state,
+                },
+            )
         if current in ("idle", "offline"):
             self._last_number = ""
         self._last_call_state = current
@@ -154,32 +119,51 @@ class JarvisCoordinator(DataUpdateCoordinator[dict]):
             self.async_update_listeners()
 
     async def listen(self, seconds=12):
-        result = await self.client.post("/q1/listen", {"seconds": seconds}, timeout=seconds + 40)
+        result = await self.client.post(
+            "/q1/listen", {"seconds": seconds}, timeout=seconds + 40
+        )
         if not isinstance(result, dict):
             raise HomeAssistantError("JARVIS /q1/listen returned an unexpected payload")
         self.last_transcript = str(result.get("recognized") or "")
         self.last_answer = str(result.get("response") or "")
         self._notify()
-        self.hass.bus.async_fire(EVENT_TRANSCRIPT, {
-            "entry_id": self.entry.entry_id, "text": self.last_transcript,
-            "response": self.last_answer})
+        self.hass.bus.async_fire(
+            EVENT_TRANSCRIPT,
+            {
+                "entry_id": self.entry.entry_id,
+                "text": self.last_transcript,
+                "response": self.last_answer,
+            },
+        )
         return result
 
     async def transcribe(self, seconds=12):
-        result = await self.client.post("/q1/transcribe", {"seconds": seconds}, timeout=seconds + 40)
+        result = await self.client.post(
+            "/q1/transcribe", {"seconds": seconds}, timeout=seconds + 40
+        )
         if not isinstance(result, dict):
-            raise HomeAssistantError("JARVIS /q1/transcribe returned an unexpected payload")
+            raise HomeAssistantError(
+                "JARVIS /q1/transcribe returned an unexpected payload"
+            )
         self.last_transcript = str(result.get("text") or "")
         self._notify()
-        self.hass.bus.async_fire(EVENT_TRANSCRIPT, {
-            "entry_id": self.entry.entry_id, "text": self.last_transcript, "response": ""})
+        self.hass.bus.async_fire(
+            EVENT_TRANSCRIPT,
+            {
+                "entry_id": self.entry.entry_id,
+                "text": self.last_transcript,
+                "response": "",
+            },
+        )
         return result
 
 
 class MicrophoneCoordinator(DataUpdateCoordinator[dict]):
     def __init__(self, hass, client):
         super().__init__(
-            hass, _LOGGER, name="JARVIS microphone",
+            hass,
+            _LOGGER,
+            name="JARVIS microphone",
             update_interval=timedelta(seconds=MICROPHONE_INTERVAL_SECONDS),
         )
         self.client = client
@@ -199,5 +183,7 @@ class MicrophoneCoordinator(DataUpdateCoordinator[dict]):
     async def set_enabled(self, enabled):
         data = await self.client.post("/q1/microphone", {"enabled": enabled})
         if not isinstance(data, dict):
-            raise HomeAssistantError("JARVIS /q1/microphone returned an unexpected payload")
+            raise HomeAssistantError(
+                "JARVIS /q1/microphone returned an unexpected payload"
+            )
         self.async_set_updated_data(data)

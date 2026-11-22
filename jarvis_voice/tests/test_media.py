@@ -1,5 +1,6 @@
 """Check that Q1 media requests enforce the allowlist after redirects."""
 
+import asyncio
 import pathlib
 import sys
 import unittest
@@ -13,6 +14,46 @@ from q1_media import Q1Media
 
 
 class MediaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_requests_never_overlap_playback(self):
+        media = Q1Media()
+        first_started = asyncio.Event()
+        stop_started = asyncio.Event()
+        may_stop = asyncio.Event()
+        playing = set()
+
+        async def play(_session, url, _route, _allowed_hosts):
+            self.assertFalse(playing)
+            playing.add(url)
+            try:
+                if url.endswith("/one"):
+                    first_started.set()
+                await asyncio.Future()
+            finally:
+                if url.endswith("/one"):
+                    stop_started.set()
+                    await may_stop.wait()
+                playing.remove(url)
+
+        media._play = play
+        allowed = ["homeassistant"]
+        await media.play(None, "http://homeassistant/one", "default", allowed)
+        await asyncio.wait_for(first_started.wait(), 1)
+        second = asyncio.create_task(
+            media.play(None, "http://homeassistant/two", "default", allowed)
+        )
+        await asyncio.wait_for(stop_started.wait(), 1)
+        third = asyncio.create_task(
+            media.play(None, "http://homeassistant/three", "default", allowed)
+        )
+        may_stop.set()
+        await asyncio.wait_for(asyncio.gather(second, third), 1)
+        await asyncio.sleep(0)
+        self.assertEqual(playing, {"http://homeassistant/three"})
+        self.assertTrue(media.playing)
+        await media.stop()
+        self.assertFalse(playing)
+        self.assertFalse(media.playing)
+
     async def test_redirects_are_checked_before_fetching_the_next_url(self):
         async def redirect(request):
             raise web.HTTPFound(request.query["to"])

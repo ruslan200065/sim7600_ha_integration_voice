@@ -4,8 +4,8 @@ import asyncio
 import pathlib
 import sys
 import unittest
-from types import SimpleNamespace
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -16,17 +16,24 @@ from call_outbox import CallOutbox
 
 class HomeAssistantEventTests(unittest.IsolatedAsyncioTestCase):
     def service(self, **options):
-        service = Server({"api_token": "test", "allowed_number": "+79991234567",
-                          "family_members": ["Member | +79990000001"], **options})
+        service = Server(
+            {
+                "api_token": "test",
+                "allowed_number": "+79991234567",
+                "family_members": ["Member | +79990000001"],
+                **options,
+            }
+        )
         service.brain = SimpleNamespace(hass_token="token", _ha=AsyncMock())
         return service
 
     def fired(self, service):
-        return [(call.args[1], call.args[2]) for call in service.brain._ha.await_args_list]
+        return [
+            (call.args[1], call.args[2]) for call in service.brain._ha.await_args_list
+        ]
 
-    async def settle(self):
-        for _ in range(3):
-            await asyncio.sleep(0)
+    async def settle(self, service):
+        await asyncio.gather(*service.ha_event_tasks)
 
     async def test_call_lifecycle_events_keep_number_until_end(self):
         service = self.service()
@@ -36,13 +43,20 @@ class HomeAssistantEventTests(unittest.IsolatedAsyncioTestCase):
         await service.event("caller_id", {"number": "89990000001"})
         service.modem.active_number = ""
         await service.event("call_ended", {"call_id": 7, "reason": "NO CARRIER"})
-        await self.settle()
-        self.assertEqual(self.fired(service), [
-            ("/api/events/jarvis_call_incoming",
-             {"number": "89990000001", "known": True, "call_id": 7}),
-            ("/api/events/jarvis_call_ended",
-             {"number": "89990000001", "reason": "NO CARRIER", "call_id": 7}),
-        ])
+        await self.settle(service)
+        self.assertEqual(
+            self.fired(service),
+            [
+                (
+                    "/api/events/jarvis_call_incoming",
+                    {"number": "89990000001", "known": True, "call_id": 7},
+                ),
+                (
+                    "/api/events/jarvis_call_ended",
+                    {"number": "89990000001", "reason": "NO CARRIER", "call_id": 7},
+                ),
+            ],
+        )
 
     async def test_short_call_is_buffered_when_direct_delivery_fails(self):
         service = self.service()
@@ -51,12 +65,13 @@ class HomeAssistantEventTests(unittest.IsolatedAsyncioTestCase):
         await service.event("incoming_call", {"number": ""})
         await service.event("caller_id", {"number": "+79990000001"})
         await service.event("call_ended", {"call_id": 8})
-        await self.settle()
+        await self.settle(service)
 
         calls = list(service.call_events)
         self.assertEqual([e["sequence"] for e in calls], [1, 2])
-        self.assertEqual([e["name"] for e in calls],
-                         ["jarvis_call_incoming", "jarvis_call_ended"])
+        self.assertEqual(
+            [e["name"] for e in calls], ["jarvis_call_incoming", "jarvis_call_ended"]
+        )
         self.assertTrue(all(e["delivery"] == "companion" for e in calls))
         self.assertTrue(all(e["data"]["call_id"] == 8 for e in calls))
 
@@ -71,7 +86,7 @@ class HomeAssistantEventTests(unittest.IsolatedAsyncioTestCase):
             await service.event("incoming_call", {"number": ""})
             await service.event("caller_id", {"number": "+79990000001"})
             await service.event("call_ended", {"call_id": 4})
-            await self.settle()
+            await self.settle(service)
 
             recovered = CallOutbox(path)
             self.assertEqual(recovered.stream, service.call_event_stream)
@@ -90,11 +105,13 @@ class HomeAssistantEventTests(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "outbox.sqlite3"
             outbox = CallOutbox(path)
-            sequence = outbox.record({
-                "name": "jarvis_call_incoming",
-                "data": {"call_id": 1},
-                "delivery": "pending",
-            })
+            sequence = outbox.record(
+                {
+                    "name": "jarvis_call_incoming",
+                    "data": {"call_id": 1},
+                    "delivery": "pending",
+                }
+            )
             self.assertEqual(outbox.batch()[0]["delivery"], "pending")
             recovered = CallOutbox(path)
             self.assertEqual(recovered.batch()[0]["sequence"], sequence)
@@ -104,32 +121,53 @@ class HomeAssistantEventTests(unittest.IsolatedAsyncioTestCase):
         service = self.service()
         service.keypad = (3, asyncio.Queue(maxsize=8))
         await service.event("dtmf_received", {"call_id": 3, "digit": "1"})
-        await self.settle()
+        await self.settle(service)
         self.assertEqual(self.fired(service), [])
         service.keypad = None
         await service.event("dtmf_received", {"call_id": 4, "digit": "5"})
-        await self.settle()
-        self.assertEqual(self.fired(service),
-                         [("/api/events/jarvis_dtmf", {"digit": "5", "call_id": 4})])
+        await self.settle(service)
+        self.assertEqual(
+            self.fired(service),
+            [("/api/events/jarvis_dtmf", {"digit": "5", "call_id": 4})],
+        )
 
     async def test_events_can_be_disabled(self):
         service = self.service(ha_events=False)
         await service.event("call_ended", {"call_id": 1})
-        await self.settle()
+        await self.settle(service)
         self.assertEqual(self.fired(service), [])
 
     async def test_completed_sms_fires_event(self):
         service = self.service()
-        service.history = SimpleNamespace(import_sms=AsyncMock(return_value=[
-            {"number": "+70000000000", "text": "Привет", "received_at": 10, "parts": 1},
-        ]))
+        service.history = SimpleNamespace(
+            import_sms=AsyncMock(
+                return_value=[
+                    {
+                        "number": "+70000000000",
+                        "text": "Привет",
+                        "received_at": 10,
+                        "parts": 1,
+                    },
+                ]
+            )
+        )
         await service.import_sms(["+CMGL: ..."])
-        await self.settle()
-        self.assertEqual(self.fired(service), [(
-            "/api/events/jarvis_sms_received",
-            {"number": "+70000000000", "text": "Привет", "received_at": 10,
-             "parts": 1, "known": False},
-        )])
+        await self.settle(service)
+        self.assertEqual(
+            self.fired(service),
+            [
+                (
+                    "/api/events/jarvis_sms_received",
+                    {
+                        "number": "+70000000000",
+                        "text": "Привет",
+                        "received_at": 10,
+                        "parts": 1,
+                        "known": False,
+                    },
+                )
+            ],
+        )
 
 
 if __name__ == "__main__":

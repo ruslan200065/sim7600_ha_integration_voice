@@ -4,65 +4,27 @@ from __future__ import annotations
 
 import asyncio
 
-import voluptuous as vol
-from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import (
-    HomeAssistant,
-    ServiceCall,
-    ServiceResponse,
-    SupportsResponse,
-    callback,
-)
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
-    ATTR_CODE,
-    ATTR_DEVICE_ID,
-    ATTR_ENTRY_ID,
-    ATTR_MESSAGE,
-    ATTR_NUMBER,
     CONF_BAUD_RATE,
     CONF_DEBUG_MODE,
     CONF_SERIAL_PORT,
     DOMAIN,
     LOGGER,
-    SERVICE_SEND_SMS,
-    SERVICE_SEND_USSD,
 )
 from .coordinator import SIM7600DataUpdateCoordinator, entry_option
-from .modem import InvalidInputError, ModemError, SIM7600Modem
-from .sms_codec import PHONE_NUMBER_PATTERN, USSD_CODE_PATTERN
+from .modem import SIM7600Modem
+from .services import register_services
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NOTIFY]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-
-_TARGET_SCHEMA: dict[vol.Marker, object] = {
-    vol.Optional(ATTR_ENTRY_ID): cv.string,
-    vol.Optional(ATTR_DEVICE_ID): cv.string,
-}
-SEND_SMS_SCHEMA = vol.Schema(
-    {
-        vol.Required(ATTR_NUMBER): vol.All(
-            cv.string, vol.Strip, vol.Match(PHONE_NUMBER_PATTERN)
-        ),
-        vol.Required(ATTR_MESSAGE): cv.string,
-        **_TARGET_SCHEMA,
-    }
-)
-SEND_USSD_SCHEMA = vol.Schema(
-    {
-        vol.Required(ATTR_CODE): vol.All(
-            cv.string, vol.Strip, vol.Match(USSD_CODE_PATTERN)
-        ),
-        **_TARGET_SCHEMA,
-    }
-)
 
 # unique_id suffixes used before 0.5.0 (class names) -> new description keys.
 LEGACY_UNIQUE_ID_SUFFIXES = {
@@ -90,111 +52,8 @@ LEGACY_REMOVED_SUFFIXES = {
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register the integration services once."""
-
-    async def handle_send_sms(call: ServiceCall) -> None:
-        coordinator = _resolve_coordinator(hass, call)
-        try:
-            await coordinator.modem.send_sms(
-                call.data[ATTR_NUMBER], call.data[ATTR_MESSAGE]
-            )
-        except InvalidInputError as err:
-            raise ServiceValidationError(
-                str(err),
-                translation_domain=DOMAIN,
-                translation_key="invalid_input",
-                translation_placeholders={"error": str(err)},
-            ) from err
-        except ModemError as err:
-            raise HomeAssistantError(
-                f"Sending SMS failed: {err}",
-                translation_domain=DOMAIN,
-                translation_key="send_sms_failed",
-                translation_placeholders={"error": str(err)},
-            ) from err
-
-    async def handle_send_ussd(call: ServiceCall) -> ServiceResponse:
-        coordinator = _resolve_coordinator(hass, call)
-        try:
-            reply = await coordinator.modem.send_ussd(call.data[ATTR_CODE])
-        except InvalidInputError as err:
-            raise ServiceValidationError(
-                str(err),
-                translation_domain=DOMAIN,
-                translation_key="invalid_input",
-                translation_placeholders={"error": str(err)},
-            ) from err
-        except ModemError as err:
-            raise HomeAssistantError(
-                f"USSD request failed: {err}",
-                translation_domain=DOMAIN,
-                translation_key="send_ussd_failed",
-                translation_placeholders={"error": str(err)},
-            ) from err
-        return {"status": reply.status, "message": reply.message, "dcs": reply.dcs}
-
-    hass.services.async_register(
-        DOMAIN, SERVICE_SEND_SMS, handle_send_sms, schema=SEND_SMS_SCHEMA
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SEND_USSD,
-        handle_send_ussd,
-        schema=SEND_USSD_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
-    )
+    register_services(hass)
     return True
-
-
-@callback
-def _resolve_coordinator(
-    hass: HomeAssistant, call: ServiceCall
-) -> SIM7600DataUpdateCoordinator:
-    """Pick the loaded modem addressed by entry_id/device_id."""
-    loaded = {
-        entry.entry_id: entry
-        for entry in hass.config_entries.async_entries(DOMAIN)
-        if entry.state is ConfigEntryState.LOADED
-    }
-    entry_id: str | None = call.data.get(ATTR_ENTRY_ID)
-    device_id: str | None = call.data.get(ATTR_DEVICE_ID)
-
-    if device_id:
-        device = dr.async_get(hass).async_get(device_id)
-        matching = [
-            eid for eid in (device.config_entries if device else ()) if eid in loaded
-        ]
-        if entry_id:
-            matching = [eid for eid in matching if eid == entry_id]
-        if not matching:
-            raise ServiceValidationError(
-                f"No loaded SIM7600 modem for device {device_id}",
-                translation_domain=DOMAIN,
-                translation_key="modem_not_found",
-            )
-        entry_id = matching[0]
-    elif entry_id:
-        if entry_id not in loaded:
-            raise ServiceValidationError(
-                f"No loaded SIM7600 modem with entry_id {entry_id}",
-                translation_domain=DOMAIN,
-                translation_key="modem_not_found",
-            )
-    elif len(loaded) == 1:
-        entry_id = next(iter(loaded))
-    elif not loaded:
-        raise ServiceValidationError(
-            "No SIM7600 modem is loaded",
-            translation_domain=DOMAIN,
-            translation_key="no_modem",
-        )
-    else:
-        raise ServiceValidationError(
-            "Several SIM7600 modems are loaded; set entry_id or device_id",
-            translation_domain=DOMAIN,
-            translation_key="multiple_modems",
-        )
-    coordinator: SIM7600DataUpdateCoordinator = loaded[entry_id].runtime_data
-    return coordinator
 
 
 @callback
@@ -231,17 +90,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     try:
         await coordinator.async_config_entry_first_refresh()
-    except (Exception, asyncio.CancelledError):
-        # Close the port so nothing reopens it before the next retry.
-        await modem.close()
-        raise
-
-    entry.runtime_data = coordinator
-    _async_migrate_unique_ids(hass, entry)
-    try:
+        entry.runtime_data = coordinator
+        _async_migrate_unique_ids(hass, entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except (Exception, asyncio.CancelledError):
-        await modem.close()
+        # Stop the refresh source before releasing the port for the next retry.
+        try:
+            await coordinator.async_shutdown()
+        finally:
+            await modem.close()
         raise
 
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))

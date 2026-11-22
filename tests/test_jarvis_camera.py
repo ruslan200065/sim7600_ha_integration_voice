@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+from aiohttp.web import HTTPServiceUnavailable
 from homeassistant.components.camera import CameraEntityFeature
 from homeassistant.components.camera.const import DATA_COMPONENT
 from homeassistant.components.camera.media_source import CameraMediaSource
@@ -56,6 +57,25 @@ async def test_ha_camera_proxies_authenticated_mjpeg(
         "X-Accel-Buffering": "no",
     }
     assert [call.args[0] for call in response.write.await_args_list] == [FRAME, FRAME]
+
+
+async def test_ha_camera_rejects_multipart_stream_without_boundary() -> None:
+    upstream = SimpleNamespace(
+        status=200, headers={"Content-Type": "multipart/x-mixed-replace"}
+    )
+    get = MagicMock()
+    get.return_value.__aenter__.return_value = upstream
+    camera = SimpleNamespace(
+        coordinator=SimpleNamespace(
+            client=SimpleNamespace(
+                session=SimpleNamespace(get=get), url="http://addon:8099", headers={}
+            )
+        )
+    )
+    with pytest.raises(HTTPServiceUnavailable):
+        await Q1Camera.handle_async_mjpeg_stream(
+            camera, make_mocked_request("GET", "/api/camera_proxy_stream")
+        )
 
 
 async def test_ha_media_resolves_to_direct_camera_stream(hass: HomeAssistant) -> None:

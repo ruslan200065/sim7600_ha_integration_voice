@@ -1,4 +1,5 @@
 """Single-owner SIM7600 AT controller. USB audio lives on a separate raw PCM port."""
+
 import asyncio
 import logging
 import os
@@ -6,6 +7,7 @@ import re
 import time
 
 import serial
+from processes import finish_task
 
 LOG = logging.getLogger(__name__)
 NUMBER = re.compile(r"^\+?[0-9]{7,16}$")
@@ -13,7 +15,7 @@ CALL_END = {"NO CARRIER", "BUSY", "NO ANSWER", "NO DIALTONE"}
 RX_DTMF = re.compile(r'\+RXDTMF:\s*"?([0-9*#A-D])"?(?:\s*,\s*\d+)?$')
 VOICE_RING = re.compile(r"(?:RING|\+CRING:\s*VOICE(?:/[^ ]+)?)$")
 CALL_STATUS = re.compile(
-    r'\+CLCC:\s*\d+\s*,\s*([01])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*[01]'
+    r"\+CLCC:\s*\d+\s*,\s*([01])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*[01]"
     r'(?:\s*,\s*"(\+?[0-9]+)"\s*,\s*(\d+))?(?:,.*)?$'
 )
 NEW_SMS = re.compile(r'\+CMTI:\s*"([A-Z]{2})"\s*,\s*(\d+)$')
@@ -70,8 +72,12 @@ class Modem:
         if self.on_event:
             try:
                 if name in {
-                    "incoming_call", "outgoing_call", "caller_id", "call_connected",
-                    "call_ended", "call_failed",
+                    "incoming_call",
+                    "outgoing_call",
+                    "caller_id",
+                    "call_connected",
+                    "call_ended",
+                    "call_failed",
                 }:
                     kwargs.setdefault("call_id", self.call_id)
                 await self.on_event(name, kwargs)
@@ -85,7 +91,10 @@ class Modem:
             disconnected = False
             try:
                 self.serial = serial.Serial(
-                    self.port, self.baudrate, timeout=0.15, write_timeout=2,
+                    self.port,
+                    self.baudrate,
+                    timeout=0.15,
+                    write_timeout=2,
                     exclusive=True if os.name == "posix" else None,
                 )
                 self.orphaned = 0
@@ -98,7 +107,9 @@ class Modem:
                 self.call_state = "idle"
                 last_error = None
                 LOG.info("SIM7600 connected: %s %s", self.model, self.firmware)
-                await self._emit("modem_connected", model=self.model, firmware=self.firmware)
+                await self._emit(
+                    "modem_connected", model=self.model, firmware=self.firmware
+                )
                 while True:
                     done, _ = await asyncio.wait({rx}, timeout=15)
                     if done:
@@ -113,7 +124,9 @@ class Modem:
             except Exception as exc:
                 error = (type(exc), str(exc))
                 if error != last_error:
-                    LOG.warning("SIM7600 on %s unavailable; retrying: %s", self.port, exc)
+                    LOG.warning(
+                        "SIM7600 on %s unavailable; retrying: %s", self.port, exc
+                    )
                     last_error = error
                 disconnected = True
             finally:
@@ -154,8 +167,11 @@ class Modem:
     @staticmethod
     def _voice_calls(lines):
         return [
-            match for line in lines
-            if (match := CALL_STATUS.fullmatch(line)) and match[3] == "0" and match[2] != "6"
+            match
+            for line in lines
+            if (match := CALL_STATUS.fullmatch(line))
+            and match[3] == "0"
+            and match[2] != "6"
         ]
 
     async def _release_stale_calls(self):
@@ -187,7 +203,9 @@ class Modem:
         response = []
         previous = None
         while True:
-            line = await asyncio.to_thread(port.readline, MAX_LINE_BYTES + 1 - len(partial))
+            line = await asyncio.to_thread(
+                port.readline, MAX_LINE_BYTES + 1 - len(partial)
+            )
             if not line:
                 continue
             partial += line
@@ -202,9 +220,13 @@ class Modem:
             if value.startswith("+RXDTMF:"):
                 match = RX_DTMF.fullmatch(value)
                 if match and self.call_state == "connected":
-                    await self._emit("dtmf_received", digit=match[1], call_id=self.call_id)
+                    await self._emit(
+                        "dtmf_received", digit=match[1], call_id=self.call_id
+                    )
                 continue
-            if VOICE_RING.fullmatch(value) or value.startswith(("VOICE CALL:", "+CLIP:", "MISSED_CALL:")):
+            if VOICE_RING.fullmatch(value) or value.startswith(
+                ("VOICE CALL:", "+CLIP:", "MISSED_CALL:")
+            ):
                 await self._urc(value)
                 continue
             if sms := NEW_SMS.fullmatch(value):
@@ -216,8 +238,10 @@ class Modem:
                 continue
             future = self.pending
             if value in CALL_END:
-                if future and not future.done() and self.pending_command.startswith(
-                    ("ATD", "ATA", "AT+CHUP")
+                if (
+                    future
+                    and not future.done()
+                    and self.pending_command.startswith(("ATD", "ATA", "AT+CHUP"))
                 ):
                     future.set_result([value])
                 await self._urc(value)
@@ -237,7 +261,9 @@ class Modem:
             if value != self.pending_command:
                 response.append(value)
                 if len(response) > MAX_RESPONSE_LINES:
-                    raise serial.SerialException("Modem response exceeds the line limit")
+                    raise serial.SerialException(
+                        "Modem response exceeds the line limit"
+                    )
             if is_terminal(value):
                 future.set_result(response)
 
@@ -268,7 +294,8 @@ class Modem:
             if self.call_state == "ringing" and number:
                 await self._caller(number, address_type)
         elif state == "0" and (direction, self.call_state) in (
-            ("0", "dialing"), ("1", "answering")
+            ("0", "dialing"),
+            ("1", "answering"),
         ):
             await self._connected()
         elif state == "6":
@@ -282,7 +309,10 @@ class Modem:
                 await self._caller(*match.groups())
         elif VOICE_RING.fullmatch(value) and self.call_state == "idle":
             await self._incoming()
-        elif re.match(r"VOICE CALL:\s*BEGIN\b", value) and self.call_state in ("dialing", "answering"):
+        elif re.match(r"VOICE CALL:\s*BEGIN\b", value) and self.call_state in (
+            "dialing",
+            "answering",
+        ):
             await self._connected()
         elif (
             value in CALL_END
@@ -320,14 +350,22 @@ class Modem:
         ):
             response = await self.command(command, timeout=3)
             value = next(
-                (line.removeprefix(prefix).strip() for line in response if line.startswith(prefix)),
+                (
+                    line.removeprefix(prefix).strip()
+                    for line in response
+                    if line.startswith(prefix)
+                ),
                 None,
             )
             if value is not None:
                 if name in {"CREG", "CEREG", "CPSI"}:
                     value = ",".join(value.split(",")[:2])
                 fields[name] = value
-            elif name in {"SIM", "IMS", "VoLTE", "VoLTE modes"} and response and response[-1] != "OK":
+            elif (
+                name in {"SIM", "IMS", "VoLTE", "VoLTE modes"}
+                and response
+                and response[-1] != "OK"
+            ):
                 fields[name] = response[-1]
         return fields
 
@@ -336,7 +374,11 @@ class Modem:
         return [
             {"cid": int(cid), "type": kind, "apn": apn}
             for line in response
-            if (match := re.match(r'\+CGDCONT:\s*(\d+)\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"', line))
+            if (
+                match := re.match(
+                    r'\+CGDCONT:\s*(\d+)\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"', line
+                )
+            )
             for cid, kind, apn in [match.groups()]
         ]
 
@@ -345,12 +387,20 @@ class Modem:
         idle = (self.call_id, "idle")
         saved = await self.command("AT+CPMS?", timeout=3, expected_call=idle)
         previous = next(
-            (match[1] for line in saved if (match := re.match(r'\+CPMS:\s*"(ME|SM|MT|SR)"', line))),
+            (
+                match[1]
+                for line in saved
+                if (match := re.match(r'\+CPMS:\s*"(ME|SM|MT|SR)"', line))
+            ),
             None,
         )
         format_response = await self.command("AT+CMGF?", timeout=3, expected_call=idle)
         old_format = next(
-            (match[1] for line in format_response if (match := re.fullmatch(r"\+CMGF:\s*([01])", line))),
+            (
+                match[1]
+                for line in format_response
+                if (match := re.fullmatch(r"\+CMGF:\s*([01])", line))
+            ),
             None,
         )
         if previous is None or old_format is None:
@@ -363,7 +413,9 @@ class Modem:
                 if result[-1] != "OK":
                     raise RuntimeError("Модем не принял формат PDU для SMS.")
             for storage in ("SM", "ME"):
-                result = await self.command(f'AT+CPMS="{storage}"', timeout=3, expected_call=idle)
+                result = await self.command(
+                    f'AT+CPMS="{storage}"', timeout=3, expected_call=idle
+                )
                 if result[-1] != "OK":
                     continue
                 selected = storage
@@ -381,7 +433,12 @@ class Modem:
                             f"AT+CMGD={match[1]}", timeout=5, expected_call=idle
                         )
                         if result[-1] != "OK":
-                            LOG.warning("Could not delete SMS %s from %s: %s", match[1], storage, result)
+                            LOG.warning(
+                                "Could not delete SMS %s from %s: %s",
+                                match[1],
+                                storage,
+                                result,
+                            )
             if not usage:
                 raise RuntimeError("Модем не открыл память SMS.")
             return usage
@@ -399,14 +456,34 @@ class Modem:
             port = self.serial
             if not port or not port.is_open:
                 raise ConnectionError("Modem is offline")
-            if expected_call is not None and expected_call != (self.call_id, self.call_state):
-                raise RuntimeError("Call state changed before the command could be sent")
+            if expected_call is not None and expected_call != (
+                self.call_id,
+                self.call_state,
+            ):
+                raise RuntimeError(
+                    "Call state changed before the command could be sent"
+                )
             loop = asyncio.get_running_loop()
             future = self.pending = loop.create_future()
             self.pending_command = cmd
+            data = (cmd + "\r").encode("ascii")
+            write = asyncio.create_task(asyncio.to_thread(port.write, data))
             written = False
             try:
-                await asyncio.to_thread(port.write, (cmd + "\r").encode("ascii"))
+                try:
+                    size = await asyncio.shield(write)
+                except asyncio.CancelledError:
+                    # Cancelling the await cannot interrupt the ongoing serial write.
+                    # Keep the command lock until the byte count and framing are known.
+                    try:
+                        written = await finish_task(write) == len(data)
+                    except OSError:
+                        port.close()
+                    if not written and port.is_open:
+                        port.close()
+                    raise
+                if size != len(data):
+                    raise serial.SerialException("Incomplete AT command write")
                 written = True
                 return await asyncio.wait_for(asyncio.shield(future), timeout)
             except serial.SerialException:
@@ -423,6 +500,8 @@ class Modem:
                 raise
             finally:
                 future.cancel()
+                if not future.cancelled():
+                    future.exception()
                 self.pending = None
                 self.pending_command = ""
 
@@ -443,7 +522,9 @@ class Modem:
         self.calls.append(now)
         try:
             await self._emit("outgoing_call", number=number)
-            lines = await self.command("ATD" + number + ";", timeout=12, expected_call=call)
+            lines = await self.command(
+                "ATD" + number + ";", timeout=12, expected_call=call
+            )
             if lines[-1] != "OK":
                 raise RuntimeError("Dial failed: " + " ".join(lines))
             if (self.call_id, self.call_state) == call:
@@ -487,15 +568,21 @@ class Modem:
             raise RuntimeError("No connected call")
         call = (self.call_id, "connected")
         sequence = ",".join(digits)
-        result = await self.command(f'AT+VTS="{sequence}"', timeout=12, expected_call=call)
+        result = await self.command(
+            f'AT+VTS="{sequence}"', timeout=12, expected_call=call
+        )
         if result[-1] != "OK":
             raise RuntimeError("Modem rejected the DTMF sequence")
 
     async def reset_pcm(self, call_id):
         call = (call_id, "connected")
-        result = await self.command("AT+CPCMREG=0,1", timeout=PCM_TIMEOUT, expected_call=call)
+        result = await self.command(
+            "AT+CPCMREG=0,1", timeout=PCM_TIMEOUT, expected_call=call
+        )
         if not result or result[-1] != "OK":
-            result = await self.command("AT+CPCMREG=0", timeout=PCM_TIMEOUT, expected_call=call)
+            result = await self.command(
+                "AT+CPCMREG=0", timeout=PCM_TIMEOUT, expected_call=call
+            )
         if not result or result[-1] != "OK":
             LOG.warning("Modem did not confirm USB PCM reset")
 
@@ -524,7 +611,9 @@ class Modem:
             await asyncio.gather(previous, return_exceptions=True)
         call = (call_id, "idle")
         try:
-            result = await self.command("AT+CPCMREG=0,1", timeout=PCM_TIMEOUT, expected_call=call)
+            result = await self.command(
+                "AT+CPCMREG=0,1", timeout=PCM_TIMEOUT, expected_call=call
+            )
             if result[-1] != "OK":
                 LOG.warning("Modem did not release USB call audio: %s", result)
         except (RuntimeError, OSError) as exc:

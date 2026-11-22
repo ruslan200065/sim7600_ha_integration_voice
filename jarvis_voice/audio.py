@@ -1,22 +1,36 @@
 """SIM7600 raw S16LE, 16kHz/mono transport. Modem firmware must expose USB PCM."""
+
 import array
 import asyncio
 import logging
 import struct
 import sys
 import time
+from contextlib import suppress
+
 import serial
+from processes import finish_task
 
 LOG = logging.getLogger(__name__)
 RATE = 16000
 FRAME = 3200  # 100ms, 16kHz 16-bit mono
 PLAYBACK_FRAME = 640  # 20ms, 16kHz 16-bit mono
 PLAYBACK_PREFILL = 6  # 120ms of audio before writing to the modem
-PLAYBACK_SAMPLES = struct.Struct(f"<{PLAYBACK_FRAME // 2}h")
 
 
 class PCMPlaybackError(RuntimeError):
     """The modem audio route could not accept PCM."""
+
+
+async def _serial_io(operation, *args):
+    """Wait for an in-progress bounded serial operation before closing its port."""
+    io = asyncio.create_task(asyncio.to_thread(operation, *args))
+    try:
+        return await asyncio.shield(io)
+    except asyncio.CancelledError:
+        with suppress(OSError):
+            await finish_task(io)
+        raise
 
 
 async def playback_frames(chunks):
@@ -51,7 +65,9 @@ class PCMTransport:
     async def start(self):
         if self.running:
             return
-        self.serial = serial.Serial(self.port, baudrate=115200, timeout=0.1, write_timeout=0.75)
+        self.serial = serial.Serial(
+            self.port, baudrate=115200, timeout=0.1, write_timeout=0.75
+        )
         self.first_frame.clear()
         self.lost.clear()
         while not self.queue.empty():
@@ -66,7 +82,7 @@ class PCMTransport:
         if not self.running or port is None:
             raise PCMPlaybackError("USB PCM closed during startup")
         try:
-            written = await asyncio.to_thread(port.write, bytes(PLAYBACK_FRAME))
+            written = await _serial_io(port.write, bytes(PLAYBACK_FRAME))
         except OSError as exc:
             raise PCMPlaybackError("USB PCM startup write failed") from exc
         if written != PLAYBACK_FRAME:
@@ -79,7 +95,7 @@ class PCMTransport:
         try:
             if reader:
                 reader.cancel()
-                result, = await asyncio.gather(reader, return_exceptions=True)
+                (result,) = await asyncio.gather(reader, return_exceptions=True)
                 if isinstance(result, Exception):
                     LOG.warning("PCM reader stopped: %s", type(result).__name__)
         finally:
@@ -93,8 +109,8 @@ class PCMTransport:
             if port is None:
                 return
             try:
-                chunk = await asyncio.to_thread(port.read, FRAME - len(pending))
-            except (serial.SerialException, OSError) as exc:
+                chunk = await _serial_io(port.read, FRAME - len(pending))
+            except OSError as exc:
                 LOG.warning("USB PCM lost: %s", type(exc).__name__)
                 self.running = False
                 self.lost.set()
@@ -148,15 +164,12 @@ class PCMTransport:
                     await asyncio.sleep(deadline - now)
                 if not self.running or self.serial is not port:
                     raise PCMPlaybackError("PCM audio unavailable")
-                write = asyncio.create_task(asyncio.to_thread(port.write, frame))
                 try:
-                    written = await asyncio.shield(write)
+                    written = await _serial_io(port.write, frame)
                 except OSError as exc:
-                    raise PCMPlaybackError("USB PCM write failed: " + type(exc).__name__) from exc
-                except asyncio.CancelledError:
-                    # A cancelled await cannot stop the serial write in its thread.
-                    await asyncio.gather(write, return_exceptions=True)
-                    raise
+                    raise PCMPlaybackError(
+                        "USB PCM write failed: " + type(exc).__name__
+                    ) from exc
                 if written != len(frame):
                     raise PCMPlaybackError("Incomplete PCM write")
                 sent = True
@@ -183,7 +196,7 @@ def rms(chunk):
     if len(chunk) < 2:
         return 0
     n = len(chunk) // 2
-    samples = struct.unpack("<%dh" % n, chunk[:n*2])
+    samples = struct.unpack("<%dh" % n, chunk[: n * 2])
     return int((sum(int(s) * int(s) for s in samples) / n) ** 0.5)
 
 
@@ -203,7 +216,7 @@ async def read_utterances(source, threshold=700, silence_seconds=0.75, max_secon
         recording.extend(data)
         if voice:
             last_voice = now
-        if (now - last_voice > silence_seconds) or (now-start > max_seconds):
+        if (now - last_voice > silence_seconds) or (now - start > max_seconds):
             if len(recording) > RATE * 2 // 3:
                 yield bytes(recording)
             recording.clear()

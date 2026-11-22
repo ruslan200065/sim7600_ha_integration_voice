@@ -15,18 +15,19 @@ LED_COLORS = {
     "yellow": (1, 1, 0),
     "cyan": (0, 1, 1),
 }
+# Configuration order follows the source Q1 commands. Output order is RGB.
+GPIO_SETUP_ORDER = (3, 6, 41)
+GPIO_RGB_CHANNELS = (41, 3, 6)
 
 
 async def led_set(modem, color):
     if color not in LED_COLORS:
         raise ValueError("Allowed LED colors: " + ", ".join(LED_COLORS))
-    values = LED_COLORS[color]
-    # Confirmed by original /opt/watch/signalq_modem.py.
-    for channel in (3,6,41):
+    for channel in GPIO_SETUP_ORDER:
         response = await modem.command(f"AT+CGDRT={channel},1")
         if not response or response[-1] != "OK":
             raise RuntimeError(f"LED GPIO {channel} mode rejected: {response}")
-    for channel, level in ((41,values[0]),(3,values[1]),(6,values[2])):
+    for channel, level in zip(GPIO_RGB_CHANNELS, LED_COLORS[color], strict=True):
         response = await modem.command(f"AT+CGSETV={channel},{level}")
         if not response or response[-1] != "OK":
             raise RuntimeError(f"LED GPIO {channel} write rejected: {response}")

@@ -1,20 +1,25 @@
 """Yandex SpeechKit v3 gRPC: streaming STT and bidirectional LiveTTS."""
+
 import asyncio
-import grpc
 import time
 from collections import deque
 from contextlib import aclosing
-from audio import rms
+
+import grpc
 import yandex.cloud.ai.stt.v3.stt_pb2 as stt
 import yandex.cloud.ai.stt.v3.stt_service_pb2_grpc as stt_grpc
 import yandex.cloud.ai.tts.v3.tts_pb2 as tts
 import yandex.cloud.ai.tts.v3.tts_service_pb2_grpc as tts_grpc
+from audio import FRAME, RATE, rms
 
 
 def update_transcript(response, kind, finals, refinements):
     if kind == "final" and response.final.alternatives:
         finals[response.audio_cursors.final_index] = response.final.alternatives[0].text
-    if kind == "final_refinement" and response.final_refinement.normalized_text.alternatives:
+    if (
+        kind == "final_refinement"
+        and response.final_refinement.normalized_text.alternatives
+    ):
         update = response.final_refinement
         refinements[update.final_index] = update.normalized_text.alternatives[0].text
 
@@ -30,8 +35,39 @@ GRPC_OPTIONS = (
 
 
 def transcript_text(finals, refinements):
-    return " ".join(refinements.get(index) or finals.get(index, "")
-                    for index in sorted(finals.keys() | refinements.keys())).strip()
+    return " ".join(
+        refinements.get(index) or finals.get(index, "")
+        for index in sorted(finals.keys() | refinements.keys())
+    ).strip()
+
+
+def recognition_options(*, live=False):
+    options = stt.StreamingOptions(
+        recognition_model=stt.RecognitionModelOptions(
+            audio_format=stt.AudioFormatOptions(
+                raw_audio=stt.RawAudio(
+                    audio_encoding=stt.RawAudio.LINEAR16_PCM,
+                    sample_rate_hertz=RATE,
+                    audio_channel_count=1,
+                ),
+            ),
+            language_restriction=stt.LanguageRestrictionOptions(
+                restriction_type=stt.LanguageRestrictionOptions.WHITELIST,
+                language_code=["ru-RU"],
+            ),
+            audio_processing_type=stt.RecognitionModelOptions.REAL_TIME,
+        ),
+    )
+    if live:
+        options.eou_classifier.CopyFrom(
+            stt.EouClassifierOptions(
+                default_classifier=stt.DefaultEouClassifier(
+                    type=stt.DefaultEouClassifier.HIGH,
+                    max_pause_between_words_hint_ms=600,
+                ),
+            ),
+        )
+    return options
 
 
 class SpeechKit:
@@ -41,9 +77,15 @@ class SpeechKit:
         self.role = role
         self.cache = cache
         self.stt_channel = grpc.aio.secure_channel(
-            "stt.api.cloud.yandex.net:443", grpc.ssl_channel_credentials(), options=GRPC_OPTIONS)
+            "stt.api.cloud.yandex.net:443",
+            grpc.ssl_channel_credentials(),
+            options=GRPC_OPTIONS,
+        )
         self.tts_channel = grpc.aio.secure_channel(
-            "tts.api.cloud.yandex.net:443", grpc.ssl_channel_credentials(), options=GRPC_OPTIONS)
+            "tts.api.cloud.yandex.net:443",
+            grpc.ssl_channel_credentials(),
+            options=GRPC_OPTIONS,
+        )
         self.stt_stub = stt_grpc.RecognizerStub(self.stt_channel)
         self.tts_stub = tts_grpc.SynthesizerStub(self.tts_channel)
 
@@ -53,72 +95,57 @@ class SpeechKit:
 
     async def recognize(self, pcm: bytes):
         async def requests():
-            opts = stt.StreamingOptions(
-                recognition_model=stt.RecognitionModelOptions(
-                    audio_format=stt.AudioFormatOptions(raw_audio=stt.RawAudio(
-                        audio_encoding=stt.RawAudio.LINEAR16_PCM,
-                        sample_rate_hertz=16000,
-                        audio_channel_count=1)),
-                    language_restriction=stt.LanguageRestrictionOptions(
-                        restriction_type=stt.LanguageRestrictionOptions.WHITELIST,
-                        language_code=["ru-RU"]),
-                    audio_processing_type=stt.RecognitionModelOptions.REAL_TIME))
-            yield stt.StreamingRequest(session_options=opts)
-            for offset in range(0, len(pcm), 3200):
-                yield stt.StreamingRequest(chunk=stt.AudioChunk(data=pcm[offset:offset+3200]))
-        final = {}
-        refined = {}
-        async for response in self.stt_stub.RecognizeStreaming(requests(), metadata=self.auth, timeout=25):
-            kind = response.WhichOneof("Event")
-            update_transcript(response, kind, final, refined)
-        return transcript_text(final, refined)
+            yield stt.StreamingRequest(session_options=recognition_options())
+            for offset in range(0, len(pcm), FRAME):
+                yield stt.StreamingRequest(
+                    chunk=stt.AudioChunk(data=pcm[offset : offset + FRAME])
+                )
 
+        return await self._recognize(requests(), timeout=25)
 
-    async def recognize_live(self, source, threshold=700, *, on_voice_start=None, on_partial=None):
+    async def recognize_live(
+        self, source, threshold=700, *, on_voice_start=None, on_partial=None
+    ):
         """SpeechKit receives real-time PCM while user talks; local VAD ends turn."""
-        preroll=deque(maxlen=5)
+        preroll = deque(maxlen=5)
         # Don't open a paid SpeechKit stream during a long silent call.
         while True:
-            chunk=await source.get()
+            chunk = await source.get()
             preroll.append(chunk)
-            if rms(chunk)>=threshold:
+            if rms(chunk) >= threshold:
                 if on_voice_start:
                     on_voice_start()
                 break
 
         async def requests():
-            options = stt.StreamingOptions(
-                recognition_model=stt.RecognitionModelOptions(
-                    audio_format=stt.AudioFormatOptions(raw_audio=stt.RawAudio(
-                        audio_encoding=stt.RawAudio.LINEAR16_PCM,
-                        sample_rate_hertz=16000,
-                        audio_channel_count=1)),
-                    language_restriction=stt.LanguageRestrictionOptions(
-                        restriction_type=stt.LanguageRestrictionOptions.WHITELIST,
-                        language_code=["ru-RU"]),
-                    audio_processing_type=stt.RecognitionModelOptions.REAL_TIME),
-                # SpeechKit's own end-of-utterance detector answers faster than a fixed local pause.
-                eou_classifier=stt.EouClassifierOptions(default_classifier=stt.DefaultEouClassifier(
-                    type=stt.DefaultEouClassifier.HIGH, max_pause_between_words_hint_ms=600)))
-            yield stt.StreamingRequest(session_options=options)
+            yield stt.StreamingRequest(session_options=recognition_options(live=True))
             for frame in preroll:
                 yield stt.StreamingRequest(chunk=stt.AudioChunk(data=frame))
             last_voice = started = time.monotonic()
-            while time.monotonic()-started<20:
+            while time.monotonic() - started < 20:
                 try:
-                    frame=await asyncio.wait_for(source.get(), timeout=3)
+                    frame = await asyncio.wait_for(source.get(), timeout=3)
                 except TimeoutError:
                     break
-                now=time.monotonic()
-                if rms(frame)>=threshold:
-                    last_voice=now
+                now = time.monotonic()
+                if rms(frame) >= threshold:
+                    last_voice = now
                 yield stt.StreamingRequest(chunk=stt.AudioChunk(data=frame))
-                if now-last_voice>1.0:
+                if now - last_voice > 1.0:
                     break
 
+        return await self._recognize(
+            requests(), timeout=35, stop_at_eou=True, on_partial=on_partial
+        )
+
+    async def _recognize(
+        self, requests, *, timeout, stop_at_eou=False, on_partial=None
+    ):
         final = {}
         refined = {}
-        call = self.stt_stub.RecognizeStreaming(requests(), metadata=self.auth, timeout=35)
+        call = self.stt_stub.RecognizeStreaming(
+            requests, metadata=self.auth, timeout=timeout
+        )
         try:
             async for response in call:
                 kind = response.WhichOneof("Event")
@@ -126,29 +153,53 @@ class SpeechKit:
                     on_partial(response.partial.alternatives[0].text)
                 update_transcript(response, kind, final, refined)
                 # Stop as soon as SpeechKit decides the phrase is over; the local pause is only a fallback.
-                if kind == "eou_update" and transcript_text(final, refined):
+                if (
+                    stop_at_eou
+                    and kind == "eou_update"
+                    and transcript_text(final, refined)
+                ):
                     break
         finally:
             call.cancel()
         return transcript_text(final, refined)
 
     async def synthesize(self, text):
-        source = self.cache.stream(text, self.voice, self.role, self._synthesize) if self.cache else self._synthesize(text)
+        source = (
+            self.cache.stream(text, self.voice, self.role, self._synthesize)
+            if self.cache
+            else self._synthesize(text)
+        )
         async with aclosing(source) as chunks:
             async for chunk in chunks:
                 yield chunk
 
     async def _synthesize(self, text):
         options = tts.SynthesisOptions(
-            model="livetts", voice=self.voice, role=self.role,
-            output_audio_spec=tts.AudioFormatOptions(raw_audio=tts.RawAudio(
-                audio_encoding=tts.RawAudio.LINEAR16_PCM, sample_rate_hertz=16000)))
+            model="livetts",
+            voice=self.voice,
+            role=self.role,
+            output_audio_spec=tts.AudioFormatOptions(
+                raw_audio=tts.RawAudio(
+                    audio_encoding=tts.RawAudio.LINEAR16_PCM, sample_rate_hertz=RATE
+                )
+            ),
+        )
+
         async def requests():
             yield tts.StreamSynthesisRequest(options=options)
-            yield tts.StreamSynthesisRequest(synthesis_input=tts.SynthesisInput(text=text.strip()+" "))
+            yield tts.StreamSynthesisRequest(
+                synthesis_input=tts.SynthesisInput(text=text.strip() + " ")
+            )
             yield tts.StreamSynthesisRequest(force_synthesis=tts.ForceSynthesisEvent())
+
         # Playback paces the stream in real time, so long phrases need a longer deadline.
         deadline = 30 + len(text) * 0.12
-        async for response in self.tts_stub.StreamSynthesis(requests(), metadata=self.auth, timeout=deadline):
-            if response.audio_chunk.data:
-                yield response.audio_chunk.data
+        call = self.tts_stub.StreamSynthesis(
+            requests(), metadata=self.auth, timeout=deadline
+        )
+        try:
+            async for response in call:
+                if response.audio_chunk.data:
+                    yield response.audio_chunk.data
+        finally:
+            call.cancel()

@@ -3,21 +3,28 @@
 ffmpeg decodes HTTP(S) audio into 16 kHz signed mono PCM, aplay sends it to
 the configured ALSA/Pulse sink. No direct shell use, no arbitrary file URLs.
 """
+
 import asyncio
 import logging
+
 from aiohttp import ClientTimeout
+from processes import cancel_task, start_process, stop_process
+from q1_audio import audio_route, start_pcm_process
 from yarl import URL
-from processes import start_process, stop_process
-from q1_audio import audio_route
 
 LOG = logging.getLogger(__name__)
 # Audio containers only: no playlists (hls, concat) that could pull other inputs.
 FORMAT_WHITELIST = "mp3,ogg,flac,wav,aac,mov,mp4,m4a,3gp,3g2,mj2,matroska,webm"
 
+
 class Q1Media:
     def __init__(self):
         self.task = None
-        self.playing = False
+        self.lock = asyncio.Lock()
+
+    @property
+    def playing(self):
+        return self.task is not None and not self.task.done()
 
     def validate(self, url, allowed_hosts):
         try:
@@ -46,26 +53,32 @@ class Q1Media:
             raise RuntimeError("Q1 speaker not configured")
         # Resolve the sink before reporting success, so a bad sink fails the API call.
         route = audio_route(sink, "playback")
-        await self.stop()
-        self.playing = True
-        self.task = asyncio.create_task(self._play(session, url, route, allowed_hosts))
+        async with self.lock:
+            await self._stop_current()
+            self.task = asyncio.create_task(
+                self._play(session, url, route, allowed_hosts)
+            )
 
     async def stop(self):
-        if self.task and not self.task.done():
-            self.task.cancel()
-            try:
-                await self.task
-            except asyncio.CancelledError:
-                pass
-        self.task = None
-        self.playing = False
+        async with self.lock:
+            await self._stop_current()
+
+    async def _stop_current(self):
+        if self.task is None:
+            return
+        try:
+            await cancel_task(self.task)
+        finally:
+            self.task = None
 
     async def _download(self, session, url, allowed_hosts, stdin):
         try:
             for _ in range(6):
                 url = self.validate(url, allowed_hosts)
                 async with session.get(
-                    url, allow_redirects=False, timeout=ClientTimeout(total=None, sock_connect=8, sock_read=15)
+                    url,
+                    allow_redirects=False,
+                    timeout=ClientTimeout(total=None, sock_connect=8, sock_read=15),
                 ) as response:
                     if response.status in (301, 302, 303, 307, 308):
                         url = response.url.join(URL(response.headers["Location"]))
@@ -83,17 +96,33 @@ class Q1Media:
         source = dest = feed = None
         try:
             source = await start_process(
-                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-protocol_whitelist", "pipe",
-                "-format_whitelist", FORMAT_WHITELIST,
-                "-i", "pipe:0", "-vn", "-f", "s16le", "-ar", "16000", "-ac", "1", "pipe:1",
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL)
-            feed = asyncio.create_task(self._download(session, url, allowed_hosts, source.stdin))
-            sink, env = route
-            dest = await start_process(
-                "aplay","-q","-D",sink,"-t","raw","-f","S16_LE","-r","16000","-c","1",
-                stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env)
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-protocol_whitelist",
+                "pipe",
+                "-format_whitelist",
+                FORMAT_WHITELIST,
+                "-i",
+                "pipe:0",
+                "-vn",
+                "-f",
+                "s16le",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "pipe:1",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            feed = asyncio.create_task(
+                self._download(session, url, allowed_hosts, source.stdin)
+            )
+            dest = await start_pcm_process(route, "playback")
             while chunk := await asyncio.wait_for(source.stdout.read(8192), 20):
                 dest.stdin.write(chunk)
                 await asyncio.wait_for(dest.stdin.drain(), 5)
@@ -102,7 +131,11 @@ class Q1Media:
             await asyncio.wait_for(source.wait(), 8)
             await feed
             if dest.returncode != 0 or source.returncode != 0:
-                LOG.warning("Q1 media playback ended with errors ffmpeg=%s aplay=%s",source.returncode,dest.returncode)
+                LOG.warning(
+                    "Q1 media playback ended with errors ffmpeg=%s aplay=%s",
+                    source.returncode,
+                    dest.returncode,
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -111,8 +144,5 @@ class Q1Media:
             if feed:
                 feed.cancel()
                 await asyncio.gather(feed, return_exceptions=True)
-            try:
-                processes = [proc for proc in (source, dest) if proc is not None]
-                await asyncio.gather(*(stop_process(proc) for proc in processes))
-            finally:
-                self.playing = False
+            processes = [proc for proc in (source, dest) if proc is not None]
+            await asyncio.gather(*(stop_process(proc) for proc in processes))

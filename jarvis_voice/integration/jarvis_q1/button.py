@@ -1,12 +1,12 @@
 """Buttons for a microphone voice turn and ending a call."""
+
 from homeassistant.components.button import ButtonEntity
 
-from .const import DOMAIN
 from .entity import JarvisEntity
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    c = hass.data[DOMAIN][entry.entry_id]
+    c = entry.runtime_data
     async_add_entities([Q1Button(c, "listen"), Q1Button(c, "hangup")])
 
 
@@ -22,10 +22,17 @@ class Q1Button(JarvisEntity, ButtonEntity):
         data = self.coordinator.data or {}
         if self.key == "listen":
             capabilities = data.get("capabilities") or {}
-            return bool(capabilities.get("microphone_configured", False)
-                        and capabilities.get("speech_configured", True))
+            return bool(
+                capabilities.get("microphone_configured", False)
+                and capabilities.get("speech_configured", True)
+            )
         if self.key == "hangup":
-            return data.get("call_state") in {"ringing", "answering", "dialing", "connected"}
+            return data.get("call_state") in {
+                "ringing",
+                "answering",
+                "dialing",
+                "connected",
+            }
         return data.get("call_state") != "offline"
 
     async def async_press(self):

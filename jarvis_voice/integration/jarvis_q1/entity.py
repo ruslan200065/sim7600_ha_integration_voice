@@ -1,4 +1,5 @@
 """Shared device metadata for companion entities."""
+
 from __future__ import annotations
 
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -15,7 +16,7 @@ class JarvisEntity(CoordinatorEntity):
 
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator, key, name=None):
+    def __init__(self, coordinator, key):
         super().__init__(coordinator)
         self._attr_unique_id = f"jarvis_q1_{key}"
         self._attr_translation_key = key

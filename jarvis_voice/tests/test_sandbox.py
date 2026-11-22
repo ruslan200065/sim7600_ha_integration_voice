@@ -1,9 +1,10 @@
-import aiohttp.web  # noqa: F401
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import aiohttp.web  # noqa: F401
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 with patch.dict(sys.modules, {"speech": SimpleNamespace(SpeechKit=object)}):
@@ -11,7 +12,11 @@ with patch.dict(sys.modules, {"speech": SimpleNamespace(SpeechKit=object)}):
 
 
 def make_brain(**options):
-    base = {"llm_profiles": [], "deepseek_api_key": "key", "deepseek_model": "deepseek-chat"}
+    base = {
+        "llm_profiles": [],
+        "deepseek_api_key": "key",
+        "deepseek_model": "deepseek-chat",
+    }
     return Brain({**base, **options}, None, None)
 
 

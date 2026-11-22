@@ -4,6 +4,7 @@ import asyncio
 import pathlib
 import queue
 import sys
+import threading
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -58,6 +59,40 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(serial.SerialException, "line exceeds"):
             await asyncio.wait_for(self.reader, 1)
 
+    async def test_cancelled_write_retains_command_lock_and_discards_late_reply(self):
+        writing = threading.Event()
+        unblock = threading.Event()
+        responses = {
+            b"AT+OLD\r": [b"+OLD: 1\r\n", b"OK\r\n"],
+            b"AT+NEW\r": [b"+NEW: 2\r\n", b"OK\r\n"],
+        }
+
+        def write(data):
+            if data == b"AT+OLD\r":
+                writing.set()
+                if not unblock.wait(2):
+                    raise AssertionError("Test did not release the serial write")
+                return len(data)
+            for line in responses[b"AT+OLD\r"] + responses[data]:
+                self.port.lines.put(line)
+            return len(data)
+
+        self.port.write = write
+        first = asyncio.create_task(self.modem.command("AT+OLD"))
+        try:
+            self.assertTrue(await asyncio.to_thread(writing.wait, 1))
+            first.cancel()
+            await asyncio.sleep(0)
+            self.assertTrue(self.modem.lock.locked())
+            self.assertFalse(first.done())
+        finally:
+            unblock.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+        self.assertEqual(
+            await self.modem.command("AT+NEW", timeout=1), ["+NEW: 2", "OK"]
+        )
+
     async def test_busy_completes_dial_and_clears_caller(self):
         self.port.reply = [b"BUSY\r\n"]
         async with asyncio.timeout(1):
@@ -69,7 +104,9 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
     async def test_call_end_is_not_signal_response_and_fragments_are_joined(self):
         self.modem.call_state = "connected"
         self.port.reply = [b"NO CARRIER\r\n", b"+C", b"SQ: 15,99\r\n", b"OK\r\n"]
-        self.assertEqual(await self.modem.command("AT+CSQ", timeout=1), ["+CSQ: 15,99", "OK"])
+        self.assertEqual(
+            await self.modem.command("AT+CSQ", timeout=1), ["+CSQ: 15,99", "OK"]
+        )
         self.assertEqual(self.modem.call_state, "idle")
 
     async def test_late_reply_is_dropped_without_closing_port(self):
@@ -80,7 +117,9 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.modem.orphaned, 1)
         # The late reply of the abandoned command arrives before the next answer.
         self.port.reply = [b"ERROR\r\n", b"+CSQ: 20,99\r\n", b"OK\r\n"]
-        self.assertEqual(await self.modem.command("AT+CSQ", timeout=1), ["+CSQ: 20,99", "OK"])
+        self.assertEqual(
+            await self.modem.command("AT+CSQ", timeout=1), ["+CSQ: 20,99", "OK"]
+        )
         self.assertEqual(self.modem.orphaned, 0)
 
     async def test_second_timeout_closes_out_of_sync_port(self):
@@ -102,7 +141,11 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
             "call_ended", {"reason": "MISSED_CALL", "call_id": self.modem.call_id}
         )
         await self.modem._urc("RING")
-        self.port.reply = [b'+CLCC: 1,1,6,0,0,"79991234567",145\r\n', b"+CSQ: 20,99\r\n", b"OK\r\n"]
+        self.port.reply = [
+            b'+CLCC: 1,1,6,0,0,"79991234567",145\r\n',
+            b"+CSQ: 20,99\r\n",
+            b"OK\r\n",
+        ]
         await self.modem.command("AT+CSQ", timeout=1)
         self.assertEqual(self.modem.call_state, "idle")
 
@@ -124,7 +167,9 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(1):
             while not self.modem.on_event.await_count:
                 await asyncio.sleep(0.01)
-        self.modem.on_event.assert_awaited_with("sms_received", {"storage": "SM", "index": 3})
+        self.modem.on_event.assert_awaited_with(
+            "sms_received", {"storage": "SM", "index": 3}
+        )
 
     async def test_failed_dials_count_towards_hourly_limit(self):
         self.modem.max_calls_per_hour = 1
@@ -162,10 +207,10 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
         self.modem.on_event = AsyncMock()
         self.port.reply = [
             b'+CLCC: 1,1,4,0,0,"79991234567",145\r\n',
-            b'RING\r\n',
+            b"RING\r\n",
             b'+CLIP: "+79991234567",145\r\n',
-            b'+CSQ: 20,99\r\n',
-            b'OK\r\n',
+            b"+CSQ: 20,99\r\n",
+            b"OK\r\n",
         ]
         self.assertEqual(await self.modem.command("AT+CSQ"), ["+CSQ: 20,99", "OK"])
         self.assertEqual(self.modem.call_state, "ringing")
@@ -181,16 +226,20 @@ class ModemTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_audio_registration_can_follow_call_connection(self):
         self.modem.call_state = "connected"
-        self.modem.command = AsyncMock(side_effect=[["OK"], ["ERROR"], ["OK"], ["+CPCMFRM: 1", "OK"]])
+        self.modem.command = AsyncMock(
+            side_effect=[["OK"], ["ERROR"], ["OK"], ["+CPCMFRM: 1", "OK"]]
+        )
         await self.modem.enable_pcm()
         self.assertEqual(
             [entry.args[0] for entry in self.modem.command.call_args_list],
             ["AT+CPCMFRM=1", "AT+CPCMREG=1", "AT+CPCMREG=1", "AT+CPCMFRM?"],
         )
-        self.assertTrue(all(
-            entry.kwargs["expected_call"] == (self.modem.call_id, "connected")
-            for entry in self.modem.command.call_args_list
-        ))
+        self.assertTrue(
+            all(
+                entry.kwargs["expected_call"] == (self.modem.call_id, "connected")
+                for entry in self.modem.command.call_args_list
+            )
+        )
 
     async def test_call_end_releases_pcm_using_the_idle_call_guard(self):
         self.modem.call_state = "connected"

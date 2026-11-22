@@ -1,9 +1,13 @@
+import asyncio
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from audio import PCMTransport, PLAYBACK_FRAME, rms
+from audio import PLAYBACK_FRAME, PCMTransport, rms
+
 
 class TestAudio(unittest.TestCase):
     def test_silence(self):
@@ -14,6 +18,33 @@ class TestAudio(unittest.TestCase):
 
 
 class TestCallPlayback(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_waits_for_the_bounded_serial_read_before_closing(self):
+        started = threading.Event()
+        release = threading.Event()
+        port = Mock()
+
+        def read(_size):
+            started.set()
+            if not release.wait(2):
+                raise AssertionError("Test did not release the PCM read")
+            return b""
+
+        port.read.side_effect = read
+        transport = PCMTransport("/dev/mock")
+        transport.serial = port
+        transport.running = True
+        transport.rx_task = asyncio.create_task(transport._reader())
+        try:
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            stopping = asyncio.create_task(transport.stop())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            port.close.assert_not_called()
+        finally:
+            release.set()
+        await asyncio.wait_for(stopping, 1)
+        port.close.assert_called_once()
+
     async def test_write_joins_cloud_chunks_into_uniform_pcm_frames(self):
         pcm = b"\xe8\x03" * 700
 
@@ -46,5 +77,5 @@ class TestCallPlayback(unittest.IsolatedAsyncioTestCase):
         )
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     unittest.main()

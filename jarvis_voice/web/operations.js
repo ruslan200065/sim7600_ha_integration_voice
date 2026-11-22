@@ -9,8 +9,8 @@
   const el = (tag, text, className) => {const node=document.createElement(tag); if(text !== undefined) node.textContent=text; if(className)node.className=className; return node;};
   function button(text, fn) {const node=el("button",text);node.type="button";node.addEventListener("click",fn);return node;}
   async function api(method="GET", body) {
-    const response=await fetch("operations?profile="+encodeURIComponent(selected)+"&offset="+page,{method,cache:"no-store",headers:{"Content-Type":"application/json","X-Jarvis-Setup":"1"},body:body===undefined?undefined:JSON.stringify(body)});
-    if(!response.ok)throw new Error((await response.text()).slice(0,250)||"Не удалось загрузить задачи.");
+    const query = new URLSearchParams({profile: selected, offset: page});
+    const response = await request("operations?" + query, method, body);
     return response.json();
   }
   function section(title){const card=el("section",undefined,"card");card.append(el("h3",title));host.append(card);return card;}
@@ -115,6 +115,8 @@
     const ticket=++generation;
     try{const [data,entities]=await Promise.all([api(),fetch("entities",{cache:"no-store"}).then(response=>response.ok?response.json():{}).catch(()=>({}))]);if(ticket===generation){catalog=entities.entities||[];render(data);}}catch(error){if(ticket!==generation)return;if(!host.children.length)host.append(el("p","","hint"));let node=host.querySelector("[data-operations-status]");if(!node){node=el("p");node.dataset.operationsStatus="";host.prepend(node);}showError(error.message);}
   }
-  function maybeLoad(){if(location.hash==="#operations")load();}
-  window.addEventListener("hashchange",maybeLoad);maybeLoad();
+  document.addEventListener("jarvis-tab", event => {
+    if (event.detail === "operations") load();
+  });
+  if (location.hash === "#operations") load();
 })();

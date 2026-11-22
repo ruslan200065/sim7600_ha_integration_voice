@@ -179,10 +179,14 @@ class History:
         completed = []
         cutoff = time.time() - self.retention_days * 86400 if self.retention_days else 0
         for digest, date, sender, text, ref, part, total in decode_messages(lines):
-            if date < cutoff or conn.execute(
-                "SELECT 1 FROM sms_parts WHERE digest=? "
-                "UNION ALL SELECT 1 FROM dismissed_sms WHERE digest=?", (digest, digest)
-            ).fetchone():
+            if (
+                date < cutoff
+                or conn.execute(
+                    "SELECT 1 FROM sms_parts WHERE digest=? "
+                    "UNION ALL SELECT 1 FROM dismissed_sms WHERE digest=?",
+                    (digest, digest),
+                ).fetchone()
+            ):
                 continue
             row = None
             if ref is not None:
@@ -220,7 +224,14 @@ class History:
                 ),
             )
             if len(parts) == total:
-                completed.append({"number": sender, "text": body, "received_at": date, "parts": total})
+                completed.append(
+                    {
+                        "number": sender,
+                        "text": body,
+                        "received_at": date,
+                        "parts": total,
+                    }
+                )
         return completed
 
     async def clear(self, kind):
@@ -240,9 +251,12 @@ class History:
                 "DELETE FROM sms_parts WHERE history_id IN "
                 "(SELECT id FROM history WHERE kind='sms' AND state='received')"
             )
-            return conn.execute("DELETE FROM history WHERE kind='sms' AND state='received'").rowcount
+            return conn.execute(
+                "DELETE FROM history WHERE kind='sms' AND state='received'"
+            ).rowcount
         return conn.execute(
-            "DELETE FROM history WHERE kind='call' AND state NOT IN (?,?,?)", ACTIVE_CALLS
+            "DELETE FROM history WHERE kind='call' AND state NOT IN (?,?,?)",
+            ACTIVE_CALLS,
         ).rowcount
 
     async def page(self, kind, offset):
@@ -250,8 +264,9 @@ class History:
 
     def _page(self, conn, kind, offset):
         conn.execute("BEGIN")
-        total = conn.execute("SELECT count(*) FROM history WHERE (? IS NULL OR kind=?)",
-                             (kind, kind)).fetchone()[0]
+        total = conn.execute(
+            "SELECT count(*) FROM history WHERE (? IS NULL OR kind=?)", (kind, kind)
+        ).fetchone()[0]
         rows = conn.execute(
             "SELECT kind,created_at,number,direction,state,text,connected_at,ended_at "
             "FROM history WHERE (? IS NULL OR kind=?) ORDER BY created_at DESC,id DESC "

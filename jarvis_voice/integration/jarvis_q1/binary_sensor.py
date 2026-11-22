@@ -1,12 +1,15 @@
 """Q1 microphone configuration indicator."""
-from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
 
-from .const import DOMAIN
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
+
 from .entity import JarvisEntity
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    c = hass.data[DOMAIN][entry.entry_id]
+    c = entry.runtime_data
     async_add_entities([MicrophoneConfigured(c), MicrophoneSound(c.microphone)])
 
 

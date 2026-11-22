@@ -1,24 +1,42 @@
 """Diagnostics for JARVIS Q1 with token, host and phone numbers redacted."""
+
 from __future__ import annotations
 
 from typing import Any
 
-from .const import CONF_HOST, CONF_TOKEN, DOMAIN
+from .const import CONF_HOST, CONF_TOKEN
 from .helpers import redact
 
 REDACT_KEYS = {
-    CONF_TOKEN, CONF_HOST, "api_token", "authorization", "active_number", "number",
-    "phone_number", "caller_number", "allowed_number", "latitude", "longitude",
-    "imei", "imsi", "iccid", "hostname",
+    CONF_TOKEN,
+    CONF_HOST,
+    "api_token",
+    "authorization",
+    "active_number",
+    "number",
+    "phone_number",
+    "caller_number",
+    "allowed_number",
+    "latitude",
+    "longitude",
+    "imei",
+    "imsi",
+    "iccid",
+    "hostname",
 }
 
 
 async def async_get_config_entry_diagnostics(hass, entry) -> dict[str, Any]:
-    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    coordinator = getattr(entry, "runtime_data", None)
     secrets = [entry.data.get(CONF_TOKEN), entry.data.get(CONF_HOST)]
     payload: dict[str, Any] = {
-        "entry": {"title": entry.title, "source": entry.source, "version": entry.version,
-                  "data": dict(entry.data), "options": dict(entry.options)},
+        "entry": {
+            "title": entry.title,
+            "source": entry.source,
+            "version": entry.version,
+            "data": dict(entry.data),
+            "options": dict(entry.options),
+        },
     }
     if coordinator is not None:
         payload["status"] = coordinator.data

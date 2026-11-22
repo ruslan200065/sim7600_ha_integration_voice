@@ -1,15 +1,24 @@
 """On-demand camera mode and stream lifecycle regression tests."""
+
 import asyncio
-from pathlib import Path
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from camera_panel import CameraPanel, default_mode, parse_controls, parse_modes, preview_args, read_frame
+from camera_panel import (
+    CameraPanel,
+    default_mode,
+    parse_controls,
+    parse_modes,
+    preview_args,
+    read_frame,
+)
 
 MODES = """
     [0]: 'YUYV' (YUYV 4:2:2)
@@ -54,12 +63,14 @@ def test_driver_controls_and_flags():
 
 
 def camera_panel(tmp_path):
-    return CameraPanel(SimpleNamespace(
-        camera_settings_path=tmp_path / "camera_settings.json",
-        o={"q1_video_device": "/dev/video0"},
-        camera_lock=asyncio.Lock(),
-        camera_frame=None,
-    ))
+    return CameraPanel(
+        SimpleNamespace(
+            camera_settings_path=tmp_path / "camera_settings.json",
+            o={"q1_video_device": "/dev/video0"},
+            camera_lock=asyncio.Lock(),
+            camera_frame=None,
+        )
+    )
 
 
 async def test_capture_exists_only_while_viewing(monkeypatch, tmp_path):
@@ -117,11 +128,47 @@ async def test_unsupported_mode_and_control_rejected(monkeypatch, tmp_path):
     app = web.Application()
     panel.register(app)
     async with TestClient(TestServer(app)) as client:
-        assert (await client.patch("/camera", json={"mode": {"fps": 120}})).status == 409
-        assert (await client.patch("/camera", json={"control": "brightness", "value": 19})).status == 409
-        assert (await client.patch("/camera", json={"control": "exposure_auto", "value": 2})).status == 409
+        assert (
+            await client.patch("/camera", json={"mode": {"fps": 120}})
+        ).status == 409
+        assert (
+            await client.patch("/camera", json={"control": "brightness", "value": 19})
+        ).status == 409
+        assert (
+            await client.patch("/camera", json={"control": "exposure_auto", "value": 2})
+        ).status == 409
         run.assert_not_awaited()
         assert (await client.patch("/camera", json={"mode": modes[-1]})).status == 200
-        assert (await client.patch("/camera", json={"control": "brightness", "value": 24})).status == 200
-        run.assert_awaited_once_with("v4l2-ctl", "-d", "/dev/video0", "-c", "brightness=24")
+        assert (
+            await client.patch("/camera", json={"control": "brightness", "value": 24})
+        ).status == 200
+        run.assert_awaited_once_with(
+            "v4l2-ctl", "-d", "/dev/video0", "-c", "brightness=24"
+        )
         assert panel.read_settings("/dev/video0")["mode"] == modes[-1]
+
+
+async def test_shutdown_releases_capture_and_rejects_new_subscribers(tmp_path):
+    panel = camera_panel(tmp_path)
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def capture(_device):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            stopped.set()
+
+    panel.capture = capture
+    async with panel.subscribe() as queue:
+        await asyncio.wait_for(started.wait(), 1)
+        await panel.shutdown(None)
+        assert stopped.is_set()
+        assert panel.capture_task is None
+        assert panel.released.is_set()
+        with pytest.raises(RuntimeError, match="остановлен"):
+            await panel.next_frame(queue)
+        with pytest.raises(RuntimeError, match="остановлен"):
+            async with panel.subscribe():
+                pytest.fail("Shutdown allowed a new capture")

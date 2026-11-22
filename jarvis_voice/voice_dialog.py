@@ -8,6 +8,7 @@ from difflib import SequenceMatcher
 
 LOG = logging.getLogger(__name__)
 
+
 @dataclass(frozen=True)
 class CallOutput:
     text: str
@@ -31,15 +32,58 @@ def echoes_playback(phrase, outputs):
     for output in outputs:
         for index in range(len(output) - count + 1):
             candidate = output[index : index + count]
-            if phrase == candidate and (count >= 3 or phrase == ["это", "джарвис"] or count == len(output)):
+            if phrase == candidate and (
+                count >= 3 or phrase == ["это", "джарвис"] or count == len(output)
+            ):
                 return True
-            if count >= 4 and SequenceMatcher(None, heard, " ".join(candidate)).ratio() >= 0.86:
+            if (
+                count >= 4
+                and SequenceMatcher(None, heard, " ".join(candidate)).ratio() >= 0.86
+            ):
                 return True
     return False
 
 
-async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, background_tools=False,
-                     keypad=None, on_key=None, idle_seconds=75, echo_filter=False, on_diagnostic=None):
+class RecognitionTurn:
+    """Track the playback transcripts which could be echoed during one turn."""
+
+    def __init__(self, recent_output, interrupt_playback):
+        self.recent_output = recent_output
+        self.interrupt_playback = interrupt_playback
+        self.heard_playback = []
+        self.user_partial = False
+
+    def remember_output(self):
+        words = self.recent_output()
+        if words and words not in self.heard_playback:
+            self.heard_playback.append(words)
+
+    def is_echo(self, tokens):
+        return echoes_playback(tokens, self.heard_playback)
+
+    def on_partial(self, text):
+        self.remember_output()
+        tokens = words(text)
+        if len(tokens) >= 2 and not self.is_echo(tokens):
+            self.user_partial = True
+            self.interrupt_playback()
+
+
+async def run_dialog(
+    speech,
+    reply_to,
+    source,
+    play,
+    hangup,
+    prompt,
+    *,
+    background_tools=False,
+    keypad=None,
+    on_key=None,
+    idle_seconds=75,
+    echo_filter=False,
+    on_diagnostic=None,
+):
     """Listen throughout a reply and interrupt once the caller is recognized."""
     clock = asyncio.get_running_loop().time
     last_spoken = []
@@ -66,6 +110,14 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
     idle = None
     last_recovery = float("-inf")
 
+    def recent_output():
+        return last_spoken if echo_filter and clock() <= echo_until else []
+
+    def interrupt_playback():
+        audio_ready.clear()
+        if playing and not playing.done():
+            playing.cancel()
+
     async def playback():
         nonlocal playing
         while True:
@@ -77,7 +129,7 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                 text = message.text if isinstance(message, CallOutput) else message
                 playing = asyncio.create_task(speak(text))
                 try:
-                    result, = await asyncio.gather(playing, return_exceptions=True)
+                    (result,) = await asyncio.gather(playing, return_exceptions=True)
                     if isinstance(result, Exception):
                         LOG.warning("Playback failed: %s", type(result).__name__)
                         # _say has already exhausted its retries. Let the session restore audio.
@@ -115,12 +167,17 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
         finally:
             fallback.cancel()
             await asyncio.gather(fallback, return_exceptions=True)
-        LOG.info("LLM answer length=%d", len(text.text if isinstance(text, CallOutput) else text or ""))
+        LOG.info(
+            "LLM answer length=%d",
+            len(text.text if isinstance(text, CallOutput) else text or ""),
+        )
         # A streamed reply may already be fully spoken through progress; then the tail is empty.
         if isinstance(text, CallOutput) and (text.end_call or text.background_result):
             output.put_nowait((text, generation))
         elif turn == generation and (text or not spoke):
-            output.put_nowait((text or "Не получилось ответить. Попробуй ещё раз.", turn))
+            output.put_nowait(
+                (text or "Не получилось ответить. Попробуй ещё раз.", turn)
+            )
 
     async def listen_keypad():
         while True:
@@ -136,36 +193,27 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
     try:
         async with asyncio.TaskGroup() as tasks:
             player = tasks.create_task(playback())
-            keys = tasks.create_task(listen_keypad()) if keypad is not None and on_key else None
+            keys = (
+                tasks.create_task(listen_keypad())
+                if keypad is not None and on_key
+                else None
+            )
             try:
                 while True:
-                    heard_playback = []
-                    user_partial = False
-
-                    def remember_output():
-                        if clock() <= echo_until and last_spoken and last_spoken not in heard_playback:
-                            heard_playback.append(last_spoken)
-
-                    def interrupt(partial):
-                        nonlocal user_partial
-                        remember_output()
-                        tokens = words(partial)
-                        confirmed = len(tokens) >= 2
-                        if confirmed and not (echo_filter and echoes_playback(tokens, heard_playback)):
-                            user_partial = True
-                            audio_ready.clear()
-                            if playing and not playing.done():
-                                playing.cancel()
-
+                    recognition = RecognitionTurn(recent_output, interrupt_playback)
                     recognition_started = clock()
                     try:
                         async with asyncio.timeout(idle_seconds) as idle:
-                            def voice_started():
-                                remember_output()
-                                idle.reschedule(clock() + idle_seconds)
+
+                            def voice_started(current=recognition, timeout=idle):
+                                current.remember_output()
+                                timeout.reschedule(clock() + idle_seconds)
 
                             phrase = await speech.recognize_live(
-                                source, threshold=450, on_voice_start=voice_started, on_partial=interrupt
+                                source,
+                                threshold=450,
+                                on_voice_start=voice_started,
+                                on_partial=recognition.on_partial,
                             )
                     except TimeoutError:
                         audio_ready.set()
@@ -176,36 +224,56 @@ async def run_dialog(speech, reply_to, source, play, hangup, prompt, *, backgrou
                             await hangup()
                             return
                         phrase = ""
-                        user_partial = True
+                        recognition.user_partial = True
                     except Exception as exc:
                         audio_ready.set()
                         LOG.warning("STT failed: %s", type(exc).__name__)
                         if on_diagnostic:
-                            await on_diagnostic("stt", "failed", {"error":type(exc).__name__}, (clock()-recognition_started)*1000)
+                            await on_diagnostic(
+                                "stt",
+                                "failed",
+                                {"error": type(exc).__name__},
+                                (clock() - recognition_started) * 1000,
+                            )
                         if clock() - last_recovery >= 10:
-                            output.put_nowait(("Не получилось расслышать. Скажи ещё раз.", generation))
+                            output.put_nowait(
+                                ("Не получилось расслышать. Скажи ещё раз.", generation)
+                            )
                             last_recovery = clock()
                         await asyncio.sleep(1)
                         continue
                     finally:
                         idle = None
-                    remember_output()
+                    recognition.remember_output()
                     tokens = words(phrase)
-                    if not tokens or (echo_filter and echoes_playback(tokens, heard_playback)):
+                    if not tokens or recognition.is_echo(tokens):
                         audio_ready.set()
-                        if not tokens and user_partial and clock() - last_recovery >= 5:
-                            output.put_nowait(("Не расслышал конец фразы. Повтори, пожалуйста.", generation))
+                        if (
+                            not tokens
+                            and recognition.user_partial
+                            and clock() - last_recovery >= 5
+                        ):
+                            output.put_nowait(
+                                (
+                                    "Не расслышал конец фразы. Повтори, пожалуйста.",
+                                    generation,
+                                )
+                            )
                             last_recovery = clock()
                         continue
                     LOG.info("Live STT recognized %d chars", len(phrase))
                     if on_diagnostic:
-                        await on_diagnostic("stt", "ready", {}, (clock()-recognition_started)*1000)
+                        await on_diagnostic(
+                            "stt", "ready", {}, (clock() - recognition_started) * 1000
+                        )
                     generation += 1
                     if playing and not playing.done():
                         playing.cancel()
                     audio_ready.set()
                     if len(pending) >= 4:
-                        output.put_nowait(("Секунду, ещё выполняю предыдущие запросы.", generation))
+                        output.put_nowait(
+                            ("Секунду, ещё выполняю предыдущие запросы.", generation)
+                        )
                         continue
                     task = tasks.create_task(answer(phrase, generation))
                     pending.add(task)

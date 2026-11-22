@@ -1,24 +1,34 @@
 """Q1 call state, signal, and transcribed phrases as HA sensors."""
+
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
-from homeassistant.const import EntityCategory, PERCENTAGE, SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant.const import (
+    PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+)
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN
 from .entity import JarvisEntity
 from .helpers import MAX_STATE_LENGTH, csq_to_dbm, parse_csq, truncate_state
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    c = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([
-        CallStateSensor(c),
-        SignalCsqSensor(c),
-        SignalDbmSensor(c),
-        TranscriptSensor(c),
-        MicrophoneLevel(c.microphone),
-    ])
+    c = entry.runtime_data
+    async_add_entities(
+        [
+            CallStateSensor(c),
+            SignalCsqSensor(c),
+            SignalDbmSensor(c),
+            TranscriptSensor(c),
+            MicrophoneLevel(c.microphone),
+        ]
+    )
 
 
 class CallStateSensor(JarvisEntity, SensorEntity):
@@ -29,7 +39,9 @@ class CallStateSensor(JarvisEntity, SensorEntity):
 
     @property
     def native_value(self):
-        return truncate_state((self.coordinator.data or {}).get("call_state") or "unknown")
+        return truncate_state(
+            (self.coordinator.data or {}).get("call_state") or "unknown"
+        )
 
 
 class SignalCsqSensor(JarvisEntity, SensorEntity):

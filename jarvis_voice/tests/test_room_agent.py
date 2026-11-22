@@ -27,7 +27,9 @@ class RoomAgentTests(unittest.IsolatedAsyncioTestCase):
         service.brain._ha.assert_not_awaited()
 
     async def test_assist_agent_keeps_conversation(self):
-        service = make_service(room_agent="assist", assist_agent_id="conversation.home_assistant")
+        service = make_service(
+            room_agent="assist", assist_agent_id="conversation.home_assistant"
+        )
         service.brain._ha.return_value = {
             "conversation_id": "abc",
             "response": {"speech": {"plain": {"speech": "Включила свет"}}},
@@ -52,7 +54,9 @@ class RoomAgentValidationTests(unittest.TestCase):
             validate_changes({"room_agent": "other"}, {})
         with self.assertRaises(ValueError):
             validate_changes({"assist_agent_id": "bad id"}, {})
-        options = validate_changes({"room_agent": "assist", "assist_agent_id": "conversation.x"}, {})
+        options = validate_changes(
+            {"room_agent": "assist", "assist_agent_id": "conversation.x"}, {}
+        )
         self.assertEqual(options["room_agent"], "assist")
 
 

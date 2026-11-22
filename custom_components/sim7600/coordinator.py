@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
@@ -49,6 +50,25 @@ def entry_option(entry: ConfigEntry, key: str, default: Any) -> Any:
     if value is None:
         value = entry.data.get(key, default)
     return default if value is None else value
+
+
+@dataclass(slots=True)
+class NetworkState:
+    """Last successful values from the independent network queries."""
+
+    rssi: int | None = None
+    operator: str | None = None
+    mode: str | None = None
+    system_mode: str | None = None
+    registration: int | None = None
+    packet_registration: int | None = None
+    sim_status: str | None = None
+
+    @property
+    def signal_dbm(self) -> int | None:
+        if self.rssi is None:
+            return None
+        return -113 + self.rssi * 2
 
 
 class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -98,16 +118,10 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._consecutive_failures: int = 0
 
-        # Last known values.
-        self._cached_rssi: int | None = None
-        self._cached_signal_dbm: float | None = None
-        self._cached_operator: str | None = None
-        self._cached_network_mode: str | None = None
-        self._cached_system_mode: str | None = None
-        self._cached_reg_status: int | None = None
-        self._cached_gprs_reg_status: int | None = None
-        self._cached_sim_status: str | None = None
-        self._cached_last_sms: SmsData | None = None
+        self._network = NetworkState()
+        self._last_sms: SmsData | None = None
+        self._sms_refresh_task: asyncio.Task[None] | None = None
+        self._sms_refresh_pending = False
 
         # First cleanup only after one interval, so read SMS that existed
         # before the integration was set up are not removed immediately.
@@ -132,9 +146,11 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Handle a URC from the modem (runs in the event loop)."""
         if line.startswith("+CMTI:"):
             LOGGER.debug("New SMS indication: %s", line)
-            self.hass.async_create_background_task(
-                self.async_request_refresh(), name=f"{DOMAIN}_sms_refresh"
-            )
+            self._sms_refresh_pending = True
+            if self._sms_refresh_task is None or self._sms_refresh_task.done():
+                self._sms_refresh_task = self.hass.async_create_background_task(
+                    self._refresh_for_sms(), name=f"{DOMAIN}_sms_refresh"
+                )
         elif line.startswith("+CLIP:"):
             match = _CLIP_RE.match(line)
             self._incoming_call(match.group(1) or None if match else None)
@@ -142,6 +158,11 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._ring()
         elif line.startswith(("NO CARRIER", "MISSED_CALL:")):
             self._call_ended()
+
+    async def _refresh_for_sms(self) -> None:
+        while self._sms_refresh_pending:
+            self._sms_refresh_pending = False
+            await self.async_request_refresh()
 
     def _ring(self) -> None:
         now = time.monotonic()
@@ -180,8 +201,14 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._ring_handle = None
 
     async def async_shutdown(self) -> None:
-        """Cancel timers on unload."""
+        """Stop unsolicited updates and cancel pending work."""
+        self.modem.urc_callback = None
         self._call_ended()
+        self._sms_refresh_pending = False
+        if self._sms_refresh_task is not None:
+            self._sms_refresh_task.cancel()
+            await asyncio.gather(self._sms_refresh_task, return_exceptions=True)
+            self._sms_refresh_task = None
         await super().async_shutdown()
 
     # ------------------------------------------------------------------
@@ -204,6 +231,37 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return data
 
     async def _fetch(self) -> dict[str, Any]:
+        await self._refresh_identity()
+        await self._refresh_network()
+        now = time.time()
+        await self._process_sms(now)
+
+        await self._update_balance(now)
+        self._update_issues(now)
+
+        return {
+            "rssi": self._network.rssi,
+            "signal_dbm": self._network.signal_dbm,
+            "operator": self._network.operator,
+            "network_mode": self._network.mode,
+            "system_mode": self._network.system_mode,
+            "reg_status": self._network.registration,
+            "gprs_reg_status": self._network.packet_registration,
+            "imei": self.imei,
+            "firmware": self.firmware,
+            "manufacturer": self.manufacturer,
+            "model": self.model,
+            "sim_status": self._network.sim_status,
+            "last_sms": self._last_sms,
+            "balance": self._balance,
+            "balance_updated": (
+                dt_util.utc_from_timestamp(self._balance_updated)
+                if self._balance_updated is not None
+                else None
+            ),
+        }
+
+    async def _refresh_identity(self) -> None:
         modem = self.modem
         if self.imei is None:
             self.imei = await modem.get_imei()
@@ -214,64 +272,37 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.model is None:
             self.model = await modem.get_model()
 
+    async def _refresh_network(self) -> None:
+        modem = self.modem
         new_rssi = await modem.get_signal_quality()
         if new_rssi is not None:
-            self._cached_rssi = new_rssi
-            self._cached_signal_dbm = -113 + (new_rssi * 2)
+            self._network.rssi = new_rssi
 
         new_operator = await modem.get_operator()
         if new_operator is not None:
-            self._cached_operator = new_operator
+            self._network.operator = new_operator
 
         network_info = await modem.get_network_info()
         if network_info.get("mode") is not None:
-            self._cached_network_mode = network_info["mode"]
+            self._network.mode = network_info["mode"]
         if network_info.get("system_mode") is not None:
-            self._cached_system_mode = network_info["system_mode"]
+            self._network.system_mode = network_info["system_mode"]
 
         new_reg = await modem.get_registration_status()
         if new_reg is not None:
-            self._cached_reg_status = new_reg
+            self._network.registration = new_reg
         new_gprs_reg = await modem.get_gprs_registration_status()
         if new_gprs_reg is not None:
-            self._cached_gprs_reg_status = new_gprs_reg
+            self._network.packet_registration = new_gprs_reg
         new_sim_status = await modem.get_sim_status()
         if new_sim_status is not None:
-            self._cached_sim_status = new_sim_status
-
-        now = time.time()
-        await self._process_sms(now)
-
-        await self._update_balance(now)
-        self._update_issues(now)
-
-        return {
-            "rssi": self._cached_rssi,
-            "signal_dbm": self._cached_signal_dbm,
-            "operator": self._cached_operator,
-            "network_mode": self._cached_network_mode,
-            "system_mode": self._cached_system_mode,
-            "reg_status": self._cached_reg_status,
-            "gprs_reg_status": self._cached_gprs_reg_status,
-            "imei": self.imei,
-            "firmware": self.firmware,
-            "manufacturer": self.manufacturer,
-            "model": self.model,
-            "sim_status": self._cached_sim_status,
-            "last_sms": self._cached_last_sms,
-            "balance": self._balance,
-            "balance_updated": (
-                dt_util.utc_from_timestamp(self._balance_updated)
-                if self._balance_updated is not None
-                else None
-            ),
-        }
+            self._network.sim_status = new_sim_status
 
     async def _process_sms(self, now: float) -> None:
         messages = await self.modem.get_unread_sms()
         deletion_failed = False
         for sms in messages:
-            self._cached_last_sms = sms
+            self._last_sms = sms
             self.hass.bus.async_fire(
                 EVENT_SMS_RECEIVED,
                 {
@@ -314,7 +345,7 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._balance_updated = now
 
     def _update_issues(self, now: float) -> None:
-        sim = self._cached_sim_status
+        sim = self._network.sim_status
         pin_issue = f"{ISSUE_SIM_PIN}_{self.entry_id}"
         if sim is not None:
             upper = sim.upper()
@@ -332,7 +363,7 @@ class SIM7600DataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ir.async_delete_issue(self.hass, DOMAIN, pin_issue)
 
         reg_issue = f"{ISSUE_NO_REGISTRATION}_{self.entry_id}"
-        statuses = (self._cached_reg_status, self._cached_gprs_reg_status)
+        statuses = (self._network.registration, self._network.packet_registration)
         if all(status is None for status in statuses):
             return
         if any(status in REGISTERED_STATUSES for status in statuses):

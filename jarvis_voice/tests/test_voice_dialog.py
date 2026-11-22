@@ -28,7 +28,9 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
         class Speech:
             turn = 0
 
-            async def recognize_live(self, source, *, threshold, on_voice_start, on_partial):
+            async def recognize_live(
+                self, source, *, threshold, on_voice_start, on_partial
+            ):
                 self.turn += 1
                 if self.turn == 1:
                     await greeting_started.wait()
@@ -49,13 +51,25 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
                 await asyncio.Future()
 
         brain = unittest.mock.Mock()
-        brain.reply = AsyncMock(side_effect=["Проверяю погоду", CallOutput("До связи.", True)])
+        brain.reply = AsyncMock(
+            side_effect=["Проверяю погоду", CallOutput("До связи.", True)]
+        )
         hangup = AsyncMock()
         async with asyncio.timeout(2):
-            await run_dialog(Speech(), brain.reply, asyncio.Queue(), play, hangup, greeting, echo_filter=True)
+            await run_dialog(
+                Speech(),
+                brain.reply,
+                asyncio.Queue(),
+                play,
+                hangup,
+                greeting,
+                echo_filter=True,
+            )
 
-        self.assertEqual([call.args[0] for call in brain.reply.await_args_list],
-                         ["Какая погода сегодня?", "До свидания"])
+        self.assertEqual(
+            [call.args[0] for call in brain.reply.await_args_list],
+            ["Какая погода сегодня?", "До свидания"],
+        )
         hangup.assert_awaited_once()
 
     async def test_tool_survives_interruption_without_replaying_stale_reply(self):
@@ -85,7 +99,9 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
         class Speech:
             turn = 0
 
-            async def recognize_live(self, source, *, threshold, on_voice_start, on_partial):
+            async def recognize_live(
+                self, source, *, threshold, on_voice_start, on_partial
+            ):
                 self.turn += 1
                 if self.turn == 1:
                     return "Отправь фото"
@@ -100,8 +116,15 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
                 await asyncio.Future()
 
         async with asyncio.timeout(2):
-            await run_dialog(Speech(), brain, asyncio.Queue(), play, AsyncMock(), "Привет",
-                             background_tools=True)
+            await run_dialog(
+                Speech(),
+                brain,
+                asyncio.Queue(),
+                play,
+                AsyncMock(),
+                "Привет",
+                background_tools=True,
+            )
         self.assertNotIn("Фото отправлено", spoken)
 
     async def test_hangs_up_on_silence(self):
@@ -112,8 +135,15 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
         hangup = AsyncMock()
         play = AsyncMock()
         async with asyncio.timeout(2):
-            await run_dialog(SilentSpeech(), AsyncMock(), asyncio.Queue(), play, hangup,
-                             "Привет", idle_seconds=0.02)
+            await run_dialog(
+                SilentSpeech(),
+                AsyncMock(),
+                asyncio.Queue(),
+                play,
+                hangup,
+                "Привет",
+                idle_seconds=0.02,
+            )
         hangup.assert_awaited_once()
         play.assert_any_await("До связи.")
 
@@ -138,7 +168,9 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
                     return "Этого достаточно."
                 await asyncio.Future()
 
-        reply = AsyncMock(side_effect=["Продолжаю слушать.", CallOutput("Хорошего вечера!", True)])
+        reply = AsyncMock(
+            side_effect=["Продолжаю слушать.", CallOutput("Хорошего вечера!", True)]
+        )
         hangup = AsyncMock()
         async with asyncio.timeout(2):
             await run_dialog(Speech(), reply, asyncio.Queue(), play, hangup, "Привет")
@@ -159,6 +191,7 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
 
         class Speech:
             turn = 0
+
             async def recognize_live(self, _source, *, on_partial, **kwargs):
                 self.turn += 1
                 if self.turn == 1:
@@ -172,8 +205,12 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
 
         reply = AsyncMock(side_effect=["Привет.", CallOutput("До связи.", True)])
         async with asyncio.timeout(2):
-            await run_dialog(Speech(), reply, asyncio.Queue(), play, AsyncMock(), greeting)
-        self.assertEqual([call.args[0] for call in reply.await_args_list], [greeting, "До свидания"])
+            await run_dialog(
+                Speech(), reply, asyncio.Queue(), play, AsyncMock(), greeting
+            )
+        self.assertEqual(
+            [call.args[0] for call in reply.await_args_list], [greeting, "До свидания"]
+        )
 
     async def test_farewell_survives_a_later_phrase(self):
         release = asyncio.Event()
@@ -203,13 +240,21 @@ class TestVoiceDialog(unittest.IsolatedAsyncioTestCase):
 
         hangup = AsyncMock()
         async with asyncio.timeout(2):
-            await run_dialog(Speech(), reply, asyncio.Queue(), play, hangup, "Привет",
-                             background_tools=True)
+            await run_dialog(
+                Speech(),
+                reply,
+                asyncio.Queue(),
+                play,
+                hangup,
+                "Привет",
+                background_tools=True,
+            )
         self.assertIn("Хорошего дня!", heard)
         hangup.assert_awaited_once()
 
     async def test_live_call_turns_run_concurrently(self):
         from brain import Brain
+
         brain = Brain({}, None, None)
         running = 0
         peak = 0

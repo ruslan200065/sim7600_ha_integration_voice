@@ -8,6 +8,7 @@ Facts from original Q1 /opt code, not assumptions:
 
 This module never exposes privileged shell access or automatically changes UVC controls.
 """
+
 import asyncio
 import glob
 import logging
@@ -64,7 +65,9 @@ async def _run(*args, timeout=8):
             raise RuntimeError(f"{args[0]} timed out") from exc
         raise
     if proc.returncode:
-        raise RuntimeError(f"{args[0]} exit={proc.returncode}: {stderr.decode(errors='replace')[-250:]}")
+        raise RuntimeError(
+            f"{args[0]} exit={proc.returncode}: {stderr.decode(errors='replace')[-250:]}"
+        )
     return stdout
 
 
@@ -87,7 +90,15 @@ def list_usb():
 def list_serial():
     # Do not include device contents. /dev/modemAT is the original Q1 alias.
     known = ["/dev/modemAT", "/dev/cdc-wdm0"]
-    return sorted(set(x for x in known + glob.glob("/dev/ttyUSB*") + glob.glob("/dev/serial/by-id/*") if os.path.exists(x)))
+    return sorted(
+        set(
+            x
+            for x in known
+            + glob.glob("/dev/ttyUSB*")
+            + glob.glob("/dev/serial/by-id/*")
+            if os.path.exists(x)
+        )
+    )
 
 
 def list_video():
@@ -112,9 +123,18 @@ async def probe_audio():
         except (FileNotFoundError, RuntimeError) as exc:
             return "unavailable: " + str(exc)[:120]
 
-    results = dict(zip(commands, await asyncio.gather(*(probe(argv) for argv in commands.values())), strict=True))
+    results = dict(
+        zip(
+            commands,
+            await asyncio.gather(*(probe(argv) for argv in commands.values())),
+            strict=True,
+        )
+    )
     try:
-        results["alsa_cards"] = Path("/proc/asound/cards").read_text(errors="replace")[:2000]
+        cards = await asyncio.to_thread(
+            Path("/proc/asound/cards").read_text, errors="replace"
+        )
+        results["alsa_cards"] = cards[:2000]
     except OSError:
         results["alsa_cards"] = "not mounted"
     return results
@@ -122,7 +142,9 @@ async def probe_audio():
 
 async def probe_camera(device):
     device = camera_device(device)
-    return (await _run("v4l2-ctl", "-d", device, "--list-formats-ext", timeout=8)).decode(errors="replace")[:10000]
+    return (
+        await _run("v4l2-ctl", "-d", device, "--list-formats-ext", timeout=8)
+    ).decode(errors="replace")[:10000]
 
 
 async def snapshot(device):
@@ -135,12 +157,32 @@ async def snapshot(device):
     ]
     errors = []
     for preset in presets:
-        args = ("ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                "-f", "video4linux2", *preset, "-i", device,
-                "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1")
+        args = (
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "video4linux2",
+            *preset,
+            "-i",
+            device,
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "pipe:1",
+        )
         try:
             image = await _run(*args, timeout=4)
-            if image.startswith(b"\xff\xd8") and image.endswith(b"\xff\xd9") and len(image) <= 4_000_000:
+            if (
+                image.startswith(b"\xff\xd8")
+                and image.endswith(b"\xff\xd9")
+                and len(image) <= 4_000_000
+            ):
                 return image
             errors.append("Output was not a valid JPEG")
         except (FileNotFoundError, RuntimeError) as exc:
@@ -164,9 +206,18 @@ async def apply_original_camera_controls(device):
 
 
 async def diagnostics(camera=""):
-    result = {"usb_devices": list_usb(), "serial_ports": list_serial(),
-              "video_nodes": list_video(),
-              "audio": await probe_audio()}
+    usb, serial, video, audio = await asyncio.gather(
+        asyncio.to_thread(list_usb),
+        asyncio.to_thread(list_serial),
+        asyncio.to_thread(list_video),
+        probe_audio(),
+    )
+    result = {
+        "usb_devices": usb,
+        "serial_ports": serial,
+        "video_nodes": video,
+        "audio": audio,
+    }
     if camera:
         try:
             result["video_formats"] = await probe_camera(camera)

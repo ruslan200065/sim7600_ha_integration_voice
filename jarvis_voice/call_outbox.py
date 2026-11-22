@@ -1,10 +1,11 @@
 """Persist call events until Home Assistant acknowledges delivery."""
-from contextlib import closing
+
 import json
-from pathlib import Path
 import secrets
 import sqlite3
 import time
+from contextlib import closing
+from pathlib import Path
 
 
 class CallOutbox:
@@ -18,7 +19,9 @@ class CallOutbox:
                     name TEXT NOT NULL, payload TEXT NOT NULL,
                     state TEXT NOT NULL, created_at REAL NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS events_created ON events(created_at);
             """)
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT id FROM stream").fetchone()
             self.stream = row[0] if row else secrets.token_hex(16)
             if not row:
@@ -31,12 +34,20 @@ class CallOutbox:
         return closing(sqlite3.connect(self.path, timeout=1))
 
     def record(self, event):
+        created_at = time.time()
         with self._connect() as db, db:
             cursor = db.execute(
                 "INSERT INTO events(name,payload,state,created_at) VALUES (?,?,?,?)",
-                (event["name"], json.dumps(event["data"]), event["delivery"], time.time()),
+                (
+                    event["name"],
+                    json.dumps(event["data"]),
+                    event["delivery"],
+                    created_at,
+                ),
             )
-            db.execute("DELETE FROM events WHERE created_at < ?", (time.time() - 30 * 86400,))
+            db.execute(
+                "DELETE FROM events WHERE created_at < ?", (created_at - 30 * 86400,)
+            )
             return cursor.lastrowid
 
     def update(self, event):
@@ -52,7 +63,12 @@ class CallOutbox:
     def batch(self):
         with self._connect() as db:
             return [
-                {"sequence": sequence, "name": name, "data": json.loads(payload), "delivery": state}
+                {
+                    "sequence": sequence,
+                    "name": name,
+                    "data": json.loads(payload),
+                    "delivery": state,
+                }
                 for sequence, name, payload, state in db.execute(
                     "SELECT sequence,name,payload,state FROM events ORDER BY sequence LIMIT 128"
                 )
@@ -63,6 +79,7 @@ class CallOutbox:
             return False
         with self._connect() as db, db:
             db.execute(
-                "DELETE FROM events WHERE sequence <= ? AND state='companion'", (sequence,)
+                "DELETE FROM events WHERE sequence <= ? AND state='companion'",
+                (sequence,),
             )
         return True

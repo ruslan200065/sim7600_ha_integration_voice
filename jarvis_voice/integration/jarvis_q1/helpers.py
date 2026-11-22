@@ -3,11 +3,12 @@
 This module must not import Home Assistant or use relative imports, so it can be
 unit tested on a machine without Home Assistant installed.
 """
+
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
 import ipaddress
 import re
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 MAX_STATE_LENGTH = 255
@@ -116,7 +117,9 @@ def call_transition(previous: str | None, current: str | None) -> str | None:
     return None
 
 
-def is_supervisor_entry(data: Mapping[str, Any], entry_source: str | None = None) -> bool:
+def is_supervisor_entry(
+    data: Mapping[str, Any], entry_source: str | None = None
+) -> bool:
     """True for entries created from Supervisor (hassio) discovery."""
     return data.get("source") == SOURCE_HASSIO or entry_source == SOURCE_HASSIO
 
@@ -153,8 +156,13 @@ def redact(data: Any, keys: Iterable[str], secrets: Iterable[Any] = ()) -> Any:
     """Recursively redact values of ``keys``, literal ``secrets`` and phone numbers."""
     key_set = {key.lower() for key in keys}
     literals = sorted(
-        {str(s) for s in secrets if s is not None and len(str(s)) >= _MIN_SECRET_LENGTH},
-        key=len, reverse=True,
+        {
+            str(s)
+            for s in secrets
+            if s is not None and len(str(s)) >= _MIN_SECRET_LENGTH
+        },
+        key=len,
+        reverse=True,
     )
 
     def scrub(text: str) -> str:

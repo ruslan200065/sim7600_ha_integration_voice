@@ -1,6 +1,6 @@
 """JARVIS Q1 companion integration constants."""
+
 DOMAIN = "jarvis_q1"
-PLATFORMS = ("sensor", "binary_sensor", "button", "camera", "media_player", "switch")
 CONF_HOST = "host"
 CONF_PORT = "port"
 CONF_TOKEN = "token"
@@ -17,5 +17,3 @@ EVENT_CALL_ENDED = "jarvis_call_ended"
 
 STATUS_INTERVAL_SECONDS = 20
 MICROPHONE_INTERVAL_SECONDS = 15
-
-SERVICES = ("speak", "listen", "transcribe", "call", "hangup", "send_dtmf", "set_led", "probe")
